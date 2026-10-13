@@ -111,6 +111,13 @@ pub struct Settings {
     pub max_rows: usize,
     /// Maximum retained raw bytes.
     pub max_raw: usize,
+    /// Width of the serial-settings panel, in points.  Owned by the app rather
+    /// than by egui's panel state: see `ui::panels::splitter`.
+    pub left_panel_width: f32,
+    /// Width of the multi-send / protocol panel.
+    pub right_panel_width: f32,
+    /// Height of the send area below the log.
+    pub send_area_height: f32,
     /// Window size, restored on startup.
     pub window_size: Option<[f32; 2]>,
 }
@@ -135,6 +142,9 @@ impl Default for Settings {
             log_font_size: 13.0,
             max_rows: 200_000,
             max_raw: 32 * 1024 * 1024,
+            left_panel_width: crate::ui::panels::LEFT_PANEL_DEFAULT,
+            right_panel_width: crate::ui::panels::RIGHT_PANEL_DEFAULT,
+            send_area_height: crate::ui::panels::SEND_AREA_DEFAULT,
             window_size: None,
         }
     }
@@ -150,6 +160,18 @@ impl Settings {
         self.max_raw = self.max_raw.clamp(64 * 1024, 512 * 1024 * 1024);
         self.multi.normalize();
         self.protocol.normalize();
+        self.left_panel_width = self.left_panel_width.clamp(
+            crate::ui::panels::LEFT_PANEL_MIN,
+            crate::ui::panels::LEFT_PANEL_MAX,
+        );
+        self.right_panel_width = self.right_panel_width.clamp(
+            crate::ui::panels::RIGHT_PANEL_MIN,
+            crate::ui::panels::RIGHT_PANEL_MAX,
+        );
+        self.send_area_height = self.send_area_height.clamp(
+            crate::ui::panels::SEND_AREA_MIN,
+            crate::ui::panels::SEND_AREA_MAX,
+        );
     }
 
     /// Directory holding the settings file.

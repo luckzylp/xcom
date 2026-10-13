@@ -76,6 +76,99 @@ pub(crate) mod probe {
     }
 }
 
+/// Serial-settings panel width, in points.
+pub(crate) const LEFT_PANEL_DEFAULT: f32 = 272.0;
+pub(crate) const LEFT_PANEL_MIN: f32 = 232.0;
+pub(crate) const LEFT_PANEL_MAX: f32 = 460.0;
+
+/// Tool panel width.  The default is two thirds of the original 430 so the
+/// receive area gets more room out of the box.
+pub(crate) const RIGHT_PANEL_DEFAULT: f32 = 287.0;
+pub(crate) const RIGHT_PANEL_MIN: f32 = 260.0;
+pub(crate) const RIGHT_PANEL_MAX: f32 = 760.0;
+
+/// Height of the send area.
+pub(crate) const SEND_AREA_DEFAULT: f32 = 196.0;
+pub(crate) const SEND_AREA_MIN: f32 = 96.0;
+pub(crate) const SEND_AREA_MAX: f32 = 560.0;
+
+/// Which way a splitter moves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SplitterAxis {
+    /// A vertical line dragged left/right.
+    Vertical,
+    /// A horizontal line dragged up/down.
+    Horizontal,
+}
+
+/// A draggable splitter, drawn and tracked by the app.
+///
+/// egui's own panel resizing is not used here.  Its `default_size` is
+/// order-dependent against `min_size`/`max_size`, so a panel configured the
+/// obvious way silently falls back to its minimum, and the resulting width ends
+/// up driven by the panel's *content* -- which made the settings panel ignore
+/// attempts to shrink it, and made the tool panel snap back in the English UI
+/// where the translated labels are wider.  Owning the number makes the
+/// behaviour obvious and testable; it is persisted with the rest of the
+/// settings.
+///
+/// Geometry of one splitter line.
+struct SplitterSpec<'a> {
+    id: &'a str,
+    axis: SplitterAxis,
+    /// Where the line currently sits, along `axis`.
+    boundary: f32,
+    /// The panel's extent along the other axis.
+    cross: egui::Rangef,
+    /// The edge the panel is anchored to; the size is the distance from here.
+    fixed_edge: f32,
+    min: f32,
+    max: f32,
+}
+
+/// Returns the new size when the user is dragging.
+fn splitter(ui: &mut Ui, spec: SplitterSpec<'_>) -> Option<f32> {
+    let SplitterSpec {
+        id,
+        axis,
+        boundary,
+        cross,
+        fixed_edge,
+        min,
+        max,
+    } = spec;
+    const GRAB: f32 = 6.0;
+    let rect = match axis {
+        SplitterAxis::Vertical => {
+            egui::Rect::from_x_y_ranges((boundary - GRAB)..=(boundary + GRAB), cross)
+        }
+        SplitterAxis::Horizontal => {
+            egui::Rect::from_x_y_ranges(cross, (boundary - GRAB)..=(boundary + GRAB))
+        }
+    };
+    let response = ui.interact(
+        rect,
+        egui::Id::new(("splitter", id)),
+        egui::Sense::click_and_drag(),
+    );
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(match axis {
+            SplitterAxis::Vertical => egui::CursorIcon::ResizeHorizontal,
+            SplitterAxis::Horizontal => egui::CursorIcon::ResizeVertical,
+        });
+    }
+    if response.dragged() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            let size = match axis {
+                SplitterAxis::Vertical => pointer.x - fixed_edge,
+                SplitterAxis::Horizontal => fixed_edge - pointer.y,
+            };
+            return Some(size.clamp(min, max));
+        }
+    }
+    None
+}
+
 /// Colour used for a status message of the given severity.
 fn level_color(level: Level) -> egui::Color32 {
     match level {
@@ -218,16 +311,15 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
-    egui::Panel::left("config_panel")
-        .resizable(true)
-        .default_size(272.0)
-        .min_size(232.0)
-        .max_size(420.0)
+    let width = app.settings.left_panel_width;
+    let panel = egui::Panel::left("config_panel")
+        .resizable(false)
+        .exact_size(width)
         .show(ui, |ui| {
-            // `auto_shrink` off is what makes the panel genuinely resizable:
-            // egui sizes a resizable panel from its content, so a ScrollArea
-            // that shrinks to its contents leaves the separator draggable but
-            // the panel itself stuck.
+            // Fill the panel rather than shrinking to the content, so the
+            // scrollbar sits against the panel edge and the whole panel
+            // scrolls.  This is presentation only -- the splitter below does
+            // not depend on it (measured, not assumed).
             let scroll = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -241,6 +333,23 @@ pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
                 });
             probe::set_left_content_width(scroll.inner_rect.width());
         });
+
+    let outer = panel.response.rect;
+    if let Some(width) = splitter(
+        ui,
+        SplitterSpec {
+            id: "config_panel",
+            axis: SplitterAxis::Vertical,
+            boundary: outer.right(),
+            cross: outer.y_range(),
+            fixed_edge: outer.left(),
+            min: LEFT_PANEL_MIN,
+            max: LEFT_PANEL_MAX,
+        },
+    ) {
+        app.settings.left_panel_width = width;
+        app.mark_settings_dirty();
+    }
 }
 
 fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
@@ -699,11 +808,27 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
     egui::CentralPanel::default().show(ui, |ui| {
         // The send area sits at the bottom of the central column, so that the
         // configuration and tool panels flank the full height of the window.
-        egui::Panel::bottom("send_area")
-            .resizable(true)
-            .default_size(196.0)
-            .min_size(120.0)
+        let height = app.settings.send_area_height;
+        let panel = egui::Panel::bottom("send_area")
+            .resizable(false)
+            .exact_size(height)
             .show(ui, |ui| send_area(app, ui));
+        let outer = panel.response.rect;
+        if let Some(height) = splitter(
+            ui,
+            SplitterSpec {
+                id: "send_area",
+                axis: SplitterAxis::Horizontal,
+                boundary: outer.top(),
+                cross: outer.x_range(),
+                fixed_edge: outer.bottom(),
+                min: SEND_AREA_MIN,
+                max: SEND_AREA_MAX,
+            },
+        ) {
+            app.settings.send_area_height = height;
+            app.mark_settings_dirty();
+        }
 
         log_toolbar(app, ui);
         ui.separator();
@@ -917,11 +1042,10 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
-    egui::Panel::right("tool_panel")
-        .resizable(true)
-        .default_size(430.0)
-        .min_size(320.0)
-        .max_size(720.0)
+    let width = app.settings.right_panel_width;
+    let panel = egui::Panel::right("tool_panel")
+        .resizable(false)
+        .exact_size(width)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui
@@ -943,6 +1067,23 @@ pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
                 SideTab::Protocol => protocol_panel(app, ui),
             }
         });
+
+    let outer = panel.response.rect;
+    if let Some(width) = splitter(
+        ui,
+        SplitterSpec {
+            id: "tool_panel",
+            axis: SplitterAxis::Vertical,
+            boundary: outer.left(),
+            cross: outer.y_range(),
+            fixed_edge: outer.right(),
+            min: RIGHT_PANEL_MIN,
+            max: RIGHT_PANEL_MAX,
+        },
+    ) {
+        app.settings.right_panel_width = width;
+        app.mark_settings_dirty();
+    }
 }
 
 /// Split the space available to the multi-send table between its two text

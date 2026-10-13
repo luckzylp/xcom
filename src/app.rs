@@ -1097,25 +1097,31 @@ mod layout_tests {
     }
 
     #[test]
-    fn dragging_the_settings_separator_widens_its_content() {
-        // The reported symptom: the separator could be dragged but the panel
-        // appeared not to change, because the ScrollArea inside it shrank to
-        // its contents instead of filling the panel.
+    fn dragging_the_settings_separator_widens_the_panel() {
         let ctx = egui::Context::default();
         let mut app = XcomApp::headless(crate::settings::Settings::default());
         app.show_side_panel = false;
 
-        let centre = full_frame(&ctx, &mut app, input());
-        let before = panels::probe::left_content_width();
-        assert!(before > 0.0, "the settings content was not laid out");
+        let before_rect = full_frame(&ctx, &mut app, input());
+        let before_content = panels::probe::left_content_width();
+        assert!(
+            before_content > 0.0,
+            "the settings content was not laid out"
+        );
 
-        let grab = egui::pos2(centre.min.x, centre.center().y);
+        let grab = egui::pos2(before_rect.min.x, before_rect.center().y);
         drag(&ctx, &mut app, grab, egui::pos2(grab.x + 80.0, grab.y));
 
-        let after = panels::probe::left_content_width();
+        let after_rect = full_frame(&ctx, &mut app, input());
         assert!(
-            after > before + 40.0,
-            "settings content did not follow the separator: {before} -> {after}"
+            after_rect.min.x > before_rect.min.x + 40.0,
+            "the panel did not widen: {} -> {}",
+            before_rect.min.x,
+            after_rect.min.x
+        );
+        assert!(
+            panels::probe::left_content_width() > before_content,
+            "the content did not follow the panel"
         );
     }
 
@@ -1140,6 +1146,69 @@ mod layout_tests {
             before.height(),
             after.height()
         );
+    }
+
+    #[test]
+    fn shrinking_the_settings_panel_persists() {
+        // Reported: dragging the left separator *left* clipped the panel's
+        // content during the gesture and then snapped back on release, while
+        // the receive area never grew.
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.show_side_panel = false;
+
+        let before = full_frame(&ctx, &mut app, input());
+        let grab = egui::pos2(before.min.x, before.center().y);
+        drag(&ctx, &mut app, grab, egui::pos2(grab.x - 40.0, grab.y));
+
+        let after = full_frame(&ctx, &mut app, input());
+        assert!(
+            after.min.x < before.min.x - 20.0,
+            "the panel snapped back instead of staying shrunk: {} -> {}",
+            before.min.x,
+            after.min.x
+        );
+
+        // And it must still be shrunk several frames later, i.e. the size was
+        // committed rather than merely applied for one frame.
+        for _ in 0..5 {
+            full_frame(&ctx, &mut app, input());
+        }
+        assert!(
+            full_frame(&ctx, &mut app, input()).min.x < before.min.x - 20.0,
+            "the shrunk size was not persisted"
+        );
+    }
+
+    #[test]
+    fn shrinking_the_tool_panel_persists_in_every_language() {
+        // Reported: in English the tool panel snapped back when shrunk; in
+        // Chinese it did not, which points at something width-dependent in the
+        // translated strings.
+        let _guard = crate::i18n::test_lock();
+        for language in [crate::i18n::Lang::ZhCn, crate::i18n::Lang::EnUs] {
+            crate::i18n::set_lang(language);
+            let ctx = egui::Context::default();
+            let mut app = XcomApp::headless(crate::settings::Settings::default());
+            app.side_tab = SideTab::Multi;
+
+            let before = full_frame(&ctx, &mut app, input());
+            // The right panel's left edge; shrinking it moves this right.
+            let grab = egui::pos2(before.max.x, before.center().y);
+            drag(&ctx, &mut app, grab, egui::pos2(grab.x + 90.0, grab.y));
+
+            let mut after = full_frame(&ctx, &mut app, input());
+            for _ in 0..5 {
+                after = full_frame(&ctx, &mut app, input());
+            }
+            assert!(
+                after.max.x > before.max.x + 50.0,
+                "{language:?}: the tool panel snapped back: {} -> {}",
+                before.max.x,
+                after.max.x
+            );
+        }
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
     }
 
     #[test]
