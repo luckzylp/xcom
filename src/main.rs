@@ -21,10 +21,15 @@ mod ui;
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // Alpha is what makes the rounded corners possible: the pixels we never
+    // paint stay see-through.  Only needed where we supply the frame ourselves.
+    let transparent = ui::window::PAINTS_OWN_BACKGROUND;
+
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 780.0])
             .with_min_inner_size([880.0, 540.0])
+            .with_transparent(transparent)
             // A stable app id lets the compositor associate the window with its
             // desktop entry (and therefore its icon).
             .with_app_id("xcom")

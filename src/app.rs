@@ -864,6 +864,10 @@ impl eframe::App for XcomApp {
         self.draw(ui);
     }
 
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        crate::ui::window::clear_color(crate::theme::panel_background(visuals.dark_mode))
+    }
+
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.settings.window_size = None;
         if let Err(err) = self.settings.save() {
@@ -881,6 +885,14 @@ impl XcomApp {
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
+
+        // The window backdrop goes down first, so every panel paints on top of
+        // it.  Panels are transparent on platforms where we own the frame (see
+        // `ui::window`), otherwise they would square off the bottom corners.
+        crate::ui::window::paint_background(
+            ui,
+            crate::theme::panel_background(crate::theme::is_dark(ctx, self.settings.theme)),
+        );
 
         // Styling only needs to be re-applied when the theme changes.
         let theme = self.settings.theme;

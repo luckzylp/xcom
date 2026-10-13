@@ -121,6 +121,18 @@ fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
 }
 
+/// Background colour of the application chrome (panels and status bar).
+///
+/// Also used as the window backdrop, which is why it is public: the rounded
+/// window background is painted in this colour.
+pub fn panel_background(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(0x1E, 0x1E, 0x1E)
+    } else {
+        Color32::from_rgb(0xF3, 0xF3, 0xF3)
+    }
+}
+
 /// Whether the given mode currently resolves to a dark appearance.
 pub fn is_dark(ctx: &egui::Context, mode: ThemeMode) -> bool {
     match mode {
@@ -161,7 +173,13 @@ fn tuned_dark() -> Visuals {
     let field = Color32::from_rgb(0x14, 0x14, 0x14);
     let accent = Color32::from_rgb(0x2E, 0x86, 0xDE);
 
-    v.panel_fill = panel;
+    // When the application paints its own rounded window background, the
+    // panels must not paint square corners over it.
+    v.panel_fill = if crate::ui::window::PAINTS_OWN_BACKGROUND {
+        Color32::TRANSPARENT
+    } else {
+        panel
+    };
     v.window_fill = surface;
     v.extreme_bg_color = field;
     v.faint_bg_color = Color32::from_rgb(0x2A, 0x2A, 0x2B);
@@ -185,7 +203,11 @@ fn tuned_light() -> Visuals {
     let field = Color32::from_rgb(0xFF, 0xFF, 0xFF);
     let accent = Color32::from_rgb(0x2E, 0x86, 0xDE);
 
-    v.panel_fill = panel;
+    v.panel_fill = if crate::ui::window::PAINTS_OWN_BACKGROUND {
+        Color32::TRANSPARENT
+    } else {
+        panel
+    };
     v.window_fill = surface;
     v.extreme_bg_color = field;
     v.faint_bg_color = Color32::from_rgb(0xE9, 0xE9, 0xEA);
