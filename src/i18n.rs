@@ -501,8 +501,6 @@ static EN: &[(&str, &str)] = &[
     ("把发出的内容显示在接收区，便于确认是否真的发出",
      "Show what you send in the receive view, so it is clear it went out"),
 
-    ("本条发送后延迟，单位毫秒", "Delay after this entry, in milliseconds"),
-
     // -- parity / flow control (src/serial/config.rs) -----------------------
     ("无",                    "None"),
     ("奇校验",                "Odd"),

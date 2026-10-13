@@ -274,7 +274,7 @@ sudo gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
 ## 开发
 
 ```bash
-cargo test              # 188 个测试
+cargo test              # 187 个测试
 cargo clippy --all-targets
 cargo fmt
 ```
