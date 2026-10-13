@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use crate::app::{draw_log, Level, SideTab, XcomApp};
 use crate::encoding::EncodingId;
+use crate::i18n::{self, tr, Lang};
 use crate::logstore::{HexStyle, ViewMode};
 use crate::protocol::{ChecksumKind, TaskKind};
 use crate::serial::config::{CUSTOM_BAUD_RANGE, STANDARD_BAUDS};
@@ -71,35 +72,54 @@ fn combo<T: PartialEq + Copy>(
 pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
     egui::Panel::top("top_bar").show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
-            ui.label("主题");
+            ui.label(tr("主题"));
             let mut theme_mode = app.settings.theme;
             if combo(ui, "theme_mode", &mut theme_mode, &ThemeMode::ALL, |m| {
-                format!("{} {}", m.icon(), m.label())
+                format!("{} {}", m.icon(), tr(m.label()))
             }) {
                 app.settings.theme = theme_mode;
                 app.mark_settings_dirty();
             }
 
             ui.separator();
-            ui.checkbox(&mut app.show_side_panel, "显示工具面板");
+            ui.label(tr("语言"));
+            let mut language = i18n::lang();
+            egui::ComboBox::from_id_salt("language")
+                .selected_text(language.label())
+                .width(110.0)
+                .show_ui(ui, |ui| {
+                    for candidate in Lang::ALL {
+                        if ui
+                            .selectable_value(&mut language, candidate, candidate.label())
+                            .clicked()
+                        {
+                            i18n::set_lang(candidate);
+                            app.settings.lang = Some(candidate);
+                            app.mark_settings_dirty();
+                        }
+                    }
+                });
+
+            ui.separator();
+            ui.checkbox(&mut app.show_side_panel, tr("显示工具面板"));
 
             ui.separator();
             let mut log_colors = app.settings.log_colors;
             if ui
-                .checkbox(&mut log_colors.enabled, "自定义接收区配色")
+                .checkbox(&mut log_colors.enabled, tr("自定义接收区配色"))
                 .changed()
             {
                 app.settings.log_colors = log_colors;
                 app.mark_settings_dirty();
             }
             if app.settings.log_colors.enabled {
-                ui.label("字色");
+                ui.label(tr("字色"));
                 let mut fg = app.settings.log_colors.foreground;
                 if ui.color_edit_button_srgb(&mut fg).changed() {
                     app.settings.log_colors.foreground = fg;
                     app.mark_settings_dirty();
                 }
-                ui.label("底色");
+                ui.label(tr("底色"));
                 let mut bg = app.settings.log_colors.background;
                 if ui.color_edit_button_srgb(&mut bg).changed() {
                     app.settings.log_colors.background = bg;
@@ -108,7 +128,7 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
             }
 
             ui.separator();
-            ui.label("接收区字号");
+            ui.label(tr("接收区字号"));
             let mut size = app.settings.log_font_size;
             if ui
                 .add(egui::Slider::new(&mut size, 8.0..=28.0).fixed_decimals(0))
@@ -119,16 +139,16 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("关于").clicked() {
+                if ui.button(tr("关于")).clicked() {
                     app.show_about = true;
                 }
-                if ui.button("恢复默认设置").clicked() {
+                if ui.button(tr("恢复默认设置")).clicked() {
                     app.settings = crate::settings::Settings::default();
                     app.log
                         .set_limits(app.settings.max_rows, app.settings.max_raw);
                     app.log.set_options(app.settings.display);
                     app.mark_settings_dirty();
-                    app.info("已恢复默认设置");
+                    app.info(tr("已恢复默认设置"));
                 }
             });
         });
@@ -160,14 +180,14 @@ pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
 
 fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
     let open = app.link.is_open();
-    egui::CollapsingHeader::new("串口设置")
+    egui::CollapsingHeader::new(tr("串口设置"))
         .default_open(true)
         .show(ui, |ui| {
             egui::Grid::new("serial_grid")
                 .num_columns(2)
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
-                    ui.label("串口");
+                    ui.label(tr("串口"));
                     ui.horizontal(|ui| {
                         let ports = app.ports.ports().to_vec();
                         let current = app.settings.serial.port.clone();
@@ -177,7 +197,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                             .map(|p| p.display())
                             .unwrap_or_else(|| {
                                 if current.is_empty() {
-                                    "（无可用串口）".to_owned()
+                                    tr("（无可用串口）").to_owned()
                                 } else {
                                     current.clone()
                                 }
@@ -189,7 +209,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                 .width(port_combo_width)
                                 .show_ui(ui, |ui| {
                                     if ports.is_empty() {
-                                        ui.weak("未检测到串口");
+                                        ui.weak(tr("未检测到串口"));
                                     }
                                     for port in &ports {
                                         if ui
@@ -205,22 +225,25 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                     }
                                 });
                         });
-                        if ui.add_enabled(!open, egui::Button::new("刷新")).clicked() {
+                        if ui
+                            .add_enabled(!open, egui::Button::new(tr("刷新")))
+                            .clicked()
+                        {
                             app.ports.poll();
-                            app.info("已刷新串口列表");
+                            app.info(tr("已刷新串口列表"));
                         }
                     });
                     ui.end_row();
 
                     // ---- baud rate ------------------------------------
-                    ui.label("波特率");
+                    ui.label(tr("波特率"));
                     ui.horizontal(|ui| {
                         let standard = STANDARD_BAUDS.contains(&app.settings.serial.baud);
                         let mut baud = app.settings.serial.baud;
                         let label = if standard {
                             baud.to_string()
                         } else {
-                            format!("{baud}（自定义）")
+                            format!("{baud}{}", tr("（自定义）"))
                         };
                         ui.add_enabled_ui(!open, |ui| {
                             egui::ComboBox::from_id_salt("baud_select")
@@ -244,7 +267,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                             egui::DragValue::new(&mut custom)
                                 .speed(100.0)
                                 .range(CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1)
-                                .prefix("自定义 "),
+                                .prefix(tr("自定义 ")),
                         );
                         if response.changed() {
                             app.settings.serial.baud = custom;
@@ -253,7 +276,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                     });
                     ui.end_row();
 
-                    ui.label("数据位");
+                    ui.label(tr("数据位"));
                     {
                         let mut value = app.settings.serial.data_bits;
                         let options = DataBitsSel::ALL;
@@ -268,7 +291,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                     }
                     ui.end_row();
 
-                    ui.label("停止位");
+                    ui.label(tr("停止位"));
                     {
                         let mut value = app.settings.serial.stop_bits;
                         let options = StopBitsSel::ALL;
@@ -283,12 +306,14 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                     }
                     ui.end_row();
 
-                    ui.label("校验位");
+                    ui.label(tr("校验位"));
                     {
                         let mut value = app.settings.serial.parity;
                         let options = ParitySel::ALL;
                         ui.add_enabled_ui(!open, |ui| {
-                            if combo(ui, "parity", &mut value, &options, |v| v.label().to_owned()) {
+                            if combo(ui, "parity", &mut value, &options, |v| {
+                                tr(v.label()).to_owned()
+                            }) {
                                 app.settings.serial.parity = value;
                                 app.mark_settings_dirty();
                             }
@@ -296,12 +321,14 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                     }
                     ui.end_row();
 
-                    ui.label("流控");
+                    ui.label(tr("流控"));
                     {
                         let mut value = app.settings.serial.flow;
                         let options = FlowSel::ALL;
                         ui.add_enabled_ui(!open, |ui| {
-                            if combo(ui, "flow", &mut value, &options, |v| v.label().to_owned()) {
+                            if combo(ui, "flow", &mut value, &options, |v| {
+                                tr(v.label()).to_owned()
+                            }) {
                                 app.settings.serial.flow = value;
                                 app.mark_settings_dirty();
                             }
@@ -309,7 +336,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                     }
                     ui.end_row();
 
-                    ui.label("DTR / RTS");
+                    ui.label(tr("DTR / RTS"));
                     ui.horizontal(|ui| {
                         let mut dtr = app.settings.serial.dtr;
                         if ui.checkbox(&mut dtr, "DTR").changed() {
@@ -337,9 +364,9 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
 
             ui.add_space(4.0);
             let (label, color) = if open {
-                ("关闭串口", egui::Color32::from_rgb(0xE5, 0x53, 0x53))
+                (tr("关闭串口"), egui::Color32::from_rgb(0xE5, 0x53, 0x53))
             } else {
-                ("打开串口", egui::Color32::from_rgb(0x4C, 0xAF, 0x50))
+                (tr("打开串口"), egui::Color32::from_rgb(0x4C, 0xAF, 0x50))
             };
             // Leave a gap so the button does not touch the panel separator.
             let button_width = (ui.available_width() - 10.0).max(96.0);
@@ -352,8 +379,8 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
             {
                 app.toggle_port();
             }
-            ui.small(format!("当前: {}", app.settings.serial.summary()));
-            ui.small("提示: 串口打开时无法修改通信参数，需先关闭串口");
+            ui.small(crate::i18n::tr1("当前: {}", app.settings.serial.summary()));
+            ui.small(tr("提示: 串口打开时无法修改通信参数，需先关闭串口"));
         });
 }
 
@@ -1166,7 +1193,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
         };
         ui.add(
             egui::ProgressBar::new(ratio)
-                .text(format!("{sent} / {total} 字节"))
+                .text(crate::i18n::tr2("{} / {} 字节", sent, total))
                 .desired_height(16.0),
         );
     }
@@ -1331,7 +1358,7 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
         return;
     }
     let mut open = true;
-    egui::Window::new("关于 XCOM")
+    egui::Window::new(tr("关于 XCOM"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

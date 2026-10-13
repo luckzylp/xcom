@@ -139,7 +139,16 @@ impl XcomApp {
                 ));
         }
 
+        // Resolve the language before the first frame and remember the choice,
+        // so a system-locale guess sticks once the user has seen it.
+        let lang = settings.lang.unwrap_or_else(crate::i18n::system_lang);
+        crate::i18n::set_lang(lang);
+
         let mut app = Self::headless(settings);
+        if app.settings.lang.is_none() {
+            app.settings.lang = Some(lang);
+            app.mark_settings_dirty();
+        }
 
         // Apply the persisted theme now so the first frame is already correct.
         crate::theme::apply(&cc.egui_ctx, app.settings.theme);

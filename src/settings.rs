@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::encoding::EncodingChoice;
+use crate::i18n::Lang;
 use crate::logstore::DisplayOptions;
 use crate::multi::MultiSend;
 use crate::protocol::ProtocolConfig;
@@ -85,6 +86,8 @@ impl SendSettings {
 #[serde(default)]
 pub struct Settings {
     pub theme: ThemeMode,
+    /// Interface language; `None` means "not chosen yet, follow the system".
+    pub lang: Option<Lang>,
     pub log_colors: LogColorOverride,
     pub serial: SerialConfig,
     pub display: DisplayOptions,
@@ -116,6 +119,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: ThemeMode::Dark,
+            lang: None,
             log_colors: LogColorOverride::default(),
             serial: SerialConfig::default(),
             display: DisplayOptions::default(),
