@@ -51,6 +51,8 @@ pub struct LogPalette {
     pub selection: Color32,
     /// Text of the selection.
     pub selection_text: Color32,
+    /// Rows echoed back from our own transmissions.
+    pub sent: Color32,
 }
 
 /// The classic XCOM terminal look.
@@ -60,6 +62,8 @@ pub const DARK_LOG: LogPalette = LogPalette {
     timestamp: Color32::from_rgb(0x6A, 0xA8, 0x6A),
     selection: Color32::from_rgb(0x1E, 0x4D, 0x2E),
     selection_text: Color32::from_rgb(0xEA, 0xFF, 0xEA),
+    // Amber reads clearly against the green of received data.
+    sent: Color32::from_rgb(0xFF, 0xB7, 0x4D),
 };
 
 /// 白底黑字.
@@ -69,6 +73,7 @@ pub const LIGHT_LOG: LogPalette = LogPalette {
     timestamp: Color32::from_rgb(0x80, 0x80, 0x80),
     selection: Color32::from_rgb(0xCC, 0xE4, 0xFF),
     selection_text: Color32::from_rgb(0x00, 0x00, 0x00),
+    sent: Color32::from_rgb(0xB2, 0x5E, 0x00),
 };
 
 /// User override for the log colours.
@@ -110,6 +115,9 @@ impl LogColorOverride {
             selection_text: foreground,
             // Timestamps stay distinguishable without clashing.
             timestamp: blend(background, foreground, 0.65),
+            // A custom foreground/background pair says nothing about which hue
+            // suits echoed rows, so the theme's choice is kept.
+            sent: base.sent,
         }
     }
 }

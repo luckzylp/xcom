@@ -483,13 +483,27 @@ impl XcomApp {
             self.warn(tr("发送内容为空"));
             return;
         }
-        if let Err(err) = self.link.send(payload) {
+        if let Err(err) = self.link.send(payload.clone()) {
             self.error(err);
             return;
         }
+        self.echo_sent(&payload);
         let buffer = self.settings.send.buffer.clone();
         self.settings.send.remember(&buffer);
         self.mark_settings_dirty();
+    }
+
+    /// Mirror transmitted bytes into the receive view, when enabled.
+    ///
+    /// Called from the text-like send paths only.  Echoing a file transfer
+    /// would bury the receive view under a line per chunk, and protocol frames
+    /// already have their own log.
+    pub(crate) fn echo_sent(&mut self, bytes: &[u8]) {
+        if !self.settings.echo_sent || bytes.is_empty() {
+            return;
+        }
+        let now = chrono::Local::now().timestamp_millis();
+        self.log.append_sent(bytes, now);
     }
 
     /// Queue raw bytes, reporting a failure through the status bar.
@@ -978,8 +992,11 @@ impl XcomApp {
             self.error(format!("{}: {}", tr("串口未打开"), what));
             return false;
         }
-        match self.link.send(bytes) {
-            Ok(()) => true,
+        match self.link.send(bytes.clone()) {
+            Ok(()) => {
+                self.echo_sent(&bytes);
+                true
+            }
             Err(err) => {
                 self.error(err);
                 false
@@ -1468,6 +1485,35 @@ mod layout_tests {
             }
             out
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_sent_payload_is_echoed_into_the_receive_view() {
+        let Some(pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.serial.port = pty.slave_path.clone();
+        app.link
+            .open(&app.settings.serial)
+            .expect("opening a pty should succeed");
+        app.settings.send.buffer = "AT".to_owned();
+        app.settings.send.append_newline = false;
+
+        app.settings.echo_sent = true;
+        app.send_once();
+        assert_eq!(app.log.row_count(), 1, "the send is echoed");
+        assert_eq!(app.log.row(0), "AT");
+        assert_eq!(app.log.row_kind(0), crate::logstore::RowKind::Sent);
+        // Echoing must not pollute the received stream.
+        assert!(app.log.raw().is_empty());
+
+        app.log.clear();
+        app.settings.echo_sent = false;
+        app.send_once();
+        assert_eq!(app.log.row_count(), 0, "echo off adds nothing");
     }
 
     #[test]

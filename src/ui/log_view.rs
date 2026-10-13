@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use eframe::egui::text::CCursor;
-use eframe::egui::{self, FontId, Galley, Pos2, Rect, ScrollArea, Sense, Ui, Vec2};
+use eframe::egui::{self, Color32, FontId, Galley, Pos2, Rect, ScrollArea, Sense, Ui, Vec2};
 
-use crate::logstore::LogStore;
+use crate::logstore::{LogStore, RowKind};
 use crate::theme::LogPalette;
 
 /// A caret position: a row id plus a character index within that row.
@@ -153,6 +153,8 @@ struct VisibleRow {
     galley: Arc<Galley>,
     origin: Pos2,
     rect: Rect,
+    /// Colour this row is drawn in, which the galley bakes in.
+    color: Color32,
 }
 
 /// Draw the log and handle interaction.
@@ -213,9 +215,15 @@ pub fn show(
         let mut visible: Vec<VisibleRow> = Vec::with_capacity(last.saturating_sub(first));
         for index in first..last {
             let text = store.row(index).to_owned();
+            // Echoed transmissions are tinted so they are not mistaken for
+            // data from the device.
+            let color = match store.row_kind(index) {
+                RowKind::Received => palette.foreground,
+                RowKind::Sent => palette.sent,
+            };
             let galley = ui
                 .ctx()
-                .fonts_mut(|f| f.layout_no_wrap(text, font.clone(), palette.foreground));
+                .fonts_mut(|f| f.layout_no_wrap(text, font.clone(), color));
             let origin = Pos2::new(rect.left(), rect.top() + index as f32 * row_height);
             let row_rect = Rect::from_min_size(
                 origin,
@@ -227,6 +235,7 @@ pub fn show(
                 galley,
                 origin,
                 rect: row_rect,
+                color,
             });
         }
 
@@ -275,7 +284,7 @@ pub fn show(
             if let Some(sel) = selection {
                 paint_selection(&painter, row, sel, palette);
             }
-            painter.galley(row.origin, row.galley.clone(), palette.foreground);
+            painter.galley(row.origin, row.galley.clone(), row.color);
         }
 
         output.has_selection = state.has_selection();

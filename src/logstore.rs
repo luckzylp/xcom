@@ -22,6 +22,22 @@ use serde::{Deserialize, Serialize};
 use crate::encoding::{decode, StreamDecoder};
 use crate::hex::{to_dump, to_hex_string};
 
+/// Where a display row came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    /// Data that arrived from the device.
+    Received,
+    /// Data we transmitted, echoed into the same view.
+    Sent,
+}
+
+/// One display row, tagged with its origin so the view can colour it.
+#[derive(Debug, Clone)]
+struct LogRow {
+    text: String,
+    kind: RowKind,
+}
+
 /// How received bytes are presented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ViewMode {
@@ -100,7 +116,7 @@ pub struct LogStore {
     marks: Vec<Mark>,
 
     /// Committed display rows.
-    rows: VecDeque<String>,
+    rows: VecDeque<LogRow>,
     /// Absolute id of `rows[0]`, so selections survive trimming.
     first_row_id: u64,
     /// Widest row seen, in display columns; drives the horizontal scrollbar.
@@ -238,6 +254,26 @@ impl LogStore {
         &self.raw
     }
 
+    /// Append a row for data we transmitted.
+    ///
+    /// Deliberately not added to `raw`: that buffer is the *received* stream,
+    /// and saving it or re-rendering it must not suddenly include our own
+    /// output.  The consequence is that a view-mode or encoding change drops
+    /// the echoed rows, which is the usual behaviour for this kind of log.
+    pub fn append_sent(&mut self, bytes: &[u8], now_ms: i64) {
+        if bytes.is_empty() {
+            return;
+        }
+        let body = match self.opts.mode {
+            ViewMode::Text => decode(bytes, self.encoding),
+            ViewMode::Hex => to_hex_string(bytes, self.opts.upper_hex),
+        };
+        let prefix = self.opts.timestamp.then(|| format_timestamp(now_ms));
+        for row in wrap_text(&body, prefix.as_deref(), self.effective_cols()) {
+            self.push_row_kind(row, RowKind::Sent);
+        }
+    }
+
     /// Drop everything.
     pub fn clear(&mut self) {
         self.raw.clear();
@@ -265,13 +301,20 @@ impl LogStore {
     pub fn row(&self, index: usize) -> &str {
         let committed = self.rows.len();
         if index < committed {
-            &self.rows[index]
+            &self.rows[index].text
         } else {
             self.cur_rows
                 .get(index - committed)
                 .map(String::as_str)
                 .unwrap_or("")
         }
+    }
+
+    /// Where row `index` came from.  The live line is always received data.
+    pub fn row_kind(&self, index: usize) -> RowKind {
+        self.rows
+            .get(index)
+            .map_or(RowKind::Received, |row| row.kind)
     }
 
     /// A stable identifier for a row, unaffected by trimming.
@@ -411,7 +454,7 @@ impl LogStore {
             let offset = self.raw_base + self.dump_row_start as u64;
             let text = render_dump_row(bytes, per_row, offset, self.opts.upper_hex);
             if let Some(last) = self.rows.back_mut() {
-                *last = text;
+                last.text = text;
             }
             if self.dump_filled >= per_row {
                 self.dump_filled = 0;
@@ -490,8 +533,12 @@ impl LogStore {
     }
 
     fn push_row(&mut self, row: String) {
+        self.push_row_kind(row, RowKind::Received);
+    }
+
+    fn push_row_kind(&mut self, row: String, kind: RowKind) {
         self.max_columns = self.max_columns.max(display_width(&row));
-        self.rows.push_back(row);
+        self.rows.push_back(LogRow { text: row, kind });
         self.trim_rows();
     }
 
@@ -891,6 +938,38 @@ mod tests {
         s.append(b"-more", 0);
         assert_eq!(s.pending_line(), "partial-more");
         assert_eq!(s.row_count(), 1);
+    }
+
+    #[test]
+    fn echoed_sent_data_is_tagged_and_not_part_of_the_raw_stream() {
+        let mut s = store();
+        s.append(b"in\r\n", 0);
+        s.append_sent(b"out", 0);
+
+        let kinds: Vec<RowKind> = (0..s.row_count()).map(|i| s.row_kind(i)).collect();
+        assert_eq!(kinds, vec![RowKind::Received, RowKind::Sent]);
+        assert_eq!(s.row(1), "out");
+        // The received stream is untouched, so saving or re-rendering is safe.
+        assert_eq!(s.raw(), b"in\r\n");
+    }
+
+    #[test]
+    fn echoed_sent_data_follows_the_display_mode() {
+        let mut s = store();
+        s.set_options(DisplayOptions {
+            mode: ViewMode::Hex,
+            ..Default::default()
+        });
+        s.append_sent(&[0x01, 0xAB], 0);
+        assert_eq!(s.row(0), "01 AB");
+        assert_eq!(s.row_kind(0), RowKind::Sent);
+    }
+
+    #[test]
+    fn echoing_nothing_adds_nothing() {
+        let mut s = store();
+        s.append_sent(&[], 0);
+        assert_eq!(s.row_count(), 0);
     }
 
     #[test]

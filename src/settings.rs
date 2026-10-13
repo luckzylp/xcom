@@ -102,6 +102,8 @@ pub struct Settings {
     pub protocol_data: String,
     /// Keep the receive view pinned to the newest line.
     pub auto_scroll: bool,
+    /// Mirror transmitted data into the receive view.
+    pub echo_sent: bool,
     /// Pause the display without dropping bytes.
     pub paused: bool,
     /// Extra spacing between log rows, in points.
@@ -137,6 +139,7 @@ impl Default for Settings {
             protocol: ProtocolConfig::default(),
             protocol_data: String::new(),
             auto_scroll: true,
+            echo_sent: true,
             paused: false,
             line_spacing: 0.0,
             log_font_size: 13.0,
