@@ -868,6 +868,20 @@ pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
         });
 }
 
+/// Split the space available to the multi-send table between its two text
+/// columns.
+///
+/// `fixed` is the total width of the checkbox, index and button columns, which
+/// do not scale; everything left over is shared 62/38 between 内容 and 备注.
+fn multi_column_widths(available: f32, spacing: f32) -> (f32, f32) {
+    let fixed = 30.0 + 26.0 + 34.0 + 34.0 + 58.0;
+    // No per-column floor: a floor larger than the leftover space would push
+    // the table past the panel edge, which is the very problem this solves.
+    // The two columns always sum to the leftover, so the table fits exactly.
+    let flexible = (available - spacing * 6.0 - fixed).max(0.0);
+    (flexible * 0.62, flexible * 0.38)
+}
+
 fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     // ---- paging -----------------------------------------------------------
     ui.horizontal(|ui| {
@@ -989,11 +1003,8 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     // the splitter reflows the table instead of leaving a gap or overflowing.
     // `fixed` covers the checkbox, index and button columns; the remainder is
     // shared between 内容 and 备注.
-    let spacing = ui.spacing().item_spacing.x;
-    let fixed = 30.0 + 26.0 + 34.0 + 34.0 + 58.0;
-    let flexible = (ui.available_width() - spacing * 6.0 - fixed).max(150.0);
-    let text_width = (flexible * 0.62).max(90.0);
-    let note_width = (flexible * 0.38).max(60.0);
+    let (text_width, note_width) =
+        multi_column_widths(ui.available_width(), ui.spacing().item_spacing.x);
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -1469,5 +1480,37 @@ fn save_log(app: &mut XcomApp) {
     match std::fs::write(&path, text) {
         Ok(()) => app.ok(crate::i18n::tr1("已保存到 {}", path.display())),
         Err(err) => app.error(crate::i18n::tr1("保存失败: {}", err)),
+    }
+}
+
+#[cfg(test)]
+mod column_tests {
+    use super::multi_column_widths;
+
+    #[test]
+    fn columns_grow_with_the_panel() {
+        let narrow = multi_column_widths(340.0, 6.0);
+        let wide = multi_column_widths(700.0, 6.0);
+        assert!(wide.0 > narrow.0, "narrow {narrow:?} wide {wide:?}");
+        assert!(wide.1 > narrow.1, "narrow {narrow:?} wide {wide:?}");
+    }
+
+    #[test]
+    fn columns_plus_fixed_columns_fit_the_panel() {
+        // The whole point of the fix: the table must not overflow its panel.
+        for available in [340.0f32, 420.0, 560.0, 700.0] {
+            let (text, note) = multi_column_widths(available, 6.0);
+            let fixed = 30.0 + 26.0 + 34.0 + 34.0 + 58.0;
+            let used = text + note + fixed + 6.0 * 6.0;
+            assert!(used <= available + 1.0, "available {available} used {used}");
+        }
+    }
+
+    #[test]
+    fn columns_never_go_negative_when_the_panel_is_tiny() {
+        for available in [0.0f32, 40.0, 120.0, 200.0] {
+            let (text, note) = multi_column_widths(available, 6.0);
+            assert!(text >= 0.0 && note >= 0.0, "{available}: {text} {note}");
+        }
     }
 }
