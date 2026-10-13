@@ -343,7 +343,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                             app.settings.serial.dtr = dtr;
                             if open {
                                 if let Err(err) = app.link.set_dtr(dtr) {
-                                    app.error(format!("设置 DTR 失败: {err}"));
+                                    app.error(crate::i18n::tr1("设置 DTR 失败: {}", err));
                                 }
                             }
                             app.mark_settings_dirty();
@@ -353,7 +353,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                             app.settings.serial.rts = rts;
                             if open {
                                 if let Err(err) = app.link.set_rts(rts) {
-                                    app.error(format!("设置 RTS 失败: {err}"));
+                                    app.error(crate::i18n::tr1("设置 RTS 失败: {}", err));
                                 }
                             }
                             app.mark_settings_dirty();
@@ -500,8 +500,8 @@ fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
                 ui.label(tr("接收编码"));
                 let choice = app.settings.encoding;
                 let label = match choice {
-                    None => format!("自动识别（{}）", app.encoding_label()),
-                    Some(id) => id.label().to_owned(),
+                    None => crate::i18n::tr1("自动识别（{}）", app.encoding_label()),
+                    Some(id) => tr(id.label()).to_owned(),
                 };
                 let mut newly_selected = None;
                 egui::ComboBox::from_id_salt("rx_encoding")
@@ -516,7 +516,7 @@ fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
                         }
                         for id in EncodingId::ALL {
                             if ui
-                                .selectable_label(choice == Some(id), id.label())
+                                .selectable_label(choice == Some(id), tr(id.label()))
                                 .clicked()
                             {
                                 newly_selected = Some(Some(id));
@@ -533,7 +533,7 @@ fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
                 let choice = app.settings.tx_encoding;
                 let label = match choice {
                     None => tr("跟随接收编码").to_owned(),
-                    Some(id) => id.label().to_owned(),
+                    Some(id) => tr(id.label()).to_owned(),
                 };
                 let mut newly_selected = None;
                 egui::ComboBox::from_id_salt("tx_encoding")
@@ -548,7 +548,7 @@ fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
                         }
                         for id in EncodingId::ALL {
                             if ui
-                                .selectable_label(choice == Some(id), id.label())
+                                .selectable_label(choice == Some(id), tr(id.label()))
                                 .clicked()
                             {
                                 newly_selected = Some(Some(id));
@@ -561,8 +561,8 @@ fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
                 }
             });
 
-            ui.small(format!("当前接收: {}", app.encoding_label()));
-            ui.small(format!("已分析 {} 字节", app.auto.total()));
+            ui.small(crate::i18n::tr1("当前接收: {}", app.encoding_label()));
+            ui.small(crate::i18n::tr1("已分析 {} 字节", app.auto.total()));
             ui.small(tr("自动识别会持续观察数据流，锁定后不再频繁切换"));
         });
 }
@@ -817,7 +817,7 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
         let name = send.path.clone();
         ui.add(
             egui::ProgressBar::new(progress)
-                .text(format!("{name} · 剩余 {remaining} 字节"))
+                .text(crate::i18n::tr2("{} · 剩余 {} 字节", name, remaining))
                 .desired_height(16.0),
         );
     }
@@ -879,10 +879,10 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
             app.settings.multi.previous_page();
             app.multi_index = 0;
         }
-        ui.label(format!(
+        ui.label(crate::i18n::tr2(
             "第 {} / {} 页",
             app.settings.multi.page + 1,
-            crate::multi::PAGES
+            crate::multi::PAGES,
         ));
         if ui.button(tr("下一页")).clicked() {
             app.settings.multi.next_page();
@@ -903,12 +903,12 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         match multi.import_json(&text) {
                             Ok(count) => {
                                 app.mark_settings_dirty();
-                                app.ok(format!("已导入 {count} 个条目"));
+                                app.ok(crate::i18n::tr1("已导入 {} 个条目", count));
                             }
                             Err(err) => app.error(err),
                         }
                     }
-                    Err(err) => app.error(format!("读取文件失败: {err}")),
+                    Err(err) => app.error(crate::i18n::tr1("读取文件失败: {}", err)),
                 }
             }
         }
@@ -918,8 +918,8 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                 let multi = &app.settings.multi;
                 match multi.export_json() {
                     Ok(text) => match std::fs::write(&path, text) {
-                        Ok(()) => app.ok(format!("已导出到 {}", path.display())),
-                        Err(err) => app.error(format!("写入失败: {err}")),
+                        Ok(()) => app.ok(crate::i18n::tr1("已导出到 {}", path.display())),
+                        Err(err) => app.error(crate::i18n::tr1("写入失败: {}", err)),
                     },
                     Err(err) => app.error(err),
                 }
@@ -1115,7 +1115,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
             "protocol_checksum",
             &mut checksum,
             &ChecksumKind::ALL,
-            |c| c.label().to_owned(),
+            |c| tr(c.label()).to_owned(),
         ) {
             config.checksum = checksum;
         }
@@ -1191,7 +1191,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
             if let Some(path) = pick_open_file(tr("选择要传输的文件")) {
                 match std::fs::read(&path) {
                     Ok(data) => start_protocol_file(app, data, &path),
-                    Err(err) => app.error(format!("读取文件失败: {err}")),
+                    Err(err) => app.error(crate::i18n::tr1("读取文件失败: {}", err)),
                 }
             }
         }
@@ -1204,7 +1204,8 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
         }
         if let Some(kind) = app.protocol.task_kind() {
             ui.label(
-                RichText::new(format!("正在{}", kind.label())).color(level_color(Level::Info)),
+                RichText::new(crate::i18n::tr1("正在{}", tr(kind.label())))
+                    .color(level_color(Level::Info)),
             );
         }
     });
@@ -1229,7 +1230,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
             app.protocol_log.clear();
         }
         ui.label(
-            RichText::new(format!("{} 条", app.protocol_log.len()))
+            RichText::new(crate::i18n::tr1("{} 条", app.protocol_log.len()))
                 .small()
                 .color(ui.visuals().weak_text_color()),
         );
@@ -1269,7 +1270,7 @@ fn protocol_start(app: &mut XcomApp, kind: TaskKind) {
         match crate::hex::parse(&raw) {
             Ok(bytes) => bytes,
             Err(err) => {
-                app.error(format!("数据格式错误: {err}"));
+                app.error(crate::i18n::tr1("数据格式错误: {}", err));
                 return;
             }
         }
@@ -1285,13 +1286,13 @@ fn protocol_start(app: &mut XcomApp, kind: TaskKind) {
         TaskKind::Auto => app.protocol.start_auto(data, now),
         TaskKind::File => {}
     }
-    app.info(format!("已启动{}", kind.label()));
+    app.info(crate::i18n::tr1("已启动{}", tr(kind.label())));
 }
 
 fn start_protocol_file(app: &mut XcomApp, data: Vec<u8>, path: &std::path::Path) {
     app.protocol_log.clear();
     app.protocol.start_file(data, std::time::Instant::now());
-    app.info(format!("已启动文件传输: {}", path.display()));
+    app.info(crate::i18n::tr1("已启动文件传输: {}", path.display()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1317,12 +1318,16 @@ pub(crate) fn status_bar(app: &mut XcomApp, ui: &mut Ui) {
             }
 
             ui.separator();
-            ui.label(RichText::new(format!("编码 {}", app.encoding_label())).monospace());
+            ui.label(RichText::new(crate::i18n::tr1("编码 {}", app.encoding_label())).monospace());
 
             ui.separator();
             ui.label(
-                RichText::new(format!("发送: {}  接收: {}", app.tx_bytes, app.rx_bytes))
-                    .monospace(),
+                RichText::new(crate::i18n::tr2(
+                    "发送: {}  接收: {}",
+                    app.tx_bytes,
+                    app.rx_bytes,
+                ))
+                .monospace(),
             );
 
             ui.separator();
@@ -1339,8 +1344,11 @@ pub(crate) fn status_bar(app: &mut XcomApp, ui: &mut Ui) {
             if app.show_paused {
                 ui.separator();
                 ui.label(
-                    RichText::new(format!("已暂停（缓存 {} 字节）", app.pending_rx_len()))
-                        .color(level_color(Level::Warning)),
+                    RichText::new(crate::i18n::tr1(
+                        "已暂停（缓存 {} 字节）",
+                        app.pending_rx_len(),
+                    ))
+                    .color(level_color(Level::Warning)),
                 );
             } else if app.settings.display.timestamp && !app.log.pending_line().is_empty() {
                 // Timestamp framing only emits a row once CR/LF arrives, so show
@@ -1349,7 +1357,7 @@ pub(crate) fn status_bar(app: &mut XcomApp, ui: &mut Ui) {
                 let preview: String = app.log.pending_line().chars().take(60).collect();
                 ui.separator();
                 ui.label(
-                    RichText::new(format!("接收中: {preview}"))
+                    RichText::new(crate::i18n::tr1("接收中: {}", preview))
                         .small()
                         .color(ui.visuals().weak_text_color()),
                 );
@@ -1388,7 +1396,7 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
         .resizable(false)
         .show(ctx, |ui| {
             ui.label(RichText::new(tr("XCOM 串口调试助手")).strong().size(16.0));
-            ui.label(format!("版本 {}", env!("CARGO_PKG_VERSION")));
+            ui.label(crate::i18n::tr1("版本 {}", env!("CARGO_PKG_VERSION")));
             ui.separator();
             ui.label(tr(
                 "使用 Rust + egui 开发的跨平台串口调试工具，可在 Windows / Linux / macOS 上运行。",
@@ -1442,9 +1450,13 @@ fn save_raw_log(app: &mut XcomApp) {
     match std::fs::write(&path, app.log.raw()) {
         Ok(()) => {
             let bytes = app.log.retained_bytes();
-            app.ok(format!("已保存 {bytes} 字节到 {}", path.display()));
+            app.ok(crate::i18n::tr2(
+                "已保存 {} 字节到 {}",
+                bytes,
+                path.display(),
+            ));
         }
-        Err(err) => app.error(format!("保存失败: {err}")),
+        Err(err) => app.error(crate::i18n::tr1("保存失败: {}", err)),
     }
 }
 
@@ -1455,7 +1467,7 @@ fn save_log(app: &mut XcomApp) {
     };
     let text = app.log.render_all();
     match std::fs::write(&path, text) {
-        Ok(()) => app.ok(format!("已保存到 {}", path.display())),
-        Err(err) => app.error(format!("保存失败: {err}")),
+        Ok(()) => app.ok(crate::i18n::tr1("已保存到 {}", path.display())),
+        Err(err) => app.error(crate::i18n::tr1("保存失败: {}", err)),
     }
 }

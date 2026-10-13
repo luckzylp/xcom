@@ -74,11 +74,11 @@ impl ProtocolConfig {
     pub fn period_warning(&self, baud: u32) -> Option<String> {
         let idle = frame::idle_timeout_ms(baud);
         if self.frame_period_ms < idle {
-            Some(format!(
+            Some(crate::i18n::tr3(
                 "帧周期 {} ms 小于响应断帧时间 {} ms，建议至少 {} ms，否则会提前重发",
                 self.frame_period_ms,
                 idle,
-                idle + 1
+                idle + 1,
             ))
         } else {
             None
@@ -257,8 +257,9 @@ impl ProtocolEngine {
     pub fn start_file(&mut self, data: Vec<u8>, now: Instant) {
         self.interrupt();
         if data.is_empty() {
-            self.events
-                .push(ProtocolEvent::Stopped("文件为空".to_owned()));
+            self.events.push(ProtocolEvent::Stopped(
+                crate::i18n::tr("文件为空").to_owned(),
+            ));
             return;
         }
         self.task = Some(Task::File { data, offset: 0 });
@@ -354,8 +355,9 @@ impl ProtocolEngine {
     /// Discard any running task without emitting a "stopped" event.
     fn interrupt(&mut self) {
         if self.task.is_some() {
-            self.events
-                .push(ProtocolEvent::Stopped("已被新的发送任务中断".to_owned()));
+            self.events.push(ProtocolEvent::Stopped(
+                crate::i18n::tr("已被新的发送任务中断").to_owned(),
+            ));
         }
         self.task = None;
         self.pending = None;
@@ -380,7 +382,7 @@ impl ProtocolEngine {
             self.events.push(ProtocolEvent::NoResponse {
                 sequence: pending.sequence,
             });
-            self.stop("设备无响应，已停止发送");
+            self.stop(crate::i18n::tr("设备无响应，已停止发送"));
             return None;
         }
         let attempt = pending.attempt + 1;

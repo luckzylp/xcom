@@ -22,6 +22,11 @@ mod ui;
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // The window title is set before the app is constructed, so the language
+    // has to be resolved here rather than in `XcomApp::new`.
+    let settings = settings::Settings::load();
+    i18n::set_lang(settings.lang.unwrap_or_else(i18n::system_lang));
+
     // Alpha is what makes the rounded corners possible: the pixels we never
     // paint stay see-through.  Only needed where we supply the frame ourselves.
     let transparent = ui::window::PAINTS_OWN_BACKGROUND;
@@ -34,12 +39,12 @@ fn main() -> eframe::Result<()> {
             // A stable app id lets the compositor associate the window with its
             // desktop entry (and therefore its icon).
             .with_app_id("xcom")
-            .with_title("XCOM 串口调试助手"),
+            .with_title(i18n::tr("XCOM 串口调试助手")),
         ..Default::default()
     };
 
     eframe::run_native(
-        "XCOM 串口调试助手",
+        i18n::tr("XCOM 串口调试助手"),
         native_options,
         Box::new(|cc| {
             // Fonts must be installed before the first frame is laid out.

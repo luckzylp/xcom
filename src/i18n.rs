@@ -92,6 +92,16 @@ pub fn tr2(zh: &'static str, a: impl std::fmt::Display, b: impl std::fmt::Displa
     tr1(zh, a).replacen("{}", &b.to_string(), 1)
 }
 
+/// Translate and substitute three `{}` placeholders, left to right.
+pub fn tr3(
+    zh: &'static str,
+    a: impl std::fmt::Display,
+    b: impl std::fmt::Display,
+    c: impl std::fmt::Display,
+) -> String {
+    tr2(zh, a, b).replacen("{}", &c.to_string(), 1)
+}
+
 fn table() -> &'static HashMap<&'static str, &'static str> {
     static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     TABLE.get_or_init(|| EN.iter().copied().collect())
@@ -269,6 +279,47 @@ static EN: &[(&str, &str)] = &[
     ("以回车换行断帧；数据中若不含回车换行则不会显示时间戳",
      "Frames on CR/LF; without them no timestamp is shown"),
 
+    ("设置 DTR 失败: {}", "Failed to set DTR: {}"),
+    ("设置 RTS 失败: {}", "Failed to set RTS: {}"),
+    ("自动识别（{}）",          "Auto-detect ({})"),
+    ("当前接收: {}",          "Receiving as: {}"),
+    ("已分析 {} 字节",        "{} bytes analysed"),
+    ("{} · 剩余 {} 字节", "{} · {} bytes remaining"),
+    ("第 {} / {} 页",    "Page {} / {}"),
+    ("已导入 {} 个条目",      "Imported {} entries"),
+    ("读取文件失败: {}",      "Failed to read file: {}"),
+    ("已导出到 {}",            "Exported to {}"),
+    ("写入失败: {}",          "Write failed: {}"),
+    ("正在{}",                  "{} in progress"),
+    ("{} 条",                  "{} entries"),
+    ("数据格式错误: {}",      "Invalid data: {}"),
+    ("已启动{}",                "{} started"),
+    ("已启动文件传输: {}",    "File transfer started: {}"),
+    ("编码 {}",                "Encoding {}"),
+    ("发送: {}  接收: {}", "Sent: {}  Received: {}"),
+    ("已暂停（缓存 {} 字节）", "Paused ({} bytes buffered)"),
+    ("接收中: {}",            "Receiving: {}"),
+    ("版本 {}",                "Version {}"),
+    ("已保存 {} 字节到 {}", "Saved {} bytes to {}"),
+    ("保存失败: {}",          "Save failed: {}"),
+    ("已保存到 {}",            "Saved to {}"),
+
+    ("文件为空", "File is empty"),
+    ("已被新的发送任务中断", "Interrupted by a new send task"),
+    ("设备无响应，已停止发送", "Device did not respond; sending stopped"),
+    ("帧周期 {} ms 小于响应断帧时间 {} ms，建议至少 {} ms，否则会提前重发", "Frame period {} ms is below the {} ms response window; use at least {} ms or it will retransmit early"),
+    ("GBK (简体中文)", "GBK (Simplified Chinese)"),
+    ("GB18030 (简体中文)", "GB18030 (Simplified Chinese)"),
+    ("Big5 (繁体中文)", "Big5 (Traditional Chinese)"),
+    ("Shift_JIS (日文)", "Shift_JIS (Japanese)"),
+    ("EUC-JP (日文)", "EUC-JP (Japanese)"),
+    ("EUC-KR (韩文)", "EUC-KR (Korean)"),
+    ("Windows-1252 (西欧)", "Windows-1252 (Western)"),
+    ("Windows-1251 (西里尔)", "Windows-1251 (Cyrillic)"),
+    ("ISO-8859-2 (中欧)", "ISO-8859-2 (Central European)"),
+    ("ISO-8859-5 (西里尔)", "ISO-8859-5 (Cyrillic)"),
+    ("KOI8-R (俄文)", "KOI8-R (Russian)"),
+
     // -- parity / flow control (src/serial/config.rs) -----------------------
     ("无",                    "None"),
     ("奇校验",                "Odd"),
@@ -352,6 +403,7 @@ mod tests {
         set_lang(Lang::EnUs);
         assert_eq!(tr1("当前: {}", "115200"), "Current: 115200");
         assert_eq!(tr2("{} / {}", 1, 4), "1 / 4");
+        assert_eq!(tr3("{} {} {}", "a", "b", "c"), "a b c");
         // A key without a placeholder ignores the argument.
         assert_eq!(tr1("刷新", 1), "Refresh");
     }
