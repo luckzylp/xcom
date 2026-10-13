@@ -21,6 +21,7 @@ mod ui;
 
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let started = std::time::Instant::now();
 
     // The window title is set before the app is constructed, so the language
     // has to be resolved here rather than in `XcomApp::new`.
@@ -59,7 +60,9 @@ fn main() -> eframe::Result<()> {
                     log::warn!("未找到中文字体，界面中文可能显示为方块")
                 }
             }
-            Ok(Box::new(app::XcomApp::new(cc)))
+            let app = app::XcomApp::new(cc);
+            log::info!("启动完成用时 {:?}", started.elapsed());
+            Ok(Box::new(app))
         }),
     )
 }

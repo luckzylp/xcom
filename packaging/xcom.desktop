@@ -61,9 +61,16 @@ Keywords[zh_CN]=串口;调试;终端;
 # Set to true to launch in a terminal; pointless for a GUI application.
 Terminal=false
 
-# Do not show the "application is starting" cursor until the window maps.
-# Pairs with StartupWMClass below.
-StartupNotify=true
+# StartupNotify tells the desktop that the application will signal when it has
+# finished starting (the "_NET_STARTUP_INFO" / activation-token handshake).
+# This application does not send it: the toolkit exposes the handshake as an
+# opt-in API that egui/eframe never calls.  Claiming true therefore makes the
+# dock hold the launch in its "starting" state until that promise times out --
+# the window is up immediately, but the task bar shows the launcher's generic
+# icon for several seconds before finally associating the window with this
+# entry.  Declaring false (also the default when the key is absent) lets the
+# window be matched by app id straight away.
+StartupNotify=false
 
 # TryExec hides the entry when the command cannot be found.  It is resolved on
 # PATH, NOT relative to Exec: setting Exec to an absolute path and leaving

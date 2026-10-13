@@ -250,13 +250,20 @@ cargo build --release
 ./packaging/install-user.sh          # 卸载：--uninstall
 ```
 
-它会安装到 Debian 期望的用户级位置，并在最后**检查 `TryExec` 是否能解析到命令**：
+安装脚本会先做一次**启动耗时自检**（实测约 130 ms），再安装到 Debian 期望的
+用户级位置，并在最后**检查 `TryExec` 是否能解析到命令**：
 
 ```
 ~/.local/bin/xcom                                  # 在 PATH 上，所以 Exec=xcom 可用
 ~/.local/share/applications/xcom.desktop
 ~/.local/share/icons/hicolor/<size>x<size>/apps/xcom.png   # 48/64/128/256/512
 ```
+
+**`StartupNotify` 必须为 `false`（模板已如此）。** 它表示"应用会在启动完成后
+发出握手信号"（`_NET_STARTUP_INFO` / activation token）。winit 把这个握手机制
+做成**需要应用主动调用的 API**，而 egui/eframe 从不调用它。若声明为 `true`，
+Dock 会一直停留在"正在启动"状态直到该承诺超时 —— 表现为**窗口早已出现，
+但任务栏要等好几秒才显示正确图标**。声明 `false` 后，窗口可通过 app id 立即匹配。
 
 **`TryExec` 是最容易踩的坑**：它在 **PATH** 上解析，而不是相对 `Exec`。
 把 `Exec` 写成绝对路径、却把 `TryExec` 留成裸名字，会导致 `TryExec` 找不到命令，
