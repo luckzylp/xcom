@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=XCOM Serial Assistant
+Name[zh_CN]=XCOM 串口调试助手
+GenericName=Serial Port Debugger
+GenericName[zh_CN]=串口调试助手
+Comment=Cross-platform serial port debugging tool
+Comment[zh_CN]=跨平台串口调试工具
+# Must match ViewportBuilder::with_app_id in src/main.rs, otherwise the
+# compositor cannot associate the window with this entry (and its icon).
+StartupWMClass=xcom
+Exec=xcom
+Icon=xcom
+Terminal=false
+Categories=Development;Electronics;Utility;
+Keywords=serial;uart;rs232;rs485;terminal;debug;
+Keywords[zh_CN]=串口;调试;终端;

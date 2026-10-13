@@ -104,6 +104,23 @@ cargo run --release
 
 产物位于 `target/release/xcom`（Windows 为 `xcom.exe`）。
 
+### 窗口边框与圆角
+
+Linux + Wayland 下由应用自绘客户端边框：
+
+- eframe 以 `default-features = false` 依赖 winit，会**静默关闭** winit 的
+  `wayland-csd-adwaita`。GNOME 的 Mutter 不实现 `xdg-decoration` 协议，
+  因此缺省情况下 winit 只能退回自带的极简边框：直角、窗口按钮在右，
+  并且忽略桌面的 `button-layout` 设置。
+  本项目的 `Cargo.toml` 显式重新启用该 feature，由 `sctk-adwaita` 绘制
+  标准 Adwaita 边框，并通过 XDG Desktop Portal 读取
+  `org.gnome.desktop.wm.preferences button-layout`，因此
+  最小化/最大化/关闭 的位置与桌面设置一致（GNOME 默认在左侧）。
+- 窗口底部圆角由应用自绘：`src/ui/window.rs` 以带圆角的背景覆盖整个窗口，
+  并把 `clear_color` 的 alpha 设为 0。支持 alpha 的合成器上四角透出桌面
+  （圆角），不支持的合成器上四角取面板底色（仅为直角，不会变黑）。
+- Windows 11 / macOS 使用系统原生边框与圆角，不受上述逻辑影响。
+
 ### 平台说明
 
 | 平台 | 说明 |
@@ -193,6 +210,20 @@ cargo run --release
 | `1`–`9`、`0` | 多条发送面板勾选「关联数字键盘」后，发送对应条目 |
 
 ---
+
+## 桌面集成（Linux）
+
+`packaging/xcom.desktop` 提供桌面条目（中英文名称、分类、关键字）。
+其中 `StartupWMClass=xcom` 必须与 `src/main.rs` 里的
+`ViewportBuilder::with_app_id("xcom")` 一致，否则合成器无法把窗口关联到该条目，
+任务栏也就拿不到图标和正确名称。
+
+```bash
+cargo build --release
+sudo install -Dm755 target/release/xcom /usr/local/bin/xcom
+sudo install -Dm644 packaging/xcom.desktop /usr/share/applications/xcom.desktop
+# 图标可选：把 png 装到 hicolor 主题目录并命名为 xcom.png
+```
 
 ## 配置文件
 
