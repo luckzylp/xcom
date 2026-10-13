@@ -92,13 +92,73 @@ pub(crate) const SEND_AREA_DEFAULT: f32 = 196.0;
 pub(crate) const SEND_AREA_MIN: f32 = 96.0;
 pub(crate) const SEND_AREA_MAX: f32 = 560.0;
 
-/// Which way a splitter moves.
+/// Which way a panel extends from its fixed edge.
+///
+/// The size a pointer implies depends on this: a panel anchored to the right
+/// grows as the pointer moves *left*, so the sign differs per side.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SplitterAxis {
-    /// A vertical line dragged left/right.
-    Vertical,
-    /// A horizontal line dragged up/down.
-    Horizontal,
+pub(crate) enum SplitterGrowth {
+    /// The settings panel: extends right from the window's left edge.
+    Rightward,
+    /// The tool panel: extends left from the window's right edge.
+    Leftward,
+    /// The send area: extends up from the centre column's bottom edge.
+    Upward,
+}
+
+impl SplitterGrowth {
+    /// The panel size implied by a pointer position.
+    fn size_from(self, pointer: egui::Pos2, fixed_edge: f32) -> f32 {
+        match self {
+            Self::Rightward => pointer.x - fixed_edge,
+            Self::Leftward => fixed_edge - pointer.x,
+            Self::Upward => fixed_edge - pointer.y,
+        }
+    }
+
+    fn cursor(self) -> egui::CursorIcon {
+        match self {
+            Self::Upward => egui::CursorIcon::ResizeVertical,
+            _ => egui::CursorIcon::ResizeHorizontal,
+        }
+    }
+
+    /// The grab band straddling the splitter line.
+    fn band(self, boundary: f32, cross: egui::Rangef, grab: f32) -> egui::Rect {
+        match self {
+            Self::Rightward | Self::Leftward => {
+                egui::Rect::from_x_y_ranges((boundary - grab)..=(boundary + grab), cross)
+            }
+            Self::Upward => {
+                egui::Rect::from_x_y_ranges(cross, (boundary - grab)..=(boundary + grab))
+            }
+        }
+    }
+}
+
+/// Which setting a splitter writes back to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SplitterTarget {
+    LeftWidth,
+    RightWidth,
+    SendHeight,
+}
+
+/// A splitter to be registered once every panel has been laid out.
+///
+/// Registering them last matters: the log view allocates a drag-sensing rect
+/// that reaches the tool panel's edge, and a widget added later wins the
+/// interaction.  Handling the splitters after the centre panel keeps them on
+/// top so the line itself is always grabbable.
+pub(crate) struct PendingSplitter {
+    pub id: &'static str,
+    pub growth: SplitterGrowth,
+    pub boundary: f32,
+    pub cross: egui::Rangef,
+    pub fixed_edge: f32,
+    pub min: f32,
+    pub max: f32,
+    pub target: SplitterTarget,
 }
 
 /// A draggable splitter, drawn and tracked by the app.
@@ -112,61 +172,35 @@ enum SplitterAxis {
 /// behaviour obvious and testable; it is persisted with the rest of the
 /// settings.
 ///
-/// Geometry of one splitter line.
-struct SplitterSpec<'a> {
-    id: &'a str,
-    axis: SplitterAxis,
-    /// Where the line currently sits, along `axis`.
-    boundary: f32,
-    /// The panel's extent along the other axis.
-    cross: egui::Rangef,
-    /// The edge the panel is anchored to; the size is the distance from here.
-    fixed_edge: f32,
-    min: f32,
-    max: f32,
-}
-
-/// Returns the new size when the user is dragging.
-fn splitter(ui: &mut Ui, spec: SplitterSpec<'_>) -> Option<f32> {
-    let SplitterSpec {
-        id,
-        axis,
-        boundary,
-        cross,
-        fixed_edge,
-        min,
-        max,
-    } = spec;
-    const GRAB: f32 = 6.0;
-    let rect = match axis {
-        SplitterAxis::Vertical => {
-            egui::Rect::from_x_y_ranges((boundary - GRAB)..=(boundary + GRAB), cross)
+/// Register every pending splitter.  Returns nothing; drags are written
+/// straight back into the settings.
+pub(crate) fn apply_splitters(app: &mut XcomApp, ui: &mut Ui) {
+    for spec in std::mem::take(&mut app.pending_splitters) {
+        const GRAB: f32 = 6.0;
+        let rect = spec.growth.band(spec.boundary, spec.cross, GRAB);
+        let response = ui.interact(
+            rect,
+            egui::Id::new(("splitter", spec.id)),
+            egui::Sense::click_and_drag(),
+        );
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(spec.growth.cursor());
         }
-        SplitterAxis::Horizontal => {
-            egui::Rect::from_x_y_ranges(cross, (boundary - GRAB)..=(boundary + GRAB))
-        }
-    };
-    let response = ui.interact(
-        rect,
-        egui::Id::new(("splitter", id)),
-        egui::Sense::click_and_drag(),
-    );
-    if response.hovered() || response.dragged() {
-        ui.ctx().set_cursor_icon(match axis {
-            SplitterAxis::Vertical => egui::CursorIcon::ResizeHorizontal,
-            SplitterAxis::Horizontal => egui::CursorIcon::ResizeVertical,
-        });
-    }
-    if response.dragged() {
-        if let Some(pointer) = response.interact_pointer_pos() {
-            let size = match axis {
-                SplitterAxis::Vertical => pointer.x - fixed_edge,
-                SplitterAxis::Horizontal => fixed_edge - pointer.y,
-            };
-            return Some(size.clamp(min, max));
+        if response.dragged() {
+            if let Some(pointer) = response.interact_pointer_pos() {
+                let size = spec
+                    .growth
+                    .size_from(pointer, spec.fixed_edge)
+                    .clamp(spec.min, spec.max);
+                match spec.target {
+                    SplitterTarget::LeftWidth => app.settings.left_panel_width = size,
+                    SplitterTarget::RightWidth => app.settings.right_panel_width = size,
+                    SplitterTarget::SendHeight => app.settings.send_area_height = size,
+                }
+                app.mark_settings_dirty();
+            }
         }
     }
-    None
 }
 
 /// Colour used for a status message of the given severity.
@@ -335,21 +369,16 @@ pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
         });
 
     let outer = panel.response.rect;
-    if let Some(width) = splitter(
-        ui,
-        SplitterSpec {
-            id: "config_panel",
-            axis: SplitterAxis::Vertical,
-            boundary: outer.right(),
-            cross: outer.y_range(),
-            fixed_edge: outer.left(),
-            min: LEFT_PANEL_MIN,
-            max: LEFT_PANEL_MAX,
-        },
-    ) {
-        app.settings.left_panel_width = width;
-        app.mark_settings_dirty();
-    }
+    app.pending_splitters.push(PendingSplitter {
+        id: "config_panel",
+        growth: SplitterGrowth::Rightward,
+        boundary: outer.right(),
+        cross: outer.y_range(),
+        fixed_edge: outer.left(),
+        min: LEFT_PANEL_MIN,
+        max: LEFT_PANEL_MAX,
+        target: SplitterTarget::LeftWidth,
+    });
 }
 
 fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
@@ -814,21 +843,16 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
             .exact_size(height)
             .show(ui, |ui| send_area(app, ui));
         let outer = panel.response.rect;
-        if let Some(height) = splitter(
-            ui,
-            SplitterSpec {
-                id: "send_area",
-                axis: SplitterAxis::Horizontal,
-                boundary: outer.top(),
-                cross: outer.x_range(),
-                fixed_edge: outer.bottom(),
-                min: SEND_AREA_MIN,
-                max: SEND_AREA_MAX,
-            },
-        ) {
-            app.settings.send_area_height = height;
-            app.mark_settings_dirty();
-        }
+        app.pending_splitters.push(PendingSplitter {
+            id: "send_area",
+            growth: SplitterGrowth::Upward,
+            boundary: outer.top(),
+            cross: outer.x_range(),
+            fixed_edge: outer.bottom(),
+            min: SEND_AREA_MIN,
+            max: SEND_AREA_MAX,
+            target: SplitterTarget::SendHeight,
+        });
 
         log_toolbar(app, ui);
         ui.separator();
@@ -1069,21 +1093,16 @@ pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
         });
 
     let outer = panel.response.rect;
-    if let Some(width) = splitter(
-        ui,
-        SplitterSpec {
-            id: "tool_panel",
-            axis: SplitterAxis::Vertical,
-            boundary: outer.left(),
-            cross: outer.y_range(),
-            fixed_edge: outer.right(),
-            min: RIGHT_PANEL_MIN,
-            max: RIGHT_PANEL_MAX,
-        },
-    ) {
-        app.settings.right_panel_width = width;
-        app.mark_settings_dirty();
-    }
+    app.pending_splitters.push(PendingSplitter {
+        id: "tool_panel",
+        growth: SplitterGrowth::Leftward,
+        boundary: outer.left(),
+        cross: outer.y_range(),
+        fixed_edge: outer.right(),
+        min: RIGHT_PANEL_MIN,
+        max: RIGHT_PANEL_MAX,
+        target: SplitterTarget::RightWidth,
+    });
 }
 
 /// Split the space available to the multi-send table between its two text

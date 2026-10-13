@@ -124,6 +124,9 @@ pub struct XcomApp {
     last_save: Instant,
     /// Set when the CJK font is missing so the warning is emitted once.
     font_warning_shown: bool,
+    /// Splitters collected while laying out panels, registered afterwards so
+    /// they sit above every panel's contents.
+    pub(crate) pending_splitters: Vec<panels::PendingSplitter>,
     /// A pending wrap-width change, with the time it was first observed.
     ///
     /// Re-wrapping re-renders every retained byte, so a window drag must not
@@ -198,6 +201,7 @@ impl XcomApp {
             last_save: Instant::now(),
             font_warning_shown: false,
             pending_wrap_cols: None,
+            pending_splitters: Vec::new(),
         };
 
         app.protocol = ProtocolEngine::new(app.settings.protocol.clone(), app.settings.serial.baud);
@@ -970,6 +974,7 @@ impl XcomApp {
             panels::side_panel(self, ui);
         }
         panels::center_panel(self, ui);
+        panels::apply_splitters(self, ui);
         panels::about_window(self, ctx);
 
         self.maybe_save_settings(ctx);
@@ -1078,6 +1083,8 @@ mod layout_tests {
             }
             slot.set(ui.available_rect_before_wrap());
             panels::center_panel(app, ui);
+            // Mirrors `draw`: the splitters are registered after every panel.
+            panels::apply_splitters(app, ui);
         });
         output.textures_delta.clear();
         slot.get()
@@ -1086,13 +1093,26 @@ mod layout_tests {
     /// Press at `from`, drag to `to`, release.  Every frame lays out the real
     /// panels, which is required: a panel that is not laid out never registers
     /// its resize handle, so there would be nothing to grab.
+    /// A monotonically increasing frame time.
+    ///
+    /// egui panics if time goes backwards, so every drag in a test must
+    /// continue from where the previous one stopped rather than restarting.
+    fn next_time() -> f64 {
+        thread_local! {
+            static TIME: std::cell::Cell<f64> = const { std::cell::Cell::new(1000.0) };
+        }
+        TIME.with(|t| {
+            let next = t.get() + 0.02;
+            t.set(next);
+            next
+        })
+    }
+
     fn drag(ctx: &egui::Context, app: &mut XcomApp, from: egui::Pos2, to: egui::Pos2) {
         let positions = [from, from, to, to, to];
         let presses = [None, Some(true), None, None, Some(false)];
-        let mut t = 100.0;
         for (position, pressed) in positions.into_iter().zip(presses) {
-            t += 0.02;
-            full_frame(ctx, app, pointer(position, pressed, t));
+            full_frame(ctx, app, pointer(position, pressed, next_time()));
         }
     }
 
@@ -1209,6 +1229,78 @@ mod layout_tests {
             );
         }
         crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+    }
+
+    #[test]
+    fn the_tool_panel_splitter_moves_both_ways() {
+        // The right-hand panel is anchored to the window's right edge, so its
+        // size is `fixed_edge - pointer.x`.  Getting that sign wrong makes the
+        // panel jump to its minimum and then refuse to widen.
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.side_tab = SideTab::Multi;
+
+        let start = panels::RIGHT_PANEL_DEFAULT;
+
+        // Drag left: the panel gets wider.
+        let before = full_frame(&ctx, &mut app, input());
+        drag(
+            &ctx,
+            &mut app,
+            egui::pos2(before.max.x, before.center().y),
+            egui::pos2(before.max.x - 70.0, before.center().y),
+        );
+        let wider = app.settings.right_panel_width;
+        assert!(
+            wider > start + 40.0,
+            "dragging left did not widen the tool panel: {start} -> {wider}"
+        );
+
+        // Drag right: it shrinks again, and the smaller size sticks.
+        let before = full_frame(&ctx, &mut app, input());
+        drag(
+            &ctx,
+            &mut app,
+            egui::pos2(before.max.x, before.center().y),
+            egui::pos2(before.max.x + 80.0, before.center().y),
+        );
+        let narrower = app.settings.right_panel_width;
+        assert!(
+            narrower < wider - 40.0,
+            "dragging right did not shrink the tool panel: {wider} -> {narrower}"
+        );
+        for _ in 0..4 {
+            full_frame(&ctx, &mut app, input());
+        }
+        assert_eq!(
+            app.settings.right_panel_width, narrower,
+            "the new width did not persist"
+        );
+    }
+
+    #[test]
+    fn the_tool_panel_splitter_stays_within_its_range() {
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        let rect = full_frame(&ctx, &mut app, input());
+
+        // Drag far past the maximum, then far past the minimum.
+        drag(
+            &ctx,
+            &mut app,
+            egui::pos2(rect.max.x, rect.center().y),
+            egui::pos2(rect.min.x, rect.center().y),
+        );
+        assert_eq!(app.settings.right_panel_width, panels::RIGHT_PANEL_MAX);
+
+        let rect = full_frame(&ctx, &mut app, input());
+        drag(
+            &ctx,
+            &mut app,
+            egui::pos2(rect.max.x, rect.center().y),
+            egui::pos2(rect.max.x + 4000.0, rect.center().y),
+        );
+        assert_eq!(app.settings.right_panel_width, panels::RIGHT_PANEL_MIN);
     }
 
     #[test]
