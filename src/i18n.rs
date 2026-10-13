@@ -126,6 +126,84 @@ pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The window title in the active language.
+///
+/// Both the startup path and the runtime language switch call this, so the two
+/// cannot drift apart.
+pub fn window_title() -> String {
+    if lang() == Lang::ZhCn && !title_can_render_chinese() {
+        // Better an English title than a row of tofu boxes.
+        return table()
+            .get("XCOM 串口调试助手")
+            .copied()
+            .unwrap_or("XCOM")
+            .to_owned();
+    }
+    tr("XCOM 串口调试助手").to_owned()
+}
+
+/// Whether the font that draws the title bar can render Chinese.
+///
+/// On Linux the Wayland client-side decoration renders the title with a single
+/// font chosen by fontconfig and has no per-glyph fallback, so a Chinese title
+/// on a Latin-only font shows as boxes.  `sctk-adwaita` asks GNOME for
+/// `titlebar-font` and then fontconfig for that family; we follow the same
+/// path and inspect the charset fontconfig reports.
+///
+/// Unknown environments report `true`, so the ordinary case is unchanged and
+/// only a *confirmed* lack of coverage downgrades the title.
+pub fn title_can_render_chinese() -> bool {
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| probe_title_font_covers_cjk().unwrap_or(true))
+}
+
+#[cfg(target_os = "linux")]
+fn probe_title_font_covers_cjk() -> Option<bool> {
+    use std::process::Command;
+
+    let configured = Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.wm.preferences", "titlebar-font"])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|text| text.trim().trim_matches('\'').to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "sans-serif".to_owned());
+
+    let charset = Command::new("fc-match")
+        .args(["-f", "%{charset}", &configured])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())?;
+
+    if charset.trim().is_empty() {
+        return None;
+    }
+    // 中 — if the title font cannot draw this, it cannot draw any of them.
+    Some(charset_covers(&charset, 0x4E2D))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn probe_title_font_covers_cjk() -> Option<bool> {
+    // Windows and macOS draw the title themselves with full font fallback.
+    Some(true)
+}
+
+/// Whether a fontconfig charset list (`20-7f a0-127 12b …`) includes `codepoint`.
+fn charset_covers(charset: &str, codepoint: u32) -> bool {
+    charset
+        .split_whitespace()
+        .any(|token| match token.split_once('-') {
+            Some((low, high)) => {
+                match (u32::from_str_radix(low, 16), u32::from_str_radix(high, 16)) {
+                    (Ok(low), Ok(high)) => low <= codepoint && codepoint <= high,
+                    _ => false,
+                }
+            }
+            None => u32::from_str_radix(token, 16) == Ok(codepoint),
+        })
+}
+
 fn table() -> &'static HashMap<&'static str, &'static str> {
     static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     TABLE.get_or_init(|| EN.iter().copied().collect())
@@ -502,6 +580,39 @@ mod tests {
         assert_eq!(classify(Some("de_DE")), Lang::EnUs);
         assert_eq!(classify(Some("")), Lang::EnUs);
         assert_eq!(classify(None), Lang::EnUs);
+    }
+
+    #[test]
+    fn the_window_title_follows_the_language() {
+        let _guard = test_lock();
+        let _restore = Restore;
+
+        // Coverage depends on the host's installed fonts, so compare against
+        // the same decision the code makes rather than a fixed string.
+        set_lang(Lang::ZhCn);
+        let expected = if title_can_render_chinese() {
+            "XCOM 串口调试助手"
+        } else {
+            "XCOM Serial Assistant"
+        };
+        assert_eq!(window_title(), expected);
+
+        set_lang(Lang::EnUs);
+        assert_eq!(window_title(), "XCOM Serial Assistant");
+    }
+
+    #[test]
+    fn charset_parsing_handles_ranges_lists_and_junk() {
+        // Real fontconfig output shape.
+        assert!(charset_covers("20-7f a0-127 4e00-9fff", 0x4E2D));
+        assert!(!charset_covers("20-7f a0-127", 0x4E2D));
+        // A bare codepoint rather than a range.
+        assert!(charset_covers("20-7f 4e2d", 0x4E2D));
+        assert!(!charset_covers("20-7f 4e2e", 0x4E2D));
+        // Range boundaries are inclusive.
+        assert!(charset_covers("4e2d-4e2d", 0x4E2D));
+        assert!(!charset_covers("", 0x4E2D));
+        assert!(!charset_covers("not-a-charset", 0x4E2D));
     }
 
     #[test]

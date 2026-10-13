@@ -26,6 +26,11 @@ fn main() -> eframe::Result<()> {
     // has to be resolved here rather than in `XcomApp::new`.
     let settings = settings::Settings::load();
     i18n::set_lang(settings.lang.unwrap_or_else(i18n::system_lang));
+    log::info!(
+        "界面语言 {:?}，窗口标题: {}",
+        i18n::lang(),
+        i18n::window_title()
+    );
 
     // Alpha is what makes the rounded corners possible: the pixels we never
     // paint stay see-through.  Only needed where we supply the frame ourselves.
@@ -39,12 +44,12 @@ fn main() -> eframe::Result<()> {
             // A stable app id lets the compositor associate the window with its
             // desktop entry (and therefore its icon).
             .with_app_id("xcom")
-            .with_title(i18n::tr("XCOM 串口调试助手")),
+            .with_title(i18n::window_title()),
         ..Default::default()
     };
 
     eframe::run_native(
-        i18n::tr("XCOM 串口调试助手"),
+        &i18n::window_title(),
         native_options,
         Box::new(|cc| {
             // Fonts must be installed before the first frame is laid out.

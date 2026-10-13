@@ -117,6 +117,8 @@ pub struct XcomApp {
 
     /// Last theme applied, so styling only runs on change.
     applied_theme: Option<crate::theme::ThemeMode>,
+    /// Last language applied to the window title.
+    applied_lang: Option<crate::i18n::Lang>,
     /// Deferred settings write.
     settings_dirty: bool,
     last_save: Instant,
@@ -191,6 +193,7 @@ impl XcomApp {
             signals: Signals::default(),
             signals_at: Instant::now(),
             applied_theme: None,
+            applied_lang: None,
             settings_dirty: false,
             last_save: Instant::now(),
             font_warning_shown: false,
@@ -941,6 +944,15 @@ impl XcomApp {
             crate::theme::apply(ctx, theme);
             self.applied_theme = Some(theme);
         }
+        // The title bar is not re-read from the app, so switching language has
+        // to push a new one; otherwise a Chinese UI keeps an English title
+        // until the next launch.
+        let language = crate::i18n::lang();
+        if self.applied_lang != Some(language) {
+            self.applied_lang = Some(language);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(crate::i18n::window_title()));
+        }
+
         self.note_font_status();
 
         self.pump_serial(ctx);
@@ -1309,6 +1321,56 @@ mod layout_tests {
         app.settings.multi.loop_enabled = true;
         app.send_next_multi_entry();
         assert!(!app.settings.multi.loop_enabled, "no entries means no loop");
+    }
+
+    /// Window titles pushed through `ViewportCommand` during a frame.
+    fn pushed_titles(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .viewport_output
+            .values()
+            .flat_map(|viewport| viewport.commands.iter())
+            .filter_map(|command| match command {
+                egui::ViewportCommand::Title(title) => Some(title.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn switching_language_retitles_the_window() {
+        // The title was only ever set when the window was created, so a UI
+        // switched to Chinese kept an English title until the next launch.
+        let _guard = crate::i18n::test_lock();
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.applied_lang = None;
+
+        crate::i18n::set_lang(crate::i18n::Lang::EnUs);
+        let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
+        let titles = pushed_titles(&output);
+        output.textures_delta.clear();
+        assert!(
+            titles.iter().any(|t| t.contains("Serial Assistant")),
+            "expected an English title, got {titles:?}"
+        );
+
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
+        let titles = pushed_titles(&output);
+        output.textures_delta.clear();
+        // Whether Chinese is usable depends on the host's fonts, so accept the
+        // documented fallback while still requiring *a* new title.
+        let expected = crate::i18n::window_title();
+        assert!(
+            titles.iter().any(|t| t == &expected),
+            "expected {expected:?}, got {titles:?}"
+        );
+
+        // And it must not be pushed again once settled.
+        let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
+        let titles = pushed_titles(&output);
+        output.textures_delta.clear();
+        assert!(titles.is_empty(), "title pushed repeatedly: {titles:?}");
     }
 
     #[test]
