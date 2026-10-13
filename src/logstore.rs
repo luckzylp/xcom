@@ -42,6 +42,7 @@ pub enum HexStyle {
 
 /// Everything that controls how the log is rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DisplayOptions {
     pub mode: ViewMode,
     pub hex_style: HexStyle,

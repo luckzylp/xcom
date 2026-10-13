@@ -264,6 +264,50 @@ mod tests {
     }
 
     #[test]
+    fn loop_count_persists_and_defaults_to_infinite() {
+        assert_eq!(Settings::default().multi.loop_count, None);
+
+        let mut settings = Settings::default();
+        settings.multi.loop_count = Some(7);
+        let text = serde_json::to_string(&settings).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.multi.loop_count, Some(7));
+    }
+
+    #[test]
+    fn a_settings_file_missing_newer_fields_still_loads() {
+        // Every nested config struct must tolerate fields it does not contain.
+        // If one rejects the document, `load_from` falls back to *all* defaults
+        // and the user silently loses their entire configuration -- so adding
+        // a field in a future version would look like a factory reset.
+        let legacy = r#"{
+            "theme": "Light",
+            "serial": {"port": "/dev/ttyUSB0", "baud": 9600},
+            "display": {"mode": "Hex"},
+            "multi": {"loop_period_ms": 250},
+            "protocol": {"address": 66}
+        }"#;
+        let settings: Settings =
+            serde_json::from_str(legacy).expect("legacy settings must still load");
+
+        assert_eq!(settings.theme, ThemeMode::Light);
+        assert_eq!(settings.serial.port, "/dev/ttyUSB0");
+        assert_eq!(settings.serial.baud, 9600);
+        assert_eq!(settings.multi.loop_period_ms, 250);
+        assert_eq!(settings.protocol.address, 66);
+
+        // Fields absent from the document take their defaults.
+        assert_eq!(settings.serial.data_bits, crate::serial::DataBitsSel::Eight);
+        assert_eq!(settings.multi.loop_count, None);
+        assert_eq!(
+            settings.protocol.max_retries,
+            crate::protocol::ProtocolConfig::default().max_retries
+        );
+        assert_eq!(settings.display.hex_bytes_per_row, 16);
+        assert_eq!(settings.multi.pages.len(), crate::multi::PAGES);
+    }
+
+    #[test]
     fn normalize_clamps_hostile_values() {
         let mut settings = Settings {
             log_font_size: 900.0,

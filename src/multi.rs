@@ -13,6 +13,7 @@ pub const ENTRIES_PER_PAGE: usize = 10;
 
 /// One preset command.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MultiEntry {
     /// The command text (hex form allowed when `hex` is set).
     pub text: String,
@@ -35,6 +36,7 @@ impl MultiEntry {
 
 /// The whole multi-send panel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MultiSend {
     /// `pages[page][index]`.
     pub pages: Vec<Vec<MultiEntry>>,
@@ -43,6 +45,8 @@ pub struct MultiSend {
     /// Loop through all enabled entries on a timer.
     pub loop_enabled: bool,
     pub loop_period_ms: u64,
+    /// How many full passes the loop makes.  `None` means loop forever.
+    pub loop_count: Option<u32>,
     /// Bind entries 0-9 to the numeric keypad.
     pub keypad_enabled: bool,
     /// Append CR/LF to entries that request it (CRLF by default).
@@ -57,6 +61,7 @@ impl Default for MultiSend {
             page: 0,
             loop_enabled: false,
             loop_period_ms: 1000,
+            loop_count: None,
             keypad_enabled: false,
             newline_cr: true,
             newline_lf: true,
@@ -73,6 +78,8 @@ impl MultiSend {
         }
         self.page = self.page.min(PAGES - 1);
         self.loop_period_ms = self.loop_period_ms.clamp(1, 3_600_000);
+        // Zero passes would look like a loop that silently does nothing.
+        self.loop_count = self.loop_count.map(|n| n.clamp(1, 1_000_000));
     }
 
     /// Borrow one entry.
@@ -290,6 +297,22 @@ mod tests {
         assert_eq!(m.pages.len(), PAGES);
         assert_eq!(m.pages[0].len(), ENTRIES_PER_PAGE);
         assert_eq!(m.page, PAGES - 1);
+    }
+
+    #[test]
+    fn loop_count_defaults_to_infinite_and_is_clamped() {
+        assert_eq!(MultiSend::default().loop_count, None, "infinite by default");
+
+        let mut m = MultiSend {
+            loop_count: Some(0),
+            ..Default::default()
+        };
+        m.normalize();
+        assert_eq!(m.loop_count, Some(1), "zero would loop never");
+
+        m.loop_count = Some(u32::MAX);
+        m.normalize();
+        assert_eq!(m.loop_count, Some(1_000_000));
     }
 
     #[test]

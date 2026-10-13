@@ -97,6 +97,8 @@ pub struct XcomApp {
     pub(crate) last_timed_send: Option<Instant>,
     /// 多条发送 loop bookkeeping.
     pub(crate) multi_index: usize,
+    /// Completed passes of the multi-send loop, for the configured limit.
+    pub(crate) multi_cycles: u32,
     pub(crate) last_multi_send: Option<Instant>,
     /// Chunked file transmission.
     pub(crate) file_send: Option<FileSend>,
@@ -177,6 +179,7 @@ impl XcomApp {
             messages: Vec::new(),
             last_timed_send: None,
             multi_index: 0,
+            multi_cycles: 0,
             last_multi_send: None,
             file_send: None,
             protocol: ProtocolEngine::new(crate::protocol::ProtocolConfig::default(), 115200),
@@ -838,10 +841,25 @@ impl XcomApp {
             return;
         }
         if self.multi_index >= indices.len() {
+            // A full pass has completed.
             self.multi_index = 0;
+            self.multi_cycles += 1;
+            if let Some(limit) = self.settings.multi.loop_count {
+                if self.multi_cycles >= limit {
+                    self.settings.multi.loop_enabled = false;
+                    self.multi_cycles = 0;
+                    self.mark_settings_dirty();
+                    let done = crate::i18n::tr1("循环发送已完成 {} 次", limit);
+                    self.ok(done);
+                    return;
+                }
+            }
         }
         let slot = indices[self.multi_index];
-        self.multi_index = (self.multi_index + 1) % indices.len();
+        // Advance past the end rather than wrapping here: the branch above
+        // needs to observe `multi_index == len` to count a completed pass.
+        // Wrapping with `% len` made that branch unreachable.
+        self.multi_index += 1;
         self.send_multi_entry(page, slot, true);
     }
 
@@ -1229,6 +1247,68 @@ mod layout_tests {
                 assert!(shapes > 0, "width {width}");
             }
         }
+    }
+
+    /// Enable the first `count` multi-send entries on page 0.
+    fn arm_entries(app: &mut XcomApp, count: usize) {
+        for index in 0..count {
+            let entry = app.settings.multi.entry_mut(0, index).expect("entry");
+            entry.text = format!("CMD{index}");
+            entry.enabled = true;
+        }
+        app.settings.multi.loop_enabled = true;
+        app.multi_index = 0;
+        app.multi_cycles = 0;
+    }
+
+    #[test]
+    fn multi_send_loop_stops_after_the_configured_passes() {
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        arm_entries(&mut app, 2);
+        app.settings.multi.loop_count = Some(2);
+
+        // Two entries, two passes: four sends, then the loop stops on the wrap.
+        for _ in 0..4 {
+            app.send_next_multi_entry();
+        }
+        assert!(
+            app.settings.multi.loop_enabled,
+            "still inside the second pass"
+        );
+        app.send_next_multi_entry();
+        assert!(
+            !app.settings.multi.loop_enabled,
+            "loop must stop after two passes"
+        );
+        assert_eq!(app.multi_cycles, 0, "the counter resets when it stops");
+    }
+
+    #[test]
+    fn multi_send_loop_runs_forever_when_unlimited() {
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        arm_entries(&mut app, 2);
+        app.settings.multi.loop_count = None;
+
+        for _ in 0..25 {
+            app.send_next_multi_entry();
+        }
+        assert!(
+            app.settings.multi.loop_enabled,
+            "unlimited loop never stops"
+        );
+        assert!(
+            app.multi_cycles >= 12,
+            "passes were counted: {}",
+            app.multi_cycles
+        );
+    }
+
+    #[test]
+    fn multi_send_loop_stops_when_nothing_is_selected() {
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.multi.loop_enabled = true;
+        app.send_next_multi_entry();
+        assert!(!app.settings.multi.loop_enabled, "no entries means no loop");
     }
 
     #[test]

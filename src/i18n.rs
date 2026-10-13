@@ -400,6 +400,12 @@ static EN: &[(&str, &str)] = &[
     ("蓝牙", "Bluetooth"),
     ("PCI", "PCI"),
 
+    ("无限循环", "Loop forever"),
+    ("循环次数", "Loops"),
+    ("不限次数", "no limit"),
+    ("已完成 {} / {} 次", "{} / {} passes done"),
+    ("循环发送已完成 {} 次", "Loop sending finished after {} passes"),
+
     // -- parity / flow control (src/serial/config.rs) -----------------------
     ("无",                    "None"),
     ("奇校验",                "Odd"),
@@ -528,6 +534,99 @@ mod tests {
         );
         out.sort();
         out
+    }
+
+    /// Every string literal in `source` that contains a CJK character, paired
+    /// with whether a `tr(…)` call directly precedes it.
+    ///
+    /// Line breaks are flattened first so that a call whose literal sits on the
+    /// next line is still recognised.
+    fn cjk_literals_with_wrapping(source: &str) -> Vec<(String, bool)> {
+        let flat: String = source
+            .lines()
+            .map(str::trim_start)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let bytes = flat.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] != b'"' {
+                i += 1;
+                continue;
+            }
+            // Consume one string literal.
+            let start = i;
+            let mut j = i + 1;
+            let mut value = String::new();
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'"' => break,
+                    b'\\' if j + 1 < bytes.len() => {
+                        value.push(bytes[j + 1] as char);
+                        j += 2;
+                    }
+                    _ => {
+                        let ch = flat[j..].chars().next().expect("valid utf-8 boundary");
+                        value.push(ch);
+                        j += ch.len_utf8();
+                    }
+                }
+            }
+            if value
+                .chars()
+                .any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c))
+            {
+                let before = flat[..start].trim_end();
+                let wrapped = ["tr_fmt(", "tr1(", "tr2(", "tr3(", "tr("]
+                    .iter()
+                    .any(|call| before.ends_with(call));
+                out.push((value, wrapped));
+            }
+            i = j + 1;
+        }
+        out
+    }
+
+    #[test]
+    fn the_ui_layer_has_no_untranslated_literals() {
+        // Guards the bug class that actually shipped: a bulk edit that replaced
+        // only the *first* occurrence of each string, leaving duplicates in
+        // other functions still hard-coded in Chinese.  Every CJK literal in
+        // `src/ui/` must go through `tr`.
+        let mut offenders = Vec::new();
+        for path in source_files() {
+            if !path.to_string_lossy().contains("/ui/") {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // Test modules hold sample data in Chinese on purpose.
+            let source = source.split("#[cfg(test)]").next().unwrap_or(&source);
+            for (literal, wrapped) in cjk_literals_with_wrapping(source) {
+                if !wrapped {
+                    offenders.push(format!("{}: {literal:?}", path.display()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "untranslated literals in the UI layer:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_ui_guard_can_tell_wrapped_from_unwrapped() {
+        // Guards the guard, including the multi-line form: a literal on the
+        // line after `tr(` must still count as wrapped.
+        let sample =
+            "ui.button(tr(\"打开\"));\nui.button(\"关闭\");\nlet a = tr1(\n  \"第 {}\", 1);";
+        let found = cjk_literals_with_wrapping(sample);
+        assert!(found.contains(&("打开".to_owned(), true)), "{found:?}");
+        assert!(found.contains(&("关闭".to_owned(), false)), "{found:?}");
+        assert!(found.contains(&("第 {}".to_owned(), true)), "{found:?}");
     }
 
     /// Extract the first string literal of every `tr(`/`tr1(`/`tr2(`/`tr3(` call.

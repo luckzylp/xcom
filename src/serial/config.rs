@@ -140,6 +140,7 @@ pub const CUSTOM_BAUD_RANGE: (u32, u32) = (50, 12_000_000);
 
 /// Everything needed to open a port.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SerialConfig {
     /// Port device path, e.g. `/dev/ttyUSB0` or `COM3`.
     pub port: String,

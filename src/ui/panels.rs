@@ -368,8 +368,10 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
             } else {
                 (tr("打开串口"), egui::Color32::from_rgb(0x4C, 0xAF, 0x50))
             };
-            // Leave a gap so the button does not touch the panel separator.
-            let button_width = (ui.available_width() - 10.0).max(96.0);
+            // Do not let the button stretch to the panel edge: a full-width
+            // button reads as a separator rather than a control.  Cap it and
+            // leave a clear gap.
+            let button_width = (ui.available_width() - 24.0).clamp(96.0, 168.0);
             if ui
                 .add_sized(
                     [button_width, 28.0],
@@ -676,13 +678,13 @@ fn log_toolbar(app: &mut XcomApp, ui: &mut Ui) {
             let store = &app.log;
             app.log_view.select_all(store);
         }
-        if ui.button("清除接收").clicked() {
+        if ui.button(tr("清除接收")).clicked() {
             app.clear_receive();
         }
-        if ui.button("保存接收数据").clicked() {
+        if ui.button(tr("保存接收数据")).clicked() {
             save_log(app);
         }
-        if ui.button("保存原始数据").clicked() {
+        if ui.button(tr("保存原始数据")).clicked() {
             save_raw_log(app);
         }
 
@@ -951,6 +953,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
             app.settings.multi.loop_enabled = loop_enabled;
             if loop_enabled {
                 app.multi_index = 0;
+                app.multi_cycles = 0;
                 app.last_multi_send = None;
             }
             app.mark_settings_dirty();
@@ -968,6 +971,49 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
             {
                 app.settings.multi.loop_period_ms = period;
                 app.mark_settings_dirty();
+            }
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label(tr("循环次数"));
+        let mut forever = app.settings.multi.loop_count.is_none();
+        if ui.checkbox(&mut forever, tr("无限循环")).changed() {
+            app.settings.multi.loop_count = if forever { None } else { Some(10) };
+            app.multi_cycles = 0;
+            app.mark_settings_dirty();
+        }
+        match app.settings.multi.loop_count {
+            None => {
+                ui.label(
+                    RichText::new(tr("不限次数"))
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+            }
+            Some(limit) => {
+                let mut value = limit;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut value)
+                            .speed(1.0)
+                            .range(1..=1_000_000),
+                    )
+                    .changed()
+                {
+                    app.settings.multi.loop_count = Some(value);
+                    app.multi_cycles = 0;
+                    app.mark_settings_dirty();
+                }
+                ui.label(
+                    RichText::new(crate::i18n::tr2(
+                        "已完成 {} / {} 次",
+                        app.multi_cycles,
+                        limit,
+                    ))
+                    .small()
+                    .color(ui.visuals().weak_text_color()),
+                );
             }
         }
     });
@@ -999,74 +1045,108 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     let mut send_request: Option<usize> = None;
     let mut dirty = false;
 
-    // Size the two text columns from the space actually available, so dragging
-    // the splitter reflows the table instead of leaving a gap or overflowing.
-    // `fixed` covers the checkbox, index and button columns; the remainder is
-    // shared between 内容 and 备注.
-    let (text_width, note_width) =
-        multi_column_widths(ui.available_width(), ui.spacing().item_spacing.x);
+    // egui's `Grid` reuses the previous frame's column widths as a *floor*
+    // (`child_size.max(prev_width)`), so a table built with it can grow but
+    // never shrink -- dragging the splitter back left the columns too wide and
+    // pushed the send button off the edge.  Laying the rows out by hand with
+    // explicit widths is what makes them track the panel in both directions.
+    //
+    // These five widths must sum to the `fixed` constant in
+    // `multi_column_widths`, or the row will not fill the panel exactly.
+    let enable_w = 30.0;
+    let index_w = 26.0;
+    let hex_w = 34.0;
+    let newline_w = 34.0;
+    let send_w = 58.0;
+
+    const ROW_H: f32 = 20.0;
+    const GAP: f32 = 6.0;
+
+    let (text_width, note_width) = multi_column_widths(ui.available_width(), GAP);
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            egui::Grid::new("multi_entries")
-                .num_columns(7)
-                .striped(true)
-                .spacing([6.0, 4.0])
-                .show(ui, |ui| {
-                    for header in [
-                        tr("启用"),
-                        "#",
-                        tr("内容"),
-                        tr("备注"),
-                        "HEX",
-                        tr("新行"),
-                        "",
-                    ] {
-                        ui.label(RichText::new(header).strong());
-                    }
-                    ui.end_row();
+            ui.spacing_mut().item_spacing = egui::vec2(GAP, 4.0);
 
-                    for index in 0..crate::multi::ENTRIES_PER_PAGE {
-                        let Some(entry) = app.settings.multi.entry_mut(page, index) else {
-                            continue;
-                        };
-                        if ui.checkbox(&mut entry.enabled, "").changed() {
-                            dirty = true;
-                        }
-                        ui.label(format!("{index}"));
-                        if ui
-                            .add(
-                                egui::TextEdit::singleline(&mut entry.text)
-                                    .desired_width(text_width)
-                                    .hint_text(if entry.hex { "01 02 0A" } else { tr("指令") }),
-                            )
-                            .changed()
-                        {
-                            dirty = true;
-                        }
-                        if ui
-                            .add(
-                                egui::TextEdit::singleline(&mut entry.note)
-                                    .desired_width(note_width)
-                                    .hint_text("备注"),
-                            )
-                            .changed()
-                        {
-                            dirty = true;
-                        }
-                        if ui.checkbox(&mut entry.hex, "").changed() {
-                            dirty = true;
-                        }
-                        if ui.checkbox(&mut entry.newline, "").changed() {
-                            dirty = true;
-                        }
-                        if ui.button(tr("发送")).clicked() {
-                            send_request = Some(index);
-                        }
-                        ui.end_row();
+            ui.horizontal(|ui| {
+                for (width, header) in [
+                    (enable_w, tr("启用")),
+                    (index_w, "#"),
+                    (text_width, tr("内容")),
+                    (note_width, tr("备注")),
+                    (hex_w, "HEX"),
+                    (newline_w, tr("新行")),
+                    (send_w, ""),
+                ] {
+                    ui.add_sized(
+                        [width, ROW_H],
+                        egui::Label::new(RichText::new(header).strong()),
+                    );
+                }
+            });
+
+            for index in 0..crate::multi::ENTRIES_PER_PAGE {
+                let Some(entry) = app.settings.multi.entry_mut(page, index) else {
+                    continue;
+                };
+                let stripe = index % 2 == 1;
+                ui.horizontal(|ui| {
+                    if stripe {
+                        let row = egui::Rect::from_min_size(
+                            ui.cursor().min,
+                            egui::vec2(ui.available_width(), ROW_H),
+                        );
+                        ui.painter().rect_filled(
+                            row,
+                            egui::CornerRadius::ZERO,
+                            ui.visuals().faint_bg_color,
+                        );
+                    }
+                    let mut row_changed = false;
+                    row_changed |= ui
+                        .add_sized(
+                            [enable_w, ROW_H],
+                            egui::Checkbox::new(&mut entry.enabled, ""),
+                        )
+                        .changed();
+                    ui.add_sized([index_w, ROW_H], egui::Label::new(format!("{index}")));
+                    row_changed |= ui
+                        .add_sized(
+                            [text_width, ROW_H],
+                            egui::TextEdit::singleline(&mut entry.text).hint_text(if entry.hex {
+                                "01 02 0A"
+                            } else {
+                                tr("指令")
+                            }),
+                        )
+                        .changed();
+                    row_changed |= ui
+                        .add_sized(
+                            [note_width, ROW_H],
+                            egui::TextEdit::singleline(&mut entry.note).hint_text(tr("备注")),
+                        )
+                        .changed();
+                    row_changed |= ui
+                        .add_sized([hex_w, ROW_H], egui::Checkbox::new(&mut entry.hex, ""))
+                        .changed();
+                    row_changed |= ui
+                        .add_sized(
+                            [newline_w, ROW_H],
+                            egui::Checkbox::new(&mut entry.newline, ""),
+                        )
+                        .changed();
+                    if ui
+                        .add_sized([send_w, ROW_H], egui::Button::new(tr("发送")))
+                        .clicked()
+                    {
+                        send_request = Some(index);
+                    }
+                    if row_changed {
+                        dirty = true;
                     }
                 });
+            }
         });
 
     if dirty {
@@ -1157,7 +1237,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         ui.checkbox(&mut config.auto_send, tr("自动发送"));
         ui.checkbox(&mut config.show_raw, tr("显示原始帧"));
-        ui.checkbox(&mut config.auto_wrap, "自动换行");
+        ui.checkbox(&mut config.auto_wrap, tr("自动换行"));
     });
 
     if let Some(warning) = config.period_warning(app.settings.serial.baud) {
@@ -1190,7 +1270,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
             protocol_start(app, TaskKind::Single);
         }
         if ui
-            .add_enabled(enabled && !running, egui::Button::new("自动发送"))
+            .add_enabled(enabled && !running, egui::Button::new(tr("自动发送")))
             .clicked()
         {
             protocol_start(app, TaskKind::Auto);
@@ -1455,7 +1535,7 @@ fn pick_save_file(title: &str, default_name: &str, extension: &str) -> Option<Pa
 
 /// Save the retained receive buffer as raw bytes, byte for byte.
 fn save_raw_log(app: &mut XcomApp) {
-    let Some(path) = pick_save_file("保存原始数据", "xcom-receive.bin", "bin") else {
+    let Some(path) = pick_save_file(tr("保存原始数据"), "xcom-receive.bin", "bin") else {
         return;
     };
     match std::fs::write(&path, app.log.raw()) {
@@ -1473,7 +1553,7 @@ fn save_raw_log(app: &mut XcomApp) {
 
 /// Save the receive log to disk in the currently displayed form.
 fn save_log(app: &mut XcomApp) {
-    let Some(path) = pick_save_file("保存接收数据", "xcom-receive.txt", "txt") else {
+    let Some(path) = pick_save_file(tr("保存接收数据"), "xcom-receive.txt", "txt") else {
         return;
     };
     let text = app.log.render_all();

@@ -18,6 +18,7 @@ use super::frame::{self, FrameError, ReceivedFrame, MAX_DATA};
 
 /// User-facing configuration of the protocol panel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProtocolConfig {
     /// 设备地址.
     pub address: u8,
