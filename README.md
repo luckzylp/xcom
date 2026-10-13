@@ -222,7 +222,8 @@ Linux + Wayland 下由应用自绘客户端边框：
 cargo build --release
 sudo install -Dm755 target/release/xcom /usr/local/bin/xcom
 sudo install -Dm644 packaging/xcom.desktop /usr/share/applications/xcom.desktop
-# 图标可选：把 png 装到 hicolor 主题目录并命名为 xcom.png
+sudo install -Dm644 packaging/xcom.png /usr/share/icons/hicolor/256x256/apps/xcom.png
+sudo gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
 ```
 
 ## 配置文件
