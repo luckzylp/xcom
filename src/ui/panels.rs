@@ -18,6 +18,64 @@ use crate::serial::config::{CUSTOM_BAUD_RANGE, STANDARD_BAUDS};
 use crate::serial::{DataBitsSel, FlowSel, ParitySel, StopBitsSel};
 use crate::theme::{self, ThemeMode};
 
+/// Where a test can read what the real panels actually laid out.
+///
+/// The drag tests must measure the production code path rather than a
+/// stand-in, or they pass whether or not the fix is present.  Outside tests
+/// every setter is an empty function that inlines away.
+pub(crate) mod probe {
+    #[cfg(test)]
+    use eframe::egui;
+    #[cfg(test)]
+    use std::cell::Cell;
+
+    #[cfg(test)]
+    thread_local! {
+        static LEFT_CONTENT_WIDTH: Cell<f32> = const { Cell::new(0.0) };
+        static SEND_PANEL_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static EDITOR_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_left_content_width(width: f32) {
+        LEFT_CONTENT_WIDTH.with(|c| c.set(width));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_left_content_width(_width: f32) {}
+
+    #[cfg(test)]
+    pub(crate) fn left_content_width() -> f32 {
+        LEFT_CONTENT_WIDTH.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_send_panel_rect(rect: egui::Rect) {
+        SEND_PANEL_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_send_panel_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn send_panel_rect() -> egui::Rect {
+        SEND_PANEL_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_editor_rect(rect: egui::Rect) {
+        EDITOR_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_editor_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn editor_rect() -> egui::Rect {
+        EDITOR_RECT.with(|c| c.get())
+    }
+}
+
 /// Colour used for a status message of the given severity.
 fn level_color(level: Level) -> egui::Color32 {
     match level {
@@ -166,15 +224,22 @@ pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
         .min_size(232.0)
         .max_size(420.0)
         .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                serial_section(app, ui);
-                ui.add_space(6.0);
-                display_section(app, ui);
-                ui.add_space(6.0);
-                encoding_section(app, ui);
-                ui.add_space(6.0);
-                statistics_section(app, ui);
-            });
+            // `auto_shrink` off is what makes the panel genuinely resizable:
+            // egui sizes a resizable panel from its content, so a ScrollArea
+            // that shrinks to its contents leaves the separator draggable but
+            // the panel itself stuck.
+            let scroll = egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    serial_section(app, ui);
+                    ui.add_space(6.0);
+                    display_section(app, ui);
+                    ui.add_space(6.0);
+                    encoding_section(app, ui);
+                    ui.add_space(6.0);
+                    statistics_section(app, ui);
+                });
+            probe::set_left_content_width(scroll.inner_rect.width());
         });
 }
 
@@ -715,7 +780,11 @@ fn copy_selection(app: &mut XcomApp, ui: &Ui) {
     }
 }
 
+/// Lay out only the send editor and report the height it took, so a test can
+/// observe that dragging the separator really resizes it.
 fn send_area(app: &mut XcomApp, ui: &mut Ui) {
+    probe::set_send_panel_rect(ui.max_rect());
+
     ui.horizontal(|ui| {
         ui.label(RichText::new(tr("发送区")).strong());
         ui.separator();
@@ -824,17 +893,23 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
         );
     }
 
-    ui.add(
+    // Fill whatever height the user has dragged the send area to.  A fixed
+    // `desired_rows` left the editor four rows tall no matter how the panel
+    // was resized, which reads as "dragging does nothing".
+    let available = ui.available_size();
+    let editor_size = egui::vec2(available.x, available.y.max(48.0));
+    let editor = ui.add(
         egui::TextEdit::multiline(&mut app.settings.send.buffer)
             .font(egui::TextStyle::Monospace)
-            .desired_width(f32::INFINITY)
-            .desired_rows(4)
+            .desired_width(editor_size.x)
+            .min_size(editor_size)
             .hint_text(if app.settings.send.hex {
                 tr("输入十六进制，如 01 02 0A（可省略空格）")
             } else {
                 tr("输入要发送的内容")
             }),
     );
+    probe::set_editor_rect(editor.rect);
 }
 
 // ---------------------------------------------------------------------------

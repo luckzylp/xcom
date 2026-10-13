@@ -953,6 +953,10 @@ impl XcomApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(crate::i18n::window_title()));
         }
 
+        // egui's default grab band is 5 px, which is easy to miss and presents
+        // as "the separator cannot be dragged at all".
+        ui.style_mut().interaction.resize_grab_radius_side = 8.0;
+
         self.note_font_status();
 
         self.pump_serial(ctx);
@@ -1044,6 +1048,98 @@ mod layout_tests {
         app.settings.send.history = vec!["AT".to_owned(), "AT+RST".to_owned()];
         app.settings.serial.port = "/dev/ttyUSB0".to_owned();
         app
+    }
+
+    /// A frame with an optional pointer press at `pos`.
+    fn pointer(pos: egui::Pos2, pressed: Option<bool>, time: f64) -> egui::RawInput {
+        let mut raw = input();
+        raw.time = Some(time);
+        raw.events.push(egui::Event::PointerMoved(pos));
+        if let Some(pressed) = pressed {
+            raw.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            });
+        }
+        raw
+    }
+
+    /// Lay out every real panel for one frame, returning the centre column.
+    fn full_frame(ctx: &egui::Context, app: &mut XcomApp, raw: egui::RawInput) -> egui::Rect {
+        let slot = std::cell::Cell::new(egui::Rect::NOTHING);
+        let mut output = ctx.run_ui(raw, |ui| {
+            panels::top_bar(app, ui);
+            panels::status_bar(app, ui);
+            panels::left_panel(app, ui);
+            if app.show_side_panel {
+                panels::side_panel(app, ui);
+            }
+            slot.set(ui.available_rect_before_wrap());
+            panels::center_panel(app, ui);
+        });
+        output.textures_delta.clear();
+        slot.get()
+    }
+
+    /// Press at `from`, drag to `to`, release.  Every frame lays out the real
+    /// panels, which is required: a panel that is not laid out never registers
+    /// its resize handle, so there would be nothing to grab.
+    fn drag(ctx: &egui::Context, app: &mut XcomApp, from: egui::Pos2, to: egui::Pos2) {
+        let positions = [from, from, to, to, to];
+        let presses = [None, Some(true), None, None, Some(false)];
+        let mut t = 100.0;
+        for (position, pressed) in positions.into_iter().zip(presses) {
+            t += 0.02;
+            full_frame(ctx, app, pointer(position, pressed, t));
+        }
+    }
+
+    #[test]
+    fn dragging_the_settings_separator_widens_its_content() {
+        // The reported symptom: the separator could be dragged but the panel
+        // appeared not to change, because the ScrollArea inside it shrank to
+        // its contents instead of filling the panel.
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.show_side_panel = false;
+
+        let centre = full_frame(&ctx, &mut app, input());
+        let before = panels::probe::left_content_width();
+        assert!(before > 0.0, "the settings content was not laid out");
+
+        let grab = egui::pos2(centre.min.x, centre.center().y);
+        drag(&ctx, &mut app, grab, egui::pos2(grab.x + 80.0, grab.y));
+
+        let after = panels::probe::left_content_width();
+        assert!(
+            after > before + 40.0,
+            "settings content did not follow the separator: {before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn dragging_the_send_separator_grows_the_editor() {
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+
+        full_frame(&ctx, &mut app, input());
+        let before = panels::probe::editor_rect();
+        let panel = panels::probe::send_panel_rect();
+        assert!(before.height() > 0.0, "the editor was not laid out");
+        assert!(panel.height() > 0.0, "the send panel was not laid out");
+
+        let grab = egui::pos2(panel.center().x, panel.top());
+        drag(&ctx, &mut app, grab, egui::pos2(grab.x, grab.y - 90.0));
+
+        let after = panels::probe::editor_rect();
+        assert!(
+            after.height() > before.height() + 40.0,
+            "the editor did not follow the separator: {} -> {}",
+            before.height(),
+            after.height()
+        );
     }
 
     #[test]
@@ -1407,10 +1503,21 @@ mod layout_tests {
 
     #[test]
     fn switching_to_auto_encoding_restarts_detection() {
+        // Asserted behaviourally rather than by reading the label: the label is
+        // translated, which made this test depend on whichever language another
+        // test happened to leave active.
         let mut app = XcomApp::headless(crate::settings::Settings::default());
+        assert!(app.settings.encoding.is_none(), "auto-detect by default");
+
+        app.ingest(b"AT+GMR\r\n", 0);
+        assert!(app.auto.total() > 0, "the detector saw the data");
+
         app.set_encoding(Some(crate::encoding::EncodingId::Gbk));
-        assert_eq!(app.encoding_label(), "GBK");
         app.set_encoding(None);
-        assert!(app.encoding_label().starts_with("自动·"));
+        assert!(
+            app.settings.encoding.is_none(),
+            "an explicit choice is cleared"
+        );
+        assert_eq!(app.auto.total(), 0, "auto-detect starts over from scratch");
     }
 }
