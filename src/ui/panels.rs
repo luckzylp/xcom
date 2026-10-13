@@ -385,21 +385,21 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
 }
 
 fn display_section(app: &mut XcomApp, ui: &mut Ui) {
-    egui::CollapsingHeader::new("显示设置")
+    egui::CollapsingHeader::new(tr("显示设置"))
         .default_open(true)
         .show(ui, |ui| {
             let mut display = app.settings.display;
             let mut changed = false;
 
             let mut hex = display.mode == ViewMode::Hex;
-            if ui.checkbox(&mut hex, "16进制显示").changed() {
+            if ui.checkbox(&mut hex, tr("16进制显示")).changed() {
                 display.mode = if hex { ViewMode::Hex } else { ViewMode::Text };
                 changed = true;
             }
 
             if display.mode == ViewMode::Hex {
                 ui.horizontal(|ui| {
-                    ui.label("HEX 样式");
+                    ui.label(tr("HEX 样式"));
                     let mut style = display.hex_style;
                     if combo(
                         ui,
@@ -407,22 +407,22 @@ fn display_section(app: &mut XcomApp, ui: &mut Ui) {
                         &mut style,
                         &[HexStyle::Stream, HexStyle::Dump],
                         |s| match s {
-                            HexStyle::Stream => "连续".to_owned(),
-                            HexStyle::Dump => "16 字节/行".to_owned(),
+                            HexStyle::Stream => tr("连续").to_owned(),
+                            HexStyle::Dump => tr("16 字节/行").to_owned(),
                         },
                     ) {
                         display.hex_style = style;
                         changed = true;
                     }
                     let mut upper = display.upper_hex;
-                    if ui.checkbox(&mut upper, "大写").changed() {
+                    if ui.checkbox(&mut upper, tr("大写")).changed() {
                         display.upper_hex = upper;
                         changed = true;
                     }
                 });
                 if display.hex_style == HexStyle::Dump {
                     ui.horizontal(|ui| {
-                        ui.label("每行字节");
+                        ui.label(tr("每行字节"));
                         let mut per_row = display.hex_bytes_per_row;
                         if ui
                             .add(egui::DragValue::new(&mut per_row).range(1..=64))
@@ -436,28 +436,31 @@ fn display_section(app: &mut XcomApp, ui: &mut Ui) {
             }
 
             let mut timestamp = display.timestamp;
-            if ui.checkbox(&mut timestamp, "时间戳").changed() {
+            if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
                 display.timestamp = timestamp;
                 changed = true;
             }
             if display.timestamp {
-                ui.small("以回车换行断帧；数据中若不含 \\r\\n 则不会显示时间戳");
+                ui.small(tr("以回车换行断帧；数据中若不含回车换行则不会显示时间戳"));
             }
 
             let mut wrap = display.wrap;
-            if ui.checkbox(&mut wrap, "自动换行").changed() {
+            if ui.checkbox(&mut wrap, tr("自动换行")).changed() {
                 display.wrap = wrap;
                 changed = true;
             }
 
             let mut auto_scroll = app.settings.auto_scroll;
-            if ui.checkbox(&mut auto_scroll, "自动滚动到最新").changed() {
+            if ui
+                .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
+                .changed()
+            {
                 app.settings.auto_scroll = auto_scroll;
                 app.mark_settings_dirty();
             }
 
             ui.horizontal(|ui| {
-                ui.label("行距");
+                ui.label(tr("行距"));
                 let mut spacing = app.settings.line_spacing;
                 if ui
                     .add(egui::Slider::new(&mut spacing, 0.0..=10.0).fixed_decimals(0))
@@ -476,13 +479,13 @@ fn display_section(app: &mut XcomApp, ui: &mut Ui) {
 
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.button("清除接收").clicked() {
+                if ui.button(tr("清除接收")).clicked() {
                     app.clear_receive();
                 }
-                if ui.button("保存接收数据").clicked() {
+                if ui.button(tr("保存接收数据")).clicked() {
                     save_log(app);
                 }
-                if ui.button("保存原始数据").clicked() {
+                if ui.button(tr("保存原始数据")).clicked() {
                     save_raw_log(app);
                 }
             });
@@ -490,11 +493,11 @@ fn display_section(app: &mut XcomApp, ui: &mut Ui) {
 }
 
 fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
-    egui::CollapsingHeader::new("编码设置")
+    egui::CollapsingHeader::new(tr("编码设置"))
         .default_open(true)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("接收编码");
+                ui.label(tr("接收编码"));
                 let choice = app.settings.encoding;
                 let label = match choice {
                     None => format!("自动识别（{}）", app.encoding_label()),
@@ -505,7 +508,10 @@ fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
                     .selected_text(label)
                     .width(160.0)
                     .show_ui(ui, |ui| {
-                        if ui.selectable_label(choice.is_none(), "自动识别").clicked() {
+                        if ui
+                            .selectable_label(choice.is_none(), tr("自动识别"))
+                            .clicked()
+                        {
                             newly_selected = Some(None);
                         }
                         for id in EncodingId::ALL {
@@ -523,10 +529,10 @@ fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
             });
 
             ui.horizontal(|ui| {
-                ui.label("发送编码");
+                ui.label(tr("发送编码"));
                 let choice = app.settings.tx_encoding;
                 let label = match choice {
-                    None => "跟随接收编码".to_owned(),
+                    None => tr("跟随接收编码").to_owned(),
                     Some(id) => id.label().to_owned(),
                 };
                 let mut newly_selected = None;
@@ -557,37 +563,37 @@ fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
 
             ui.small(format!("当前接收: {}", app.encoding_label()));
             ui.small(format!("已分析 {} 字节", app.auto.total()));
-            ui.small("自动识别会持续观察数据流，锁定后不再频繁切换");
+            ui.small(tr("自动识别会持续观察数据流，锁定后不再频繁切换"));
         });
 }
 
 fn statistics_section(app: &mut XcomApp, ui: &mut Ui) {
-    egui::CollapsingHeader::new("统计")
+    egui::CollapsingHeader::new(tr("统计"))
         .default_open(false)
         .show(ui, |ui| {
             egui::Grid::new("stats_grid")
                 .num_columns(2)
                 .spacing([8.0, 4.0])
                 .show(ui, |ui| {
-                    ui.label("发送字节");
+                    ui.label(tr("发送字节"));
                     ui.label(app.tx_bytes.to_string());
                     ui.end_row();
-                    ui.label("接收字节");
+                    ui.label(tr("接收字节"));
                     ui.label(app.rx_bytes.to_string());
                     ui.end_row();
-                    ui.label("显示行数");
+                    ui.label(tr("显示行数"));
                     ui.label(app.log.row_count().to_string());
                     ui.end_row();
-                    ui.label("缓存字节");
+                    ui.label(tr("缓存字节"));
                     ui.label(app.log.retained_bytes().to_string());
                     ui.end_row();
-                    ui.label("未显示字节");
+                    ui.label(tr("未显示字节"));
                     ui.label(app.pending_rx_len().to_string());
                     ui.end_row();
                 });
             ui.separator();
             ui.horizontal(|ui| {
-                ui.label("最大保留行数");
+                ui.label(tr("最大保留行数"));
                 let mut rows = app.settings.max_rows;
                 if ui
                     .add(
@@ -603,7 +609,7 @@ fn statistics_section(app: &mut XcomApp, ui: &mut Ui) {
                 }
             });
             ui.horizontal(|ui| {
-                ui.label("最大缓存 (MB)");
+                ui.label(tr("最大缓存 (MB)"));
                 let mut mb = app.settings.max_raw / (1024 * 1024);
                 if ui
                     .add(egui::DragValue::new(&mut mb).speed(1.0).range(1..=512))
@@ -646,27 +652,27 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
 fn log_toolbar(app: &mut XcomApp, ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         let label = if app.show_paused {
-            "继续显示"
+            tr("继续显示")
         } else {
-            "暂停显示"
+            tr("暂停显示")
         };
         if ui.button(label).clicked() {
             if app.show_paused {
                 app.resume_display();
             } else {
                 app.show_paused = true;
-                app.info("显示已暂停，数据仍在后台接收");
+                app.info(tr("显示已暂停，数据仍在后台接收"));
             }
         }
 
         let copy_enabled = app.log_view.has_selection();
         if ui
-            .add_enabled(copy_enabled, egui::Button::new("复制选中"))
+            .add_enabled(copy_enabled, egui::Button::new(tr("复制选中")))
             .clicked()
         {
             copy_selection(app, ui);
         }
-        if ui.button("全选").clicked() {
+        if ui.button(tr("全选")).clicked() {
             let store = &app.log;
             app.log_view.select_all(store);
         }
@@ -684,7 +690,7 @@ fn log_toolbar(app: &mut XcomApp, ui: &mut Ui) {
         ui.label(RichText::new(app.encoding_label()).monospace());
         if app.log_view.has_selection() {
             ui.label(
-                RichText::new("已选中，Ctrl+C 复制")
+                RichText::new(tr("已选中，Ctrl+C 复制"))
                     .small()
                     .color(ui.visuals().weak_text_color()),
             );
@@ -701,24 +707,24 @@ fn copy_selection(app: &mut XcomApp, ui: &Ui) {
     match text {
         Some(text) => {
             ui.ctx().copy_text(text);
-            app.ok("已复制选中内容到剪贴板");
+            app.ok(tr("已复制选中内容到剪贴板"));
         }
-        None => app.warn("没有可复制的内容"),
+        None => app.warn(tr("没有可复制的内容")),
     }
 }
 
 fn send_area(app: &mut XcomApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("发送区").strong());
+        ui.label(RichText::new(tr("发送区")).strong());
         ui.separator();
 
         let mut hex = app.settings.send.hex;
-        if ui.checkbox(&mut hex, "16进制发送").changed() {
+        if ui.checkbox(&mut hex, tr("16进制发送")).changed() {
             app.settings.send.hex = hex;
             app.mark_settings_dirty();
         }
         let mut newline = app.settings.send.append_newline;
-        if ui.checkbox(&mut newline, "发送新行").changed() {
+        if ui.checkbox(&mut newline, tr("发送新行")).changed() {
             app.settings.send.append_newline = newline;
             app.mark_settings_dirty();
         }
@@ -737,7 +743,7 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
         let mut timed = app.settings.send.timed;
         let can_timed = app.link.is_open();
         if ui
-            .add_enabled(can_timed, egui::Checkbox::new(&mut timed, "定时发送"))
+            .add_enabled(can_timed, egui::Checkbox::new(&mut timed, tr("定时发送")))
             .changed()
         {
             app.settings.send.timed = timed;
@@ -760,38 +766,38 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("清除发送").clicked() {
+            if ui.button(tr("清除发送")).clicked() {
                 app.settings.send.buffer.clear();
                 app.tx_bytes = 0;
                 app.rx_bytes = 0;
                 app.mark_settings_dirty();
-                app.info("已清除发送区与收发计数");
+                app.info(tr("已清除发送区与收发计数"));
             }
-            if ui.button("发送文件").clicked() {
+            if ui.button(tr("发送文件")).clicked() {
                 if app.file_send.is_some() {
                     app.abort_file_send();
-                } else if let Some(path) = pick_open_file("选择要发送的文件") {
+                } else if let Some(path) = pick_open_file(tr("选择要发送的文件")) {
                     app.start_file_send(path);
                 }
             }
-            if app.file_send.is_some() && ui.button("终止发送").clicked() {
+            if app.file_send.is_some() && ui.button(tr("终止发送")).clicked() {
                 app.abort_file_send();
             }
 
             let send = ui.add_sized(
                 [92.0, 26.0],
-                egui::Button::new(RichText::new("发送 (Ctrl+Enter)").strong()),
+                egui::Button::new(RichText::new(tr("发送 (Ctrl+Enter)")).strong()),
             );
             if send.clicked() {
                 app.send_once();
             }
 
             egui::ComboBox::from_id_salt("send_history")
-                .selected_text("历史")
+                .selected_text(tr("历史"))
                 .width(70.0)
                 .show_ui(ui, |ui| {
                     if app.settings.send.history.is_empty() {
-                        ui.weak("暂无历史");
+                        ui.weak(tr("暂无历史"));
                     }
                     let history = app.settings.send.history.clone();
                     for entry in history {
@@ -822,9 +828,9 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
             .desired_width(f32::INFINITY)
             .desired_rows(4)
             .hint_text(if app.settings.send.hex {
-                "输入十六进制，如 01 02 0A（可省略空格）"
+                tr("输入十六进制，如 01 02 0A（可省略空格）")
             } else {
-                "输入要发送的内容"
+                tr("输入要发送的内容")
             }),
     );
 }
@@ -842,13 +848,13 @@ pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui
-                    .selectable_label(app.side_tab == SideTab::Multi, "多条发送")
+                    .selectable_label(app.side_tab == SideTab::Multi, tr("多条发送"))
                     .clicked()
                 {
                     app.side_tab = SideTab::Multi;
                 }
                 if ui
-                    .selectable_label(app.side_tab == SideTab::Protocol, "协议传输")
+                    .selectable_label(app.side_tab == SideTab::Protocol, tr("协议传输"))
                     .clicked()
                 {
                     app.side_tab = SideTab::Protocol;
@@ -865,11 +871,11 @@ pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
 fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     // ---- paging -----------------------------------------------------------
     ui.horizontal(|ui| {
-        if ui.button("首页").clicked() {
+        if ui.button(tr("首页")).clicked() {
             app.settings.multi.first_page();
             app.multi_index = 0;
         }
-        if ui.button("上一页").clicked() {
+        if ui.button(tr("上一页")).clicked() {
             app.settings.multi.previous_page();
             app.multi_index = 0;
         }
@@ -878,19 +884,19 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
             app.settings.multi.page + 1,
             crate::multi::PAGES
         ));
-        if ui.button("下一页").clicked() {
+        if ui.button(tr("下一页")).clicked() {
             app.settings.multi.next_page();
             app.multi_index = 0;
         }
-        if ui.button("尾页").clicked() {
+        if ui.button(tr("尾页")).clicked() {
             app.settings.multi.last_page();
             app.multi_index = 0;
         }
     });
 
     ui.horizontal(|ui| {
-        if ui.button("导入条目").clicked() {
-            if let Some(path) = pick_open_file("导入发送条目") {
+        if ui.button(tr("导入条目")).clicked() {
+            if let Some(path) = pick_open_file(tr("导入发送条目")) {
                 match std::fs::read_to_string(&path) {
                     Ok(text) => {
                         let multi = &mut app.settings.multi;
@@ -906,8 +912,9 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                 }
             }
         }
-        if ui.button("导出条目").clicked() {
-            if let Some(path) = pick_save_file("导出发送条目", "xcom-entries.json", "json") {
+        if ui.button(tr("导出条目")).clicked() {
+            if let Some(path) = pick_save_file(tr("导出发送条目"), "xcom-entries.json", "json")
+            {
                 let multi = &app.settings.multi;
                 match multi.export_json() {
                     Ok(text) => match std::fs::write(&path, text) {
@@ -921,7 +928,10 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         let mut loop_enabled = app.settings.multi.loop_enabled;
         let can_loop = app.link.is_open();
         if ui
-            .add_enabled(can_loop, egui::Checkbox::new(&mut loop_enabled, "循环发送"))
+            .add_enabled(
+                can_loop,
+                egui::Checkbox::new(&mut loop_enabled, tr("循环发送")),
+            )
             .changed()
         {
             app.settings.multi.loop_enabled = loop_enabled;
@@ -950,14 +960,17 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
 
     ui.horizontal(|ui| {
         let mut keypad = app.settings.multi.keypad_enabled;
-        if ui.checkbox(&mut keypad, "关联数字键盘 (1-9,0)").changed() {
+        if ui
+            .checkbox(&mut keypad, tr("关联数字键盘 (1-9,0)"))
+            .changed()
+        {
             app.settings.multi.keypad_enabled = keypad;
             app.mark_settings_dirty();
         }
         let mut cr = app.settings.multi.newline_cr;
         let mut lf = app.settings.multi.newline_lf;
-        let a = ui.checkbox(&mut cr, "新行 CR").changed();
-        let b = ui.checkbox(&mut lf, "新行 LF").changed();
+        let a = ui.checkbox(&mut cr, tr("新行 CR")).changed();
+        let b = ui.checkbox(&mut lf, tr("新行 LF")).changed();
         if a || b {
             app.settings.multi.newline_cr = cr;
             app.settings.multi.newline_lf = lf;
@@ -990,7 +1003,15 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                 .striped(true)
                 .spacing([6.0, 4.0])
                 .show(ui, |ui| {
-                    for header in ["启用", "#", "内容", "备注", "HEX", "新行", ""] {
+                    for header in [
+                        tr("启用"),
+                        "#",
+                        tr("内容"),
+                        tr("备注"),
+                        "HEX",
+                        tr("新行"),
+                        "",
+                    ] {
                         ui.label(RichText::new(header).strong());
                     }
                     ui.end_row();
@@ -1007,7 +1028,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                             .add(
                                 egui::TextEdit::singleline(&mut entry.text)
                                     .desired_width(text_width)
-                                    .hint_text(if entry.hex { "01 02 0A" } else { "指令" }),
+                                    .hint_text(if entry.hex { "01 02 0A" } else { tr("指令") }),
                             )
                             .changed()
                         {
@@ -1029,7 +1050,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         if ui.checkbox(&mut entry.newline, "").changed() {
                             dirty = true;
                         }
-                        if ui.button("发送").clicked() {
+                        if ui.button(tr("发送")).clicked() {
                             send_request = Some(index);
                         }
                         ui.end_row();
@@ -1075,19 +1096,19 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
     let mut config = app.protocol.config().clone();
 
     ui.horizontal_wrapped(|ui| {
-        ui.label("地址");
+        ui.label(tr("地址"));
         ui.add(
             egui::DragValue::new(&mut config.address)
                 .range(0..=255)
                 .speed(1.0),
         );
-        ui.label("功能");
+        ui.label(tr("功能"));
         ui.add(
             egui::DragValue::new(&mut config.function)
                 .range(0..=255)
                 .speed(1.0),
         );
-        ui.label("校验");
+        ui.label(tr("校验"));
         let mut checksum = config.checksum;
         if combo(
             ui,
@@ -1101,20 +1122,20 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
     });
 
     ui.horizontal_wrapped(|ui| {
-        ui.label("帧周期");
+        ui.label(tr("帧周期"));
         ui.add(
             egui::DragValue::new(&mut config.frame_period_ms)
                 .speed(10.0)
                 .range(1..=600_000)
                 .suffix(" ms"),
         );
-        ui.label("最大重发");
+        ui.label(tr("最大重发"));
         ui.add(
             egui::DragValue::new(&mut config.max_retries)
                 .speed(1.0)
                 .range(0..=255),
         );
-        ui.label("最大数据长度");
+        ui.label(tr("最大数据长度"));
         ui.add(
             egui::DragValue::new(&mut config.max_data_len)
                 .speed(1.0)
@@ -1123,8 +1144,8 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
     });
 
     ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut config.auto_send, "自动发送");
-        ui.checkbox(&mut config.show_raw, "显示原始帧");
+        ui.checkbox(&mut config.auto_send, tr("自动发送"));
+        ui.checkbox(&mut config.show_raw, tr("显示原始帧"));
         ui.checkbox(&mut config.auto_wrap, "自动换行");
     });
 
@@ -1140,19 +1161,19 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
     }
 
     ui.separator();
-    ui.label(RichText::new("发送数据").strong());
+    ui.label(RichText::new(tr("发送数据")).strong());
     ui.add(
         egui::TextEdit::multiline(&mut app.settings.protocol_data)
             .font(egui::TextStyle::Monospace)
             .desired_rows(3)
             .desired_width(f32::INFINITY)
-            .hint_text("十六进制，如 00 00 00 0A"),
+            .hint_text(tr("十六进制，如 00 00 00 0A")),
     );
 
     ui.horizontal_wrapped(|ui| {
         let enabled = app.link.is_open();
         if ui
-            .add_enabled(enabled && !running, egui::Button::new("单次发送"))
+            .add_enabled(enabled && !running, egui::Button::new(tr("单次发送")))
             .clicked()
         {
             protocol_start(app, TaskKind::Single);
@@ -1164,18 +1185,21 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
             protocol_start(app, TaskKind::Auto);
         }
         if ui
-            .add_enabled(enabled && !running, egui::Button::new("文件发送"))
+            .add_enabled(enabled && !running, egui::Button::new(tr("文件发送")))
             .clicked()
         {
-            if let Some(path) = pick_open_file("选择要传输的文件") {
+            if let Some(path) = pick_open_file(tr("选择要传输的文件")) {
                 match std::fs::read(&path) {
                     Ok(data) => start_protocol_file(app, data, &path),
                     Err(err) => app.error(format!("读取文件失败: {err}")),
                 }
             }
         }
-        if ui.add_enabled(running, egui::Button::new("停止")).clicked() {
-            app.protocol.stop("用户已停止传输");
+        if ui
+            .add_enabled(running, egui::Button::new(tr("停止")))
+            .clicked()
+        {
+            app.protocol.stop(tr("用户已停止传输"));
             app.protocol_progress = None;
         }
         if let Some(kind) = app.protocol.task_kind() {
@@ -1200,8 +1224,8 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
 
     ui.separator();
     ui.horizontal(|ui| {
-        ui.label(RichText::new("响应区").strong());
-        if ui.button("清除").clicked() {
+        ui.label(RichText::new(tr("响应区")).strong());
+        if ui.button(tr("清除")).clicked() {
             app.protocol_log.clear();
         }
         ui.label(
@@ -1216,7 +1240,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
         .stick_to_bottom(true)
         .show(ui, |ui| {
             if app.protocol_log.is_empty() {
-                ui.weak("暂无协议交互记录");
+                ui.weak(tr("暂无协议交互记录"));
             }
             for line in &app.protocol_log {
                 ui.horizontal_wrapped(|ui| {
@@ -1251,7 +1275,7 @@ fn protocol_start(app: &mut XcomApp, kind: TaskKind) {
         }
     };
     if data.is_empty() && kind != TaskKind::File {
-        app.warn("请先输入要发送的数据");
+        app.warn(tr("请先输入要发送的数据"));
         return;
     }
     app.protocol_log.clear();
@@ -1289,7 +1313,7 @@ pub(crate) fn status_bar(app: &mut XcomApp, ui: &mut Ui) {
                     .monospace(),
                 );
             } else {
-                ui.label(RichText::new("未连接").color(ui.visuals().weak_text_color()));
+                ui.label(RichText::new(tr("未连接")).color(ui.visuals().weak_text_color()));
             }
 
             ui.separator();
@@ -1363,26 +1387,26 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
-            ui.label(RichText::new("XCOM 串口调试助手").strong().size(16.0));
+            ui.label(RichText::new(tr("XCOM 串口调试助手")).strong().size(16.0));
             ui.label(format!("版本 {}", env!("CARGO_PKG_VERSION")));
             ui.separator();
-            ui.label(
+            ui.label(tr(
                 "使用 Rust + egui 开发的跨平台串口调试工具，可在 Windows / Linux / macOS 上运行。",
-            );
+            ));
             ui.add_space(4.0);
-            ui.label("功能：");
+            ui.label(tr("功能："));
             for line in [
-                "• 串口参数全面可配（自定义波特率、1/1.5/2 停止位）",
-                "• 十六进制 / 文本收发，时间戳断帧",
-                "• 编码自动识别与手动指定",
-                "• 单条 / 多条 / 协议传输三种发送方式",
-                "• 黑色与白色主题",
+                tr("• 串口参数全面可配（自定义波特率、1/1.5/2 停止位）"),
+                tr("• 十六进制 / 文本收发，时间戳断帧"),
+                tr("• 编码自动识别与手动指定"),
+                tr("• 单条 / 多条 / 协议传输三种发送方式"),
+                tr("• 黑色与白色主题"),
             ] {
                 ui.label(line);
             }
             ui.add_space(6.0);
             ui.label(
-                RichText::new("本软件为开源实现，界面不含任何广告。")
+                RichText::new(tr("本软件为开源实现，界面不含任何广告。"))
                     .small()
                     .color(ui.visuals().weak_text_color()),
             );
