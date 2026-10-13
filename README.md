@@ -239,8 +239,27 @@ cargo build --release
 sudo install -Dm755 target/release/xcom /usr/local/bin/xcom
 sudo install -Dm644 packaging/xcom.desktop /usr/share/applications/xcom.desktop
 sudo install -Dm644 packaging/xcom.png /usr/share/icons/hicolor/256x256/apps/xcom.png
+sudo update-desktop-database /usr/share/applications
 sudo gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
 ```
+
+仅当前用户安装时，把目标换成 `~/.local/share/applications/` 与
+`~/.local/share/icons/hicolor/256x256/apps/` 即可，无需 root。
+
+`packaging/xcom.desktop` 是一份**逐键注释的模板**，可直接改用：
+
+- 修改后用 Debian 自带的校验器确认，**它必须没有任何输出**：
+  ```bash
+  desktop-file-validate packaging/xcom.desktop
+  ```
+- `Categories` 只能有**一个主分类**。本项目用 `Development;Electronics;`——
+  主分类 `Development` 加附加分类 `Electronics`。之前写的
+  `Development;Electronics;Utility;` 含两个主分类，会让应用在菜单里出现两次，
+  校验器会给出提示。
+- `Icon` 只能是**图标名**，不能带路径或扩展名；图标通过 hicolor 主题解析。
+- 所有列表型键（`Categories`、`Keywords`）必须以 `;` 结尾。
+- `StartupWMClass` 在 Wayland 下必须等于应用 id，即
+  `src/main.rs` 里的 `with_app_id("xcom")`；X11 下等于窗口的 `WM_CLASS`。
 
 ## 配置文件
 

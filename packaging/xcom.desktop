@@ -1,18 +1,86 @@
+# Desktop Entry for a Debian 13 (GNOME) desktop — template.
+#
+# This is the freedesktop.org "Desktop Entry" format that Debian's
+# desktop-file-utils validates.  Lines starting with '#' and blank lines are
+# comments, so the annotations below are safe to keep.
+#
+# Verify after editing:
+#     desktop-file-validate xcom.desktop        # must print nothing
+#     desktop-file-install --dir=~/.local/share/applications xcom.desktop
+#     update-desktop-database ~/.local/share/applications
+#
+# The group header must be exactly this string, with the space and capital D.
 [Desktop Entry]
+
+# ---- Required keys -------------------------------------------------------
+# Application | Link | Directory.  A GUI program is always Application.
 Type=Application
-Version=1.0
+
+# The command to run.  Use the bare binary name so PATH is searched; an
+# absolute path is also allowed.  Arguments may follow, and field codes such
+# as %F / %U are only meaningful for entries that accept files or URLs.
+Exec=xcom
+
+# Shown in the menu and in the window list.  Keep it short.
 Name=XCOM Serial Assistant
+
+# ---- Localisation --------------------------------------------------------
+# Any key may carry an [locale] suffix.  GNOME picks the best match for the
+# *system* locale; it does not follow a language chosen inside the app.
+# Locale is language[_COUNTRY][.ENCODING][@modifier], e.g. zh_CN, zh_TW, de.
 Name[zh_CN]=XCOM 串口调试助手
+
+# A generic description of what the program is, e.g. for menu tooltips.
 GenericName=Serial Port Debugger
 GenericName[zh_CN]=串口调试助手
+
+# One short line describing the entry.  The style guide asks for no trailing
+# full stop.
 Comment=Cross-platform serial port debugging tool
 Comment[zh_CN]=跨平台串口调试工具
-# Must match ViewportBuilder::with_app_id in src/main.rs, otherwise the
-# compositor cannot associate the window with this entry (and its icon).
-StartupWMClass=xcom
-Exec=xcom
+
+# ---- Presentation --------------------------------------------------------
+# An icon *name*, never a path and never an extension.  It is resolved
+# through the icon theme, which is why the PNG is installed under
+# hicolor/<size>/apps/<name>.png rather than referenced directly.
 Icon=xcom
-Terminal=false
-Categories=Development;Electronics;Utility;
+
+# Categories are semicolon-separated and must end with a semicolon.
+# Exactly ONE *main* category is allowed; extra ones make the application
+# appear several times in the menu, which desktop-file-validate reports.
+# Main categories: AudioVideo Audio Video Development Education Game
+#   Graphics Network Office Science Settings System Utility
+# Additional ones (e.g. Electronics, Engineering) may be combined freely.
+Categories=Development;Electronics;
+
+# Search terms; semicolon-separated with a trailing semicolon.
 Keywords=serial;uart;rs232;rs485;terminal;debug;
 Keywords[zh_CN]=串口;调试;终端;
+
+# ---- Behaviour -----------------------------------------------------------
+# Set to true to launch in a terminal; pointless for a GUI application.
+Terminal=false
+
+# Do not show the "application is starting" cursor until the window maps.
+# Pairs with StartupWMClass below.
+StartupNotify=true
+
+# Hide the entry when the command is absent, instead of offering a menu item
+# that fails when clicked.  Note the consequence during development: if the
+# binary is not on PATH yet, the entry disappears — remove this line while
+# testing a build that has not been installed.
+TryExec=xcom
+
+# Associates the launched window with this entry, so the task bar and the
+# application menu use this name and icon rather than a generic one.
+# On Wayland it must equal the application id the toolkit sets — for this
+# project that is ViewportBuilder::with_app_id("xcom") in src/main.rs.
+# On X11 it must equal the window's WM_CLASS.
+StartupWMClass=xcom
+
+# ---- Keys deliberately not used ------------------------------------------
+# NoDisplay=true      would hide the entry entirely.
+# Hidden=true         marks the entry as deleted (used to shadow a system one).
+# MimeType=...        only for applications that open files or URLs.
+# Path=...            sets the working directory; better left unset.
+# X-GNOME-*           GNOME-specific extras; not needed here.
