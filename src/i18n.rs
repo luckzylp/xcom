@@ -102,6 +102,19 @@ pub fn tr3(
     tr2(zh, a, b).replacen("{}", &c.to_string(), 1)
 }
 
+/// Translate and substitute an arbitrary number of `{}` placeholders.
+///
+/// The typed [`tr1`]/[`tr2`]/[`tr3`] helpers cover almost every message; this
+/// exists for the few that interpolate pre-formatted fields (hex bytes with
+/// field widths, for instance) and would otherwise need a `tr5`.
+pub fn tr_fmt(zh: &'static str, args: &[String]) -> String {
+    let mut out = tr(zh).to_string();
+    for arg in args {
+        out = out.replacen("{}", arg, 1);
+    }
+    out
+}
+
 fn table() -> &'static HashMap<&'static str, &'static str> {
     static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     TABLE.get_or_init(|| EN.iter().copied().collect())
@@ -319,6 +332,37 @@ static EN: &[(&str, &str)] = &[
     ("ISO-8859-2 (中欧)", "ISO-8859-2 (Central European)"),
     ("ISO-8859-5 (西里尔)", "ISO-8859-5 (Cyrillic)"),
     ("KOI8-R (俄文)", "KOI8-R (Russian)"),
+
+    ("自动·{}", "Auto · {}"),
+    ("未找到中文字体，界面中文可能显示为方块。请安装 Noto Sans CJK / 文泉驿等字体", "No CJK font found; Chinese text may render as boxes. Install Noto Sans CJK or WenQuanYi."),
+    ("请先选择串口", "Select a serial port first"),
+    ("已打开 {} [{}]", "Opened {} [{}]"),
+    ("串口已关闭", "Port closed"),
+    ("已停止{}", "{} stopped"),
+    ("串口未打开", "Port is not open"),
+    ("发送内容为空", "Nothing to send"),
+    ("串口未打开，无法{}", "Port is not open; cannot {}"),
+    ("文件为空，未发送", "File is empty; nothing sent"),
+    ("开始发送文件 {}（{} 字节）", "Sending {} ({} bytes)"),
+    ("已终止文件发送（{}，剩余 {} 字节）", "File send aborted ({}; {} bytes remaining)"),
+    ("已清除接收区与收发计数", "Receive area and byte counters cleared"),
+    ("保存设置失败: {}", "Failed to save settings: {}"),
+    ("{} 已断开", "{} disconnected"),
+    ("{}（串口可能已被拔出）", "{} (the port may have been unplugged)"),
+    ("已恢复显示，补入 {} 字节", "Display resumed; {} bytes appended"),
+    ("串口已关闭，文件发送中止", "Port closed; file send aborted"),
+    ("文件发送完成（{} 字节）", "File sent ({} bytes)"),
+    ("→ 帧 #{}（第 {} 次）: {}", "-> frame #{} (attempt {}): {}"),
+    ("发送协议帧", "send a protocol frame"),
+    ("✓ 收到应答 #{}（第 {} 次尝试）", "ACK #{} received (attempt {})"),
+    ("✗ 帧 #{} 设备无响应，已停止发送", "No response for frame #{}; sending stopped"),
+    ("← 无效响应 [{}]: {}", "<- invalid response [{}]: {}"),
+    ("文件传输完成，共 {} 字节", "File transfer complete, {} bytes"),
+    ("地址 {} 功能 {} 序列 {} 数据[{}] {}", "addr {} func {} seq {} data[{}] {}"),
+    ("当前页没有勾选的发送条目，已停止循环发送", "No entries selected on this page; looping stopped"),
+    ("条目 {} 为空", "Entry {} is empty"),
+    ("条目 {} 编码失败: {}", "Entry {} failed to encode: {}"),
+    ("发送条目 {}", "send entry {}"),
 
     // -- parity / flow control (src/serial/config.rs) -----------------------
     ("无",                    "None"),

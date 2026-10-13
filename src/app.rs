@@ -7,6 +7,7 @@ use eframe::egui::Context;
 use encoding_rs::Encoding;
 
 use crate::encoding::{AutoDetector, EncodingId};
+use crate::i18n::tr;
 use crate::logstore::LogStore;
 use crate::protocol::{ProtocolEngine, ProtocolEvent};
 use crate::serial::{PortWatcher, SerialEvent, SerialLink, Signals};
@@ -236,9 +237,9 @@ impl XcomApp {
         self.font_warning_shown = true;
         match crate::fonts::installed_family() {
             Some(family) => log::info!("界面字体: {family}"),
-            None => self.warn(
+            None => self.warn(tr(
                 "未找到中文字体，界面中文可能显示为方块。请安装 Noto Sans CJK / 文泉驿等字体",
-            ),
+            )),
         }
     }
 
@@ -346,7 +347,7 @@ impl XcomApp {
                 let detected = EncodingId::from_encoding(self.auto.active())
                     .map(EncodingId::short_label)
                     .unwrap_or_else(|| self.auto.active().name());
-                format!("自动·{detected}")
+                crate::i18n::tr1("自动·{}", detected)
             }
         }
     }
@@ -370,7 +371,7 @@ impl XcomApp {
 
     pub(crate) fn open_port(&mut self) {
         if self.settings.serial.port.trim().is_empty() {
-            self.error("请先选择串口");
+            self.error(tr("请先选择串口"));
             return;
         }
         match self.link.open(&self.settings.serial) {
@@ -384,7 +385,7 @@ impl XcomApp {
                 self.protocol.set_baud(self.settings.serial.baud);
                 let summary = self.settings.serial.summary();
                 let port = self.settings.serial.port.clone();
-                self.ok(format!("已打开 {port} [{summary}]"));
+                self.ok(crate::i18n::tr2("已打开 {} [{}]", port, summary));
                 self.mark_settings_dirty();
             }
             Err(err) => self.error(err),
@@ -393,8 +394,8 @@ impl XcomApp {
 
     pub(crate) fn close_port(&mut self) {
         if let Some(kind) = self.protocol.task_kind() {
-            self.protocol.stop("串口已关闭");
-            self.info(format!("已停止{}", kind.label()));
+            self.protocol.stop(tr("串口已关闭"));
+            self.info(crate::i18n::tr1("已停止{}", tr(kind.label())));
         }
         let was_open = self.link.is_open();
         self.link.close();
@@ -431,7 +432,7 @@ impl XcomApp {
     /// Send the single-send buffer.
     pub(crate) fn send_once(&mut self) {
         if !self.link.is_open() {
-            self.error("串口未打开");
+            self.error(tr("串口未打开"));
             return;
         }
         let payload = match self.build_payload() {
@@ -442,7 +443,7 @@ impl XcomApp {
             }
         };
         if payload.is_empty() {
-            self.warn("发送内容为空");
+            self.warn(tr("发送内容为空"));
             return;
         }
         if let Err(err) = self.link.send(payload) {
@@ -457,7 +458,7 @@ impl XcomApp {
     /// Queue raw bytes, reporting a failure through the status bar.
     pub(crate) fn send_bytes(&mut self, bytes: Vec<u8>, what: &str) {
         if !self.link.is_open() {
-            self.error(format!("串口未打开，无法{what}"));
+            self.error(crate::i18n::tr1("串口未打开，无法{}", what));
             return;
         }
         if let Err(err) = self.link.send(bytes) {
@@ -468,14 +469,18 @@ impl XcomApp {
     /// Begin sending a file over the plain serial link.
     pub(crate) fn start_file_send(&mut self, path: PathBuf) {
         if !self.link.is_open() {
-            self.error("串口未打开");
+            self.error(tr("串口未打开"));
             return;
         }
         match std::fs::read(&path) {
-            Ok(data) if data.is_empty() => self.warn("文件为空，未发送"),
+            Ok(data) if data.is_empty() => self.warn(tr("文件为空，未发送")),
             Ok(data) => {
                 let name = path.display().to_string();
-                self.info(format!("开始发送文件 {name}（{} 字节）", data.len()));
+                self.info(crate::i18n::tr2(
+                    "开始发送文件 {}（{} 字节）",
+                    &name,
+                    data.len(),
+                ));
                 self.file_send = Some(FileSend {
                     path: name,
                     data,
@@ -484,17 +489,18 @@ impl XcomApp {
                     last: Instant::now(),
                 });
             }
-            Err(err) => self.error(format!("读取文件失败: {err}")),
+            Err(err) => self.error(crate::i18n::tr1("读取文件失败: {}", err)),
         }
     }
 
     /// Abort an in-progress file transmission.
     pub(crate) fn abort_file_send(&mut self) {
         if let Some(send) = self.file_send.take() {
-            self.warn(format!(
+            let remaining = send.remaining();
+            self.warn(crate::i18n::tr2(
                 "已终止文件发送（{}，剩余 {} 字节）",
-                send.path,
-                send.remaining()
+                &send.path,
+                remaining,
             ));
         }
     }
@@ -507,7 +513,7 @@ impl XcomApp {
         self.rx_bytes = 0;
         self.tx_bytes = 0;
         self.pending_rx.clear();
-        self.info("已清除接收区与收发计数");
+        self.info(tr("已清除接收区与收发计数"));
     }
 
     // -- settings -----------------------------------------------------------
@@ -535,7 +541,7 @@ impl XcomApp {
             Err(err) => {
                 // Do not spam: report once and stop retrying every frame.
                 self.settings_dirty = false;
-                self.error(format!("保存设置失败: {err}"));
+                self.error(crate::i18n::tr1("保存设置失败: {}", err));
             }
         }
         self.last_save = Instant::now();
@@ -552,7 +558,7 @@ impl XcomApp {
                 && self.link.is_open()
             {
                 let port = self.settings.serial.port.clone();
-                self.warn(format!("{port} 已断开"));
+                self.warn(crate::i18n::tr1("{} 已断开", port));
                 self.close_port();
             }
             self.select_default_port();
@@ -582,7 +588,7 @@ impl XcomApp {
                 }
                 SerialEvent::WriteFailed(err) => self.error(err),
                 SerialEvent::Lost(err) => {
-                    self.error(format!("{err}（串口可能已被拔出）"));
+                    self.error(crate::i18n::tr1("{}（串口可能已被拔出）", err));
                     self.close_port();
                 }
             }
@@ -628,7 +634,7 @@ impl XcomApp {
             let pending = std::mem::take(&mut self.pending_rx);
             let epoch_ms = chrono::Local::now().timestamp_millis();
             self.ingest(&pending, epoch_ms);
-            self.info(format!("已恢复显示，补入 {} 字节", pending.len()));
+            self.info(crate::i18n::tr1("已恢复显示，补入 {} 字节", pending.len()));
         }
     }
 
@@ -689,12 +695,12 @@ impl XcomApp {
 
         if !connected {
             self.file_send = None;
-            self.warn("串口已关闭，文件发送中止");
+            self.warn(tr("串口已关闭，文件发送中止"));
             return;
         }
         if remaining == 0 {
             self.file_send = None;
-            self.ok(format!("文件发送完成（{total} 字节）"));
+            self.ok(crate::i18n::tr1("文件发送完成（{} 字节）", total));
             return;
         }
         if !due {
@@ -728,12 +734,14 @@ impl XcomApp {
             let attempt = self.protocol.outstanding_attempt().unwrap_or(1);
             self.log_protocol(
                 Level::Info,
-                format!(
-                    "→ 帧 #{sequence}（第 {attempt} 次）: {}",
-                    crate::hex::to_hex_string(&bytes, true)
+                crate::i18n::tr3(
+                    "→ 帧 #{}（第 {} 次）: {}",
+                    sequence,
+                    attempt,
+                    crate::hex::to_hex_string(&bytes, true),
                 ),
             );
-            self.send_bytes(bytes, "发送协议帧");
+            self.send_bytes(bytes, tr("发送协议帧"));
         }
         self.drain_protocol_events();
         ctx.request_repaint_after(Duration::from_millis(5));
@@ -751,14 +759,14 @@ impl XcomApp {
                     self.protocol_progress = None;
                     self.log_protocol(
                         Level::Success,
-                        format!("✓ 收到应答 #{sequence}（第 {attempt} 次尝试）"),
+                        crate::i18n::tr2("✓ 收到应答 #{}（第 {} 次尝试）", sequence, attempt),
                     );
                 }
                 ProtocolEvent::NoResponse { sequence } => {
                     self.protocol_progress = None;
                     self.log_protocol(
                         Level::Error,
-                        format!("✗ 帧 #{sequence} 设备无响应，已停止发送"),
+                        crate::i18n::tr1("✗ 帧 #{} 设备无响应，已停止发送", sequence),
                     );
                 }
                 ProtocolEvent::Response { frame } => {
@@ -779,7 +787,10 @@ impl XcomApp {
                 }
                 ProtocolEvent::FileFinished { total } => {
                     self.protocol_progress = None;
-                    self.log_protocol(Level::Success, format!("文件传输完成，共 {total} 字节"));
+                    self.log_protocol(
+                        Level::Success,
+                        crate::i18n::tr1("文件传输完成，共 {} 字节", total),
+                    );
                 }
                 ProtocolEvent::Stopped(reason) => {
                     self.protocol_progress = None;
@@ -794,13 +805,15 @@ impl XcomApp {
         if self.settings.protocol.show_raw {
             crate::hex::to_hex_string(&frame.raw, true)
         } else {
-            format!(
-                "地址 {:02X} 功能 {:02X} 序列 {:02X} 数据[{}] {}",
-                frame.address,
-                frame.function,
-                frame.sequence,
-                frame.data.len(),
-                crate::hex::to_hex_string(&frame.data, true)
+            crate::i18n::tr_fmt(
+                "地址 {} 功能 {} 序列 {} 数据[{}] {}",
+                &[
+                    format!("{:02X}", frame.address),
+                    format!("{:02X}", frame.function),
+                    format!("{:02X}", frame.sequence),
+                    frame.data.len().to_string(),
+                    crate::hex::to_hex_string(&frame.data, true),
+                ],
             )
         }
     }
@@ -820,7 +833,7 @@ impl XcomApp {
         let indices = self.settings.multi.loop_indices(page);
         if indices.is_empty() {
             self.settings.multi.loop_enabled = false;
-            self.warn("当前页没有勾选的发送条目，已停止循环发送");
+            self.warn(tr("当前页没有勾选的发送条目，已停止循环发送"));
             return;
         }
         if self.multi_index >= indices.len() {
@@ -838,19 +851,19 @@ impl XcomApp {
         };
         if !entry.is_sendable() {
             if !from_loop {
-                self.warn(format!("条目 {} 为空", index));
+                self.warn(crate::i18n::tr1("条目 {} 为空", index));
             }
             return;
         }
         let encoded = match self.settings.multi.encode_entry(entry) {
             Ok(bytes) => bytes,
             Err(err) => {
-                self.error(format!("条目 {} 编码失败: {err}", index));
+                self.error(crate::i18n::tr2("条目 {} 编码失败: {}", index, err));
                 return;
             }
         };
         let label = index.to_string();
-        self.send_bytes(encoded, &format!("发送条目 {label}"));
+        self.send_bytes(encoded, &crate::i18n::tr1("发送条目 {}", label));
     }
 
     // -- shortcuts ----------------------------------------------------------
