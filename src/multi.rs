@@ -167,9 +167,10 @@ impl MultiSend {
             #[serde(default)]
             pages: Vec<Vec<MultiEntry>>,
         }
-        let doc: Doc = serde_json::from_str(text).map_err(|e| format!("解析失败: {e}"))?;
+        let doc: Doc =
+            serde_json::from_str(text).map_err(|e| crate::i18n::tr1("解析失败: {}", e))?;
         if doc.pages.is_empty() {
-            return Err("文件中没有条目".to_owned());
+            return Err(crate::i18n::tr("文件中没有条目").to_owned());
         }
         let count = doc.pages.iter().map(Vec::len).sum();
         self.pages = doc.pages;

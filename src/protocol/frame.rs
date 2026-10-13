@@ -94,21 +94,44 @@ pub enum FrameError {
 impl std::fmt::Display for FrameError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FrameError::TooShort(n) => write!(f, "帧长度 {n} 小于最小长度 {MIN_FRAME}"),
-            FrameError::TooLong(n) => write!(f, "帧长度 {n} 超过最大长度 {MAX_FRAME}"),
+            FrameError::TooShort(n) => write!(
+                f,
+                "{}",
+                crate::i18n::tr2("帧长度 {} 小于最小长度 {}", n, MIN_FRAME)
+            ),
+            FrameError::TooLong(n) => write!(
+                f,
+                "{}",
+                crate::i18n::tr2("帧长度 {} 超过最大长度 {}", n, MAX_FRAME)
+            ),
             FrameError::Truncated {
                 declared,
                 available,
-            } => write!(f, "数据长度字段为 {declared}，但只剩 {available} 字节"),
-            FrameError::BadCheckLength(n) => write!(f, "校验字段长度 {n} 非法（应为 1 或 2）"),
+            } => write!(
+                f,
+                "{}",
+                crate::i18n::tr2("数据长度字段为 {}，但只剩 {} 字节", declared, available)
+            ),
+            FrameError::BadCheckLength(n) => write!(
+                f,
+                "{}",
+                crate::i18n::tr1("校验字段长度 {} 非法（应为 1 或 2）", n)
+            ),
             FrameError::CheckWidthMismatch { expected, found } => {
-                write!(f, "校验字段长度 {found} 与所选校验方式 ({expected}) 不符")
+                write!(
+                    f,
+                    "{}",
+                    crate::i18n::tr2("校验字段长度 {} 与所选校验方式 ({}) 不符", found, expected)
+                )
             }
             FrameError::ChecksumMismatch { expected, found } => write!(
                 f,
-                "校验错误：期望 {}，实际 {}",
-                hex_join(expected),
-                hex_join(found)
+                "{}",
+                crate::i18n::tr2(
+                    "校验错误：期望 {}，实际 {}",
+                    hex_join(expected),
+                    hex_join(found)
+                )
             ),
         }
     }

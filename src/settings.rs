@@ -216,21 +216,23 @@ impl Settings {
 
     /// Write to disk, creating the directory if needed.
     pub fn save(&self) -> Result<(), String> {
-        let path = Self::path().ok_or_else(|| "无法确定配置目录".to_owned())?;
+        let path = Self::path().ok_or_else(|| crate::i18n::tr("无法确定配置目录").to_owned())?;
         self.save_to(&path)
     }
 
     /// Write to an explicit path.
     pub fn save_to(&self, path: &std::path::Path) -> Result<(), String> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+            std::fs::create_dir_all(dir)
+                .map_err(|e| crate::i18n::tr1("创建配置目录失败: {}", e))?;
         }
-        let text = serde_json::to_string_pretty(self).map_err(|e| format!("序列化失败: {e}"))?;
+        let text = serde_json::to_string_pretty(self)
+            .map_err(|e| crate::i18n::tr1("序列化失败: {}", e))?;
         // Write to a temporary file and rename, so an interrupted save cannot
         // leave a truncated settings file behind.
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(|e| format!("写入失败: {e}"))?;
-        std::fs::rename(&tmp, path).map_err(|e| format!("替换失败: {e}"))?;
+        std::fs::write(&tmp, text).map_err(|e| crate::i18n::tr1("写入失败: {}", e))?;
+        std::fs::rename(&tmp, path).map_err(|e| crate::i18n::tr1("替换失败: {}", e))?;
         Ok(())
     }
 }

@@ -101,7 +101,7 @@ impl SerialLink {
             .flow_control(plan.flow)
             .timeout(READ_TIMEOUT)
             .open()
-            .map_err(|err| format!("无法打开 {}: {err}", config.port))?;
+            .map_err(|err| crate::i18n::tr2("无法打开 {}: {}", &config.port, err))?;
 
         if let Some(note) = plan.note.clone() {
             self.notes.push(note);
@@ -111,10 +111,10 @@ impl SerialLink {
         // fatal: many virtual/USB bridges do not implement every line.
         let mut port = port;
         if let Err(err) = port.write_data_terminal_ready(config.dtr) {
-            self.notes.push(format!("设置 DTR 失败: {err}"));
+            self.notes.push(crate::i18n::tr1("设置 DTR 失败: {}", err));
         }
         if let Err(err) = port.write_request_to_send(config.rts) {
-            self.notes.push(format!("设置 RTS 失败: {err}"));
+            self.notes.push(crate::i18n::tr1("设置 RTS 失败: {}", err));
         }
 
         // Flush anything the driver buffered before we attached.
@@ -122,10 +122,10 @@ impl SerialLink {
 
         let reader_port = port
             .try_clone()
-            .map_err(|err| format!("无法复制串口句柄: {err}"))?;
+            .map_err(|err| crate::i18n::tr1("无法复制串口句柄: {}", err))?;
         let writer_port = port
             .try_clone()
-            .map_err(|err| format!("无法复制串口句柄: {err}"))?;
+            .map_err(|err| crate::i18n::tr1("无法复制串口句柄: {}", err))?;
 
         let stop = Arc::new(AtomicBool::new(false));
         let (write_tx, write_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(WRITE_QUEUE);
@@ -181,15 +181,17 @@ impl SerialLink {
     /// as back-pressure rather than a hard failure.
     pub fn send(&self, bytes: Vec<u8>) -> Result<(), String> {
         let Some(tx) = self.write_tx.as_ref() else {
-            return Err("串口未打开".to_owned());
+            return Err(crate::i18n::tr("串口未打开").to_owned());
         };
         if bytes.is_empty() {
             return Ok(());
         }
         match tx.try_send(bytes) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err("发送队列已满，请降低发送速率".to_owned()),
-            Err(TrySendError::Disconnected(_)) => Err("串口已关闭".to_owned()),
+            Err(TrySendError::Full(_)) => {
+                Err(crate::i18n::tr("发送队列已满，请降低发送速率").to_owned())
+            }
+            Err(TrySendError::Disconnected(_)) => Err(crate::i18n::tr("串口已关闭").to_owned()),
         }
     }
 
@@ -218,14 +220,20 @@ impl SerialLink {
 
     /// Drive DTR.
     pub fn set_dtr(&mut self, level: bool) -> Result<(), String> {
-        let port = self.port.as_mut().ok_or_else(|| "串口未打开".to_owned())?;
+        let port = self
+            .port
+            .as_mut()
+            .ok_or_else(|| crate::i18n::tr("串口未打开").to_owned())?;
         port.write_data_terminal_ready(level)
             .map_err(|e| e.to_string())
     }
 
     /// Drive RTS.
     pub fn set_rts(&mut self, level: bool) -> Result<(), String> {
-        let port = self.port.as_mut().ok_or_else(|| "串口未打开".to_owned())?;
+        let port = self
+            .port
+            .as_mut()
+            .ok_or_else(|| crate::i18n::tr("串口未打开").to_owned())?;
         port.write_request_to_send(level).map_err(|e| e.to_string())
     }
 }
@@ -268,7 +276,8 @@ fn spawn_reader(
                             continue;
                         }
                         // Anything else means the device went away.
-                        let _ = events.send(SerialEvent::Lost(format!("串口读取失败: {err}")));
+                        let _ = events
+                            .send(SerialEvent::Lost(crate::i18n::tr1("串口读取失败: {}", err)));
                         break;
                     }
                 }
@@ -301,7 +310,10 @@ fn spawn_writer(
                         }
                     }
                     Err(err) => {
-                        let _ = events.send(SerialEvent::WriteFailed(format!("发送失败: {err}")));
+                        let _ = events.send(SerialEvent::WriteFailed(crate::i18n::tr1(
+                            "发送失败: {}",
+                            &err,
+                        )));
                         if is_fatal(&err) {
                             break;
                         }

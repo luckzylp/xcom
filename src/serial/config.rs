@@ -217,10 +217,11 @@ impl SerialConfig {
                     StopBits::Two
                 } else {
                     note = Some(if cfg!(target_os = "linux") {
-                        "本系统 (Linux) 仅在数据位为 5 时支持 1.5 位停止位，已按 2 位停止位处理"
+                        crate::i18n::tr("本系统 (Linux) 仅在数据位为 5 时支持 1.5 位停止位，已按 2 位停止位处理")
                             .to_owned()
                     } else {
-                        "当前平台/驱动不支持 1.5 位停止位，已按 2 位停止位处理".to_owned()
+                        crate::i18n::tr("当前平台/驱动不支持 1.5 位停止位，已按 2 位停止位处理")
+                            .to_owned()
                     });
                     StopBits::Two
                 }
