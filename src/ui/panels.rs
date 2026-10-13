@@ -708,18 +708,8 @@ fn display_section(app: &mut XcomApp, ui: &mut Ui) {
                 app.mark_settings_dirty();
             }
 
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button(tr("清除接收")).clicked() {
-                    app.clear_receive();
-                }
-                if ui.button(tr("保存接收数据")).clicked() {
-                    save_log(app);
-                }
-                if ui.button(tr("保存原始数据")).clicked() {
-                    save_raw_log(app);
-                }
-            });
+            // The clear/save actions live in the receive toolbar, right next
+            // to the data they act on; repeating them here was redundant.
         });
 }
 
@@ -928,6 +918,16 @@ fn log_toolbar(app: &mut XcomApp, ui: &mut Ui) {
             save_raw_log(app);
         }
 
+        ui.separator();
+        let mut echo = app.settings.echo_sent;
+        if ui
+            .checkbox(&mut echo, tr("回显发送"))
+            .on_hover_text(tr("把发出的内容显示在接收区，便于确认是否真的发出"))
+            .changed()
+        {
+            app.settings.echo_sent = echo;
+            app.mark_settings_dirty();
+        }
         ui.separator();
         ui.label(RichText::new(app.encoding_label()).monospace());
         if app.log_view.has_selection() {

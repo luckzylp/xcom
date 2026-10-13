@@ -497,6 +497,10 @@ static EN: &[(&str, &str)] = &[
 
     ("已停止循环发送", "Loop sending stopped"),
 
+    ("回显发送", "Echo sent"),
+    ("把发出的内容显示在接收区，便于确认是否真的发出",
+     "Show what you send in the receive view, so it is clear it went out"),
+
     // -- parity / flow control (src/serial/config.rs) -----------------------
     ("无",                    "None"),
     ("奇校验",                "Odd"),

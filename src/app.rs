@@ -1556,6 +1556,33 @@ mod layout_tests {
     }
 
     #[test]
+    fn settings_that_need_a_control_have_one_in_the_ui() {
+        // The echo feature shipped with the setting wired through the store and
+        // the send path but *no* control anywhere, so the user could neither
+        // see nor change it.  Every behavioural test passed because they set
+        // the field directly.  This checks the other half: that the panels
+        // actually offer a control for each setting a user is meant to reach.
+        let panels =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ui/panels.rs"))
+                .expect("panels.rs is readable");
+        for field in [
+            "echo_sent",
+            "auto_scroll",
+            "log_font_size",
+            "line_spacing",
+            "loop_enabled",
+            "loop_count",
+        ] {
+            // The write, not merely a mention: reading a field proves nothing
+            // about whether a control can change it.
+            assert!(
+                panels.contains(&format!("{field} = ")),
+                "settings.{field} has no control that sets it"
+            );
+        }
+    }
+
+    #[test]
     fn renders_the_default_frame() {
         let ctx = egui::Context::default();
         let mut app = seeded();
