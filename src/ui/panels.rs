@@ -107,12 +107,13 @@ pub(crate) enum SplitterGrowth {
 }
 
 impl SplitterGrowth {
-    /// The panel size implied by a pointer position.
-    fn size_from(self, pointer: egui::Pos2, fixed_edge: f32) -> f32 {
+    /// How far the pointer has moved away from the panel's fixed edge since the
+    /// drag began.  Positive means "grow the panel".
+    fn growth_delta(self, pointer: egui::Pos2, origin: egui::Pos2) -> f32 {
         match self {
-            Self::Rightward => pointer.x - fixed_edge,
-            Self::Leftward => fixed_edge - pointer.x,
-            Self::Upward => fixed_edge - pointer.y,
+            Self::Rightward => pointer.x - origin.x,
+            Self::Leftward => origin.x - pointer.x,
+            Self::Upward => origin.y - pointer.y,
         }
     }
 
@@ -155,7 +156,8 @@ pub(crate) struct PendingSplitter {
     pub growth: SplitterGrowth,
     pub boundary: f32,
     pub cross: egui::Rangef,
-    pub fixed_edge: f32,
+    /// The panel's size before this frame, used as the drag origin.
+    pub current_size: f32,
     pub min: f32,
     pub max: f32,
     pub target: SplitterTarget,
@@ -186,11 +188,31 @@ pub(crate) fn apply_splitters(app: &mut XcomApp, ui: &mut Ui) {
         if response.hovered() || response.dragged() {
             ui.ctx().set_cursor_icon(spec.growth.cursor());
         }
-        if response.dragged() {
+
+        // The size is tracked as a delta from where the drag started, not as an
+        // absolute distance from a fixed edge.  The edge moves as the panel
+        // resizes, so an absolute reading is recomputed differently on every
+        // frame of the gesture -- the panel overshoots and then creeps back.
+        let state_id = egui::Id::new(("splitter-drag", spec.id));
+        let current = spec.current_size;
+
+        // Record the origin when the button goes down, not when egui decides a
+        // drag has begun: the threshold means those are different frames, and
+        // using the later one would make the first delta zero.
+        if response.is_pointer_button_down_on()
+            && ui.data(|data| data.get_temp::<(f32, egui::Pos2)>(state_id).is_none())
+        {
             if let Some(pointer) = response.interact_pointer_pos() {
-                let size = spec
-                    .growth
-                    .size_from(pointer, spec.fixed_edge)
+                ui.data_mut(|data| data.insert_temp(state_id, (current, pointer)));
+            }
+        }
+
+        if response.dragged() {
+            let origin = ui.data(|data| data.get_temp::<(f32, egui::Pos2)>(state_id));
+            if let (Some((start_size, start_pointer)), Some(pointer)) =
+                (origin, response.interact_pointer_pos())
+            {
+                let size = (start_size + spec.growth.growth_delta(pointer, start_pointer))
                     .clamp(spec.min, spec.max);
                 match spec.target {
                     SplitterTarget::LeftWidth => app.settings.left_panel_width = size,
@@ -199,6 +221,10 @@ pub(crate) fn apply_splitters(app: &mut XcomApp, ui: &mut Ui) {
                 }
                 app.mark_settings_dirty();
             }
+        }
+
+        if response.drag_stopped() || !response.is_pointer_button_down_on() {
+            ui.data_mut(|data| data.remove::<(f32, egui::Pos2)>(state_id));
         }
     }
 }
@@ -374,7 +400,7 @@ pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
         growth: SplitterGrowth::Rightward,
         boundary: outer.right(),
         cross: outer.y_range(),
-        fixed_edge: outer.left(),
+        current_size: app.settings.left_panel_width,
         min: LEFT_PANEL_MIN,
         max: LEFT_PANEL_MAX,
         target: SplitterTarget::LeftWidth,
@@ -848,7 +874,7 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
             growth: SplitterGrowth::Upward,
             boundary: outer.top(),
             cross: outer.x_range(),
-            fixed_edge: outer.bottom(),
+            current_size: app.settings.send_area_height,
             min: SEND_AREA_MIN,
             max: SEND_AREA_MAX,
             target: SplitterTarget::SendHeight,
@@ -1098,7 +1124,7 @@ pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
         growth: SplitterGrowth::Leftward,
         boundary: outer.left(),
         cross: outer.y_range(),
-        fixed_edge: outer.right(),
+        current_size: app.settings.right_panel_width,
         min: RIGHT_PANEL_MIN,
         max: RIGHT_PANEL_MAX,
         target: SplitterTarget::RightWidth,
@@ -1176,6 +1202,18 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                 }
             }
         }
+        // One-shot send of everything checked on this page.  Without this the
+        // 启用 checkboxes only had an effect inside the loop, which is not what
+        // "enabled" suggests.
+        let can_send = app.link.is_open();
+        if ui
+            .add_enabled(can_send, egui::Button::new(tr("发送已勾选")))
+            .on_hover_text(tr("按顺序发送本页所有已勾选且非空的条目"))
+            .clicked()
+        {
+            app.send_enabled_entries(app.settings.multi.page);
+        }
+
         let mut loop_enabled = app.settings.multi.loop_enabled;
         let can_loop = app.link.is_open();
         if ui

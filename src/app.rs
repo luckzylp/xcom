@@ -838,10 +838,31 @@ impl XcomApp {
         }
     }
 
+    /// Send every checked entry on a page once, in order.
+    pub(crate) fn send_enabled_entries(&mut self, page: usize) {
+        let indices = self.settings.multi.enabled_indices(page);
+        if indices.is_empty() {
+            self.warn(tr("当前页没有已勾选的发送条目"));
+            return;
+        }
+        let mut queued = 0usize;
+        for index in indices {
+            if self.send_multi_entry(page, index, true) {
+                queued += 1;
+            }
+        }
+        // `send_multi_entry` reports its own failures, so only claim success
+        // for the ones that actually reached the queue.
+        if queued > 0 {
+            let message = crate::i18n::tr1("已发送 {} 条已勾选条目", queued);
+            self.ok(message);
+        }
+    }
+
     /// Send the next enabled multi-send entry.
     pub(crate) fn send_next_multi_entry(&mut self) {
         let page = self.settings.multi.page;
-        let indices = self.settings.multi.loop_indices(page);
+        let indices = self.settings.multi.enabled_indices(page);
         if indices.is_empty() {
             self.settings.multi.loop_enabled = false;
             self.warn(tr("当前页没有勾选的发送条目，已停止循环发送"));
@@ -870,26 +891,41 @@ impl XcomApp {
         self.send_multi_entry(page, slot, true);
     }
 
-    /// Encode and send one multi-send entry.
-    pub(crate) fn send_multi_entry(&mut self, page: usize, index: usize, from_loop: bool) {
+    /// Encode and send one multi-send entry.  Returns whether it was queued.
+    pub(crate) fn send_multi_entry(&mut self, page: usize, index: usize, from_loop: bool) -> bool {
         let Some(entry) = self.settings.multi.entry(page, index) else {
-            return;
+            return false;
         };
         if !entry.is_sendable() {
             if !from_loop {
                 self.warn(crate::i18n::tr1("条目 {} 为空", index));
             }
-            return;
+            return false;
         }
         let encoded = match self.settings.multi.encode_entry(entry) {
             Ok(bytes) => bytes,
             Err(err) => {
                 self.error(crate::i18n::tr2("条目 {} 编码失败: {}", index, err));
-                return;
+                return false;
             }
         };
         let label = index.to_string();
-        self.send_bytes(encoded, &crate::i18n::tr1("发送条目 {}", label));
+        self.send_multi_entry_bytes(encoded, &crate::i18n::tr1("发送条目 {}", label))
+    }
+
+    /// Queue an already-encoded multi-send payload, reporting whether it went.
+    fn send_multi_entry_bytes(&mut self, bytes: Vec<u8>, what: &str) -> bool {
+        if !self.link.is_open() {
+            self.error(format!("{}: {}", tr("串口未打开"), what));
+            return false;
+        }
+        match self.link.send(bytes) {
+            Ok(()) => true,
+            Err(err) => {
+                self.error(err);
+                false
+            }
+        }
     }
 
     // -- shortcuts ----------------------------------------------------------
@@ -1018,12 +1054,18 @@ mod layout_tests {
     use crate::logstore::{HexStyle, ViewMode};
     use crate::theme::ThemeMode;
 
+    /// A frame input with a monotonically increasing time.
+    ///
+    /// Every frame in these tests must take its time from here: egui panics if
+    /// time ever goes backwards, and a frame with no time advances its clock by
+    /// `predicted_dt`, which would overtake a fixed value.
     fn input() -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(1280.0, 840.0),
             )),
+            time: Some(next_time()),
             ..Default::default()
         }
     }
@@ -1056,9 +1098,8 @@ mod layout_tests {
     }
 
     /// A frame with an optional pointer press at `pos`.
-    fn pointer(pos: egui::Pos2, pressed: Option<bool>, time: f64) -> egui::RawInput {
+    fn pointer(pos: egui::Pos2, pressed: Option<bool>) -> egui::RawInput {
         let mut raw = input();
-        raw.time = Some(time);
         raw.events.push(egui::Event::PointerMoved(pos));
         if let Some(pressed) = pressed {
             raw.events.push(egui::Event::PointerButton {
@@ -1112,7 +1153,7 @@ mod layout_tests {
         let positions = [from, from, to, to, to];
         let presses = [None, Some(true), None, None, Some(false)];
         for (position, pressed) in positions.into_iter().zip(presses) {
-            full_frame(ctx, app, pointer(position, pressed, next_time()));
+            full_frame(ctx, app, pointer(position, pressed));
         }
     }
 
@@ -1569,6 +1610,54 @@ mod layout_tests {
             app.multi_cycles >= 12,
             "passes were counted: {}",
             app.multi_cycles
+        );
+    }
+
+    #[test]
+    fn sending_the_checked_entries_reports_a_failure_without_a_port() {
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        arm_entries(&mut app, 3);
+        app.messages.clear();
+
+        app.send_enabled_entries(0);
+
+        // Nothing can be queued with no port open, so it must say so rather
+        // than claim the entries were sent.
+        assert!(
+            app.messages.iter().any(|m| m.level == Level::Error),
+            "expected an error, got {:?}",
+            app.messages.iter().map(|m| &m.text).collect::<Vec<_>>()
+        );
+        assert!(
+            !app.messages.iter().any(|m| m.text.contains("已发送")),
+            "must not claim success when nothing was queued"
+        );
+    }
+
+    #[test]
+    fn sending_the_checked_entries_with_nothing_checked_warns() {
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.messages.clear();
+        app.send_enabled_entries(0);
+        assert_eq!(app.messages.len(), 1, "one warning, no attempts");
+        assert_eq!(app.messages[0].level, Level::Warning);
+    }
+
+    #[test]
+    fn sending_the_checked_entries_covers_exactly_the_checked_ones() {
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        for (index, (text, enabled)) in [("a", true), ("b", false), ("", true), ("c", true)]
+            .into_iter()
+            .enumerate()
+        {
+            let entry = app.settings.multi.entry_mut(0, index).expect("entry");
+            entry.text = text.to_owned();
+            entry.enabled = enabled;
+        }
+        assert_eq!(
+            app.settings.multi.enabled_indices(0),
+            vec![0, 3],
+            "empty and unchecked entries are skipped"
         );
     }
 

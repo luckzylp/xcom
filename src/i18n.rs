@@ -484,6 +484,12 @@ static EN: &[(&str, &str)] = &[
     ("已完成 {} / {} 次", "{} / {} passes done"),
     ("循环发送已完成 {} 次", "Loop sending finished after {} passes"),
 
+    ("发送已勾选", "Send checked"),
+    ("按顺序发送本页所有已勾选且非空的条目",
+     "Send every checked, non-empty entry on this page, in order"),
+    ("当前页没有已勾选的发送条目", "No checked entries on this page"),
+    ("已发送 {} 条已勾选条目", "Sent {} checked entries"),
+
     // -- parity / flow control (src/serial/config.rs) -----------------------
     ("无",                    "None"),
     ("奇校验",                "Odd"),

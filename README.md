@@ -57,6 +57,7 @@
 | 多条发送：首页/上一页/下一页/尾页 | ✅ | |
 | 多条发送：关联数字键盘 0–9 | ✅ | |
 | 多条发送：自动循环发送 | ✅ | 只发送已勾选的条目；支持**无限循环**或**指定循环次数** |
+| 多条发送：一次发送全部勾选条目 | ✅ | 「发送已勾选」按钮，按顺序各发一次 |
 | 多条发送：导入/导出条目 | ✅ | JSON 格式，便于编辑与版本管理 |
 | 协议传输（Modbus RTU 变种、Send-Ack） | ✅ | 见 [协议传输](#协议传输) |
 | 协议：重发次数、帧周期、校验和/异或/CRC8/CRC16 | ✅ | 算法与官方实现逐字节一致 |
@@ -272,7 +273,7 @@ sudo gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
 ## 开发
 
 ```bash
-cargo test              # 178 个测试
+cargo test              # 181 个测试
 cargo clippy --all-targets
 cargo fmt
 ```

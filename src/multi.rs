@@ -138,8 +138,10 @@ impl MultiSend {
         Ok(bytes)
     }
 
-    /// Indices of entries that the loop should send, in order.
-    pub fn loop_indices(&self, page: usize) -> Vec<usize> {
+    /// Indices of the checked, non-empty entries on a page, in order.
+    ///
+    /// Drives both the loop and the one-shot "send checked" action.
+    pub fn enabled_indices(&self, page: usize) -> Vec<usize> {
         self.pages
             .get(page)
             .map(|entries| {
@@ -249,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn loop_skips_disabled_and_empty_entries() {
+    fn enabled_indices_skip_disabled_and_empty_entries() {
         let mut m = MultiSend::default();
         for (index, (text, enabled)) in [("a", true), ("b", false), ("", true), ("c", true)]
             .into_iter()
@@ -259,7 +261,7 @@ mod tests {
             entry.text = text.to_owned();
             entry.enabled = enabled;
         }
-        assert_eq!(m.loop_indices(0), vec![0, 3]);
+        assert_eq!(m.enabled_indices(0), vec![0, 3]);
     }
 
     #[test]
