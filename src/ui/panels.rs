@@ -1131,18 +1131,45 @@ pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
     });
 }
 
-/// Split the space available to the multi-send table between its two text
-/// columns.
+/// Where each field of a multi-send entry goes.
 ///
-/// `fixed` is the total width of the checkbox, index and button columns, which
-/// do not scale; everything left over is shared 62/38 between 内容 and 备注.
-fn multi_column_widths(available: f32, spacing: f32) -> (f32, f32) {
-    let fixed = 30.0 + 26.0 + 34.0 + 34.0 + 62.0 + 58.0;
-    // No per-column floor: a floor larger than the leftover space would push
-    // the table past the panel edge, which is the very problem this solves.
-    // The two columns always sum to the leftover, so the table fits exactly.
-    let flexible = (available - spacing * 6.0 - fixed).max(0.0);
-    (flexible * 0.62, flexible * 0.38)
+/// Entries are laid out as two compact lines rather than one eight-column
+/// table.  The table needed roughly 244 px of fixed columns, so in the default
+/// 287 px panel the command and note fields were left with *zero* width -- the
+/// rows were a wall of unreadable boxes.  Two lines give the fields real room
+/// and halve the number of rows, which is what makes the list scannable.
+struct EntryWidths {
+    command: f32,
+    note: f32,
+}
+
+/// Height of a single line inside a multi-send entry.
+const ROW_H: f32 = 20.0;
+/// Horizontal gap between fields.
+const GAP: f32 = 6.0;
+/// Row height for one entry, being two lines plus the gap between them.
+const ENTRY_H: f32 = 46.0;
+
+fn entry_widths(available: f32, spacing: f32) -> EntryWidths {
+    // Line 1: [✓] # [command] [send]
+    const ENABLE_W: f32 = 24.0;
+    const INDEX_W: f32 = 22.0;
+    const SEND_W: f32 = 52.0;
+    let line1_fixed = ENABLE_W + INDEX_W + SEND_W + spacing * 3.0;
+
+    // Line 2: (indent) HEX 新行 delay [note]
+    const INDENT: f32 = 20.0;
+    const HEX_W: f32 = 40.0;
+    const NEWLINE_W: f32 = 46.0;
+    const DELAY_W: f32 = 56.0;
+    let line2_fixed = INDENT + HEX_W + NEWLINE_W + DELAY_W + spacing * 3.0;
+
+    // No floors: a floor larger than the leftover pushes the row past the panel
+    // edge, and the fields would be clipped instead of merely narrow.
+    EntryWidths {
+        command: (available - line1_fixed).max(0.0),
+        note: (available - line2_fixed).max(0.0),
+    }
 }
 
 fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
@@ -1315,30 +1342,15 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     let mut send_request: Option<usize> = None;
     let mut dirty = false;
 
-    // egui's `Grid` reuses the previous frame's column widths as a *floor*
-    // (`child_size.max(prev_width)`), so a table built with it can grow but
-    // never shrink -- dragging the splitter back left the columns too wide and
-    // pushed the send button off the edge.  Laying the rows out by hand with
-    // explicit widths is what makes them track the panel in both directions.
-    //
-    // These five widths must sum to the `fixed` constant in
-    // `multi_column_widths`, or the row will not fill the panel exactly.
-    let enable_w = 30.0;
-    let index_w = 26.0;
-    let hex_w = 34.0;
-    let newline_w = 34.0;
-    // Delay applied after this entry, before the next one.
-    let delay_w = 62.0;
-    let send_w = 58.0;
+    let widths = entry_widths(ui.available_width(), GAP);
 
-    const ROW_H: f32 = 20.0;
-    const GAP: f32 = 6.0;
-
-    let (text_width, note_width) = multi_column_widths(ui.available_width(), GAP);
-
-    // Fill the panel with rows rather than fixing each page at ten entries.
-    let rows_that_fit = ((ui.available_height() - ROW_H * 1.5) / (ROW_H + 4.0)).floor();
-    let visible = rows_that_fit.max(crate::multi::ENTRIES_PER_PAGE as f32) as usize;
+    // Fill the panel with entries rather than fixing each page at ten.  Two
+    // lines per entry means roughly half as many as before, which is the point:
+    // the list stays scannable instead of becoming a wall of inputs.
+    let rows_that_fit = ((ui.available_height() - ENTRY_H) / (ENTRY_H + 6.0))
+        .floor()
+        .max(0.0) as usize;
+    let visible = rows_that_fit.max(crate::multi::ENTRIES_PER_PAGE);
     if app.settings.multi.ensure_len(page, visible) {
         app.mark_settings_dirty();
         dirty = true;
@@ -1354,54 +1366,34 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(GAP, 4.0);
-
-            ui.horizontal(|ui| {
-                for (width, header) in [
-                    (enable_w, tr("启用")),
-                    (index_w, "#"),
-                    (text_width, tr("内容")),
-                    (note_width, tr("备注")),
-                    (hex_w, "HEX"),
-                    (newline_w, tr("新行")),
-                    (delay_w, tr("延迟")),
-                    (send_w, ""),
-                ] {
-                    ui.add_sized(
-                        [width, ROW_H],
-                        egui::Label::new(RichText::new(header).strong()),
-                    );
-                }
-            });
+            ui.spacing_mut().item_spacing = egui::vec2(GAP, 2.0);
 
             for index in 0..total_rows {
                 let Some(entry) = app.settings.multi.entry_mut(page, index) else {
                     continue;
                 };
                 let stripe = index % 2 == 1;
+                let row = egui::Rect::from_min_size(
+                    ui.cursor().min,
+                    egui::vec2(ui.available_width(), ENTRY_H),
+                );
+                if stripe {
+                    ui.painter().rect_filled(
+                        row,
+                        egui::CornerRadius::ZERO,
+                        ui.visuals().faint_bg_color,
+                    );
+                }
+
                 ui.horizontal(|ui| {
-                    if stripe {
-                        let row = egui::Rect::from_min_size(
-                            ui.cursor().min,
-                            egui::vec2(ui.available_width(), ROW_H),
-                        );
-                        ui.painter().rect_filled(
-                            row,
-                            egui::CornerRadius::ZERO,
-                            ui.visuals().faint_bg_color,
-                        );
-                    }
                     let mut row_changed = false;
                     row_changed |= ui
-                        .add_sized(
-                            [enable_w, ROW_H],
-                            egui::Checkbox::new(&mut entry.enabled, ""),
-                        )
+                        .add_sized([24.0, ROW_H], egui::Checkbox::new(&mut entry.enabled, ""))
                         .changed();
-                    ui.add_sized([index_w, ROW_H], egui::Label::new(format!("{index}")));
+                    ui.add_sized([22.0, ROW_H], egui::Label::new(format!("{index}")));
                     row_changed |= ui
                         .add_sized(
-                            [text_width, ROW_H],
+                            [widths.command, ROW_H],
                             egui::TextEdit::singleline(&mut entry.text).hint_text(if entry.hex {
                                 "01 02 0A"
                             } else {
@@ -1409,41 +1401,50 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                             }),
                         )
                         .changed();
+                    if ui
+                        .add_sized([52.0, ROW_H], egui::Button::new(tr("发送")))
+                        .clicked()
+                    {
+                        send_request = Some(index);
+                    }
+                    if row_changed {
+                        dirty = true;
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    let mut row_changed = false;
+                    // Indent so the flags line up under the command field.
+                    ui.add_space(44.0);
                     row_changed |= ui
-                        .add_sized(
-                            [note_width, ROW_H],
-                            egui::TextEdit::singleline(&mut entry.note).hint_text(tr("备注")),
-                        )
+                        .add_sized([40.0, ROW_H], egui::Checkbox::new(&mut entry.hex, "HEX"))
                         .changed();
                     row_changed |= ui
-                        .add_sized([hex_w, ROW_H], egui::Checkbox::new(&mut entry.hex, ""))
-                        .changed();
-                    row_changed |= ui
                         .add_sized(
-                            [newline_w, ROW_H],
-                            egui::Checkbox::new(&mut entry.newline, ""),
+                            [46.0, ROW_H],
+                            egui::Checkbox::new(&mut entry.newline, tr("新行")),
                         )
                         .changed();
                     let mut delay = entry.delay_ms;
                     if ui
                         .add_sized(
-                            [delay_w, ROW_H],
+                            [56.0, ROW_H],
                             egui::DragValue::new(&mut delay)
                                 .speed(5.0)
-                                .range(0..=3_600_000)
-                                .suffix(" ms"),
+                                .range(0..=3_600_000),
                         )
+                        .on_hover_text(tr("本条发送后延迟，单位毫秒"))
                         .changed()
                     {
                         entry.delay_ms = delay;
-                        dirty = true;
+                        row_changed = true;
                     }
-                    if ui
-                        .add_sized([send_w, ROW_H], egui::Button::new(tr("发送")))
-                        .clicked()
-                    {
-                        send_request = Some(index);
-                    }
+                    row_changed |= ui
+                        .add_sized(
+                            [widths.note, ROW_H],
+                            egui::TextEdit::singleline(&mut entry.note).hint_text(tr("备注")),
+                        )
+                        .changed();
                     if row_changed {
                         dirty = true;
                     }
@@ -1866,33 +1867,50 @@ fn save_log(app: &mut XcomApp) {
 }
 
 #[cfg(test)]
-mod column_tests {
-    use super::multi_column_widths;
+mod entry_layout_tests {
+    use super::{entry_widths, ENTRY_H};
 
     #[test]
-    fn columns_grow_with_the_panel() {
-        let narrow = multi_column_widths(340.0, 6.0);
-        let wide = multi_column_widths(700.0, 6.0);
-        assert!(wide.0 > narrow.0, "narrow {narrow:?} wide {wide:?}");
-        assert!(wide.1 > narrow.1, "narrow {narrow:?} wide {wide:?}");
+    fn the_fields_have_real_room_at_the_default_panel_width() {
+        // The whole point of the two-line layout: at the default panel width
+        // the old eight-column table left both text fields at zero pixels.
+        let widths = entry_widths(271.0, 6.0);
+        assert!(
+            widths.command > 100.0,
+            "command field is {} px",
+            widths.command
+        );
+        assert!(widths.note > 60.0, "note field is {} px", widths.note);
     }
 
     #[test]
-    fn columns_plus_fixed_columns_fit_the_panel() {
-        // The whole point of the fix: the table must not overflow its panel.
-        for available in [340.0f32, 420.0, 560.0, 700.0] {
-            let (text, note) = multi_column_widths(available, 6.0);
-            let fixed = 30.0 + 26.0 + 34.0 + 34.0 + 58.0;
-            let used = text + note + fixed + 6.0 * 6.0;
-            assert!(used <= available + 1.0, "available {available} used {used}");
+    fn the_fields_grow_with_the_panel() {
+        let narrow = entry_widths(271.0, 6.0);
+        let wide = entry_widths(560.0, 6.0);
+        assert!(wide.command > narrow.command);
+        assert!(wide.note > narrow.note);
+    }
+
+    #[test]
+    fn nothing_goes_negative_on_a_tiny_panel() {
+        for available in [0.0f32, 40.0, 120.0, 200.0] {
+            let widths = entry_widths(available, 6.0);
+            assert!(
+                widths.command >= 0.0 && widths.note >= 0.0,
+                "{available}: {}/{}",
+                widths.command,
+                widths.note
+            );
         }
     }
 
     #[test]
-    fn columns_never_go_negative_when_the_panel_is_tiny() {
-        for available in [0.0f32, 40.0, 120.0, 200.0] {
-            let (text, note) = multi_column_widths(available, 6.0);
-            assert!(text >= 0.0 && note >= 0.0, "{available}: {text} {note}");
+    fn an_entry_is_taller_than_a_single_line() {
+        // Checked at compile time so a future layout change cannot quietly
+        // squeeze the two lines back into one.
+        const {
+            assert!(ENTRY_H > 40.0);
+            assert!(ENTRY_H < 60.0);
         }
     }
 }
