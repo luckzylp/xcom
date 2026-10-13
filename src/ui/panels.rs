@@ -1137,7 +1137,7 @@ pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
 /// `fixed` is the total width of the checkbox, index and button columns, which
 /// do not scale; everything left over is shared 62/38 between 内容 and 备注.
 fn multi_column_widths(available: f32, spacing: f32) -> (f32, f32) {
-    let fixed = 30.0 + 26.0 + 34.0 + 34.0 + 58.0;
+    let fixed = 30.0 + 26.0 + 34.0 + 34.0 + 62.0 + 58.0;
     // No per-column floor: a floor larger than the leftover space would push
     // the table past the panel edge, which is the very problem this solves.
     // The two columns always sum to the leftover, so the table fits exactly.
@@ -1150,11 +1150,9 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         if ui.button(tr("首页")).clicked() {
             app.settings.multi.first_page();
-            app.multi_index = 0;
         }
         if ui.button(tr("上一页")).clicked() {
             app.settings.multi.previous_page();
-            app.multi_index = 0;
         }
         ui.label(crate::i18n::tr2(
             "第 {} / {} 页",
@@ -1163,11 +1161,9 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         ));
         if ui.button(tr("下一页")).clicked() {
             app.settings.multi.next_page();
-            app.multi_index = 0;
         }
         if ui.button(tr("尾页")).clicked() {
             app.settings.multi.last_page();
-            app.multi_index = 0;
         }
     });
 
@@ -1205,13 +1201,13 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         // One-shot send of everything checked on this page.  Without this the
         // 启用 checkboxes only had an effect inside the loop, which is not what
         // "enabled" suggests.
-        let can_send = app.link.is_open();
+        let can_send = app.link.is_open() && !app.multi_run_active();
         if ui
             .add_enabled(can_send, egui::Button::new(tr("发送已勾选")))
             .on_hover_text(tr("按顺序发送本页所有已勾选且非空的条目"))
             .clicked()
         {
-            app.send_enabled_entries(app.settings.multi.page);
+            app.start_multi_run(app.settings.multi.page, false, std::time::Instant::now());
         }
 
         let mut loop_enabled = app.settings.multi.loop_enabled;
@@ -1224,10 +1220,11 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
             .changed()
         {
             app.settings.multi.loop_enabled = loop_enabled;
+            let page = app.settings.multi.page;
             if loop_enabled {
-                app.multi_index = 0;
-                app.multi_cycles = 0;
-                app.last_multi_send = None;
+                app.start_multi_run(page, true, std::time::Instant::now());
+            } else {
+                app.stop_multi_run(tr("已停止循环发送"));
             }
             app.mark_settings_dirty();
         }
@@ -1249,7 +1246,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     });
 
     ui.horizontal(|ui| {
-        ui.label(tr("循环次数"));
+        ui.label(tr("轮次间隔"));
         let mut forever = app.settings.multi.loop_count.is_none();
         if ui.checkbox(&mut forever, tr("无限循环")).changed() {
             app.settings.multi.loop_count = if forever { None } else { Some(10) };
@@ -1330,12 +1327,29 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     let index_w = 26.0;
     let hex_w = 34.0;
     let newline_w = 34.0;
+    // Delay applied after this entry, before the next one.
+    let delay_w = 62.0;
     let send_w = 58.0;
 
     const ROW_H: f32 = 20.0;
     const GAP: f32 = 6.0;
 
     let (text_width, note_width) = multi_column_widths(ui.available_width(), GAP);
+
+    // Fill the panel with rows rather than fixing each page at ten entries.
+    let rows_that_fit = ((ui.available_height() - ROW_H * 1.5) / (ROW_H + 4.0)).floor();
+    let visible = rows_that_fit.max(crate::multi::ENTRIES_PER_PAGE as f32) as usize;
+    if app.settings.multi.ensure_len(page, visible) {
+        app.mark_settings_dirty();
+        dirty = true;
+    }
+    let total_rows = app
+        .settings
+        .multi
+        .pages
+        .get(page)
+        .map_or(0, Vec::len)
+        .max(visible);
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -1350,6 +1364,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                     (note_width, tr("备注")),
                     (hex_w, "HEX"),
                     (newline_w, tr("新行")),
+                    (delay_w, tr("延迟")),
                     (send_w, ""),
                 ] {
                     ui.add_sized(
@@ -1359,7 +1374,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                 }
             });
 
-            for index in 0..crate::multi::ENTRIES_PER_PAGE {
+            for index in 0..total_rows {
                 let Some(entry) = app.settings.multi.entry_mut(page, index) else {
                     continue;
                 };
@@ -1409,6 +1424,20 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                             egui::Checkbox::new(&mut entry.newline, ""),
                         )
                         .changed();
+                    let mut delay = entry.delay_ms;
+                    if ui
+                        .add_sized(
+                            [delay_w, ROW_H],
+                            egui::DragValue::new(&mut delay)
+                                .speed(5.0)
+                                .range(0..=3_600_000)
+                                .suffix(" ms"),
+                        )
+                        .changed()
+                    {
+                        entry.delay_ms = delay;
+                        dirty = true;
+                    }
                     if ui
                         .add_sized([send_w, ROW_H], egui::Button::new(tr("发送")))
                         .clicked()

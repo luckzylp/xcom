@@ -490,6 +490,13 @@ static EN: &[(&str, &str)] = &[
     ("当前页没有已勾选的发送条目", "No checked entries on this page"),
     ("已发送 {} 条已勾选条目", "Sent {} checked entries"),
 
+    ("串口已关闭，多条发送已停止", "Port closed; multi-send stopped"),
+
+    ("延迟", "Delay"),
+    ("轮次间隔", "Round gap"),
+
+    ("已停止循环发送", "Loop sending stopped"),
+
     // -- parity / flow control (src/serial/config.rs) -----------------------
     ("无",                    "None"),
     ("奇校验",                "Odd"),

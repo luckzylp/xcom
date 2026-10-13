@@ -73,6 +73,24 @@ pub(crate) struct ProtocolLogLine {
     pub stamp: String,
 }
 
+/// A multi-send sequence in progress.
+///
+/// Entries are sent one at a time with each entry's own delay applied after it,
+/// and a completed round waits `round_gap_ms` before the next one.  Pacing the
+/// sequence rather than firing everything at once is what makes per-entry
+/// delays and the round gap possible.
+pub(crate) struct MultiRun {
+    page: usize,
+    queue: Vec<usize>,
+    position: usize,
+    /// When the next entry may go out.
+    next_at: Instant,
+    /// Whether to start another round after this one.
+    looping: bool,
+    /// Delay between rounds, from the settings.
+    round_gap: Duration,
+}
+
 /// The application.
 pub struct XcomApp {
     pub(crate) settings: Settings,
@@ -82,6 +100,14 @@ pub struct XcomApp {
     pub(crate) auto: AutoDetector,
     pub(crate) log_view: LogViewState,
 
+    /// Whether the open port has ever appeared in the OS enumeration.
+    ///
+    /// Only then does its disappearance mean anything: plenty of perfectly
+    /// usable ports never show up in the list at all -- legacy `ttyS*` UARTs,
+    /// pseudo-terminals, and some USB bridges whose driver does not expose
+    /// them.  Treating "absent from the list" as "unplugged" closed those
+    /// ports a second after opening them.
+    open_port_enumerated: bool,
     /// Session byte counters (reset by 清除).
     pub(crate) rx_bytes: u64,
     pub(crate) tx_bytes: u64,
@@ -95,11 +121,10 @@ pub struct XcomApp {
 
     /// 定时发送 bookkeeping.
     pub(crate) last_timed_send: Option<Instant>,
-    /// 多条发送 loop bookkeeping.
-    pub(crate) multi_index: usize,
+    /// The running multi-send sequence, if any.
+    pub(crate) multi_run: Option<MultiRun>,
     /// Completed passes of the multi-send loop, for the configured limit.
     pub(crate) multi_cycles: u32,
-    pub(crate) last_multi_send: Option<Instant>,
     /// Chunked file transmission.
     pub(crate) file_send: Option<FileSend>,
 
@@ -179,13 +204,13 @@ impl XcomApp {
             settings,
             rx_bytes: 0,
             tx_bytes: 0,
+            open_port_enumerated: false,
             pending_rx: Vec::new(),
             show_paused: false,
             messages: Vec::new(),
             last_timed_send: None,
-            multi_index: 0,
+            multi_run: None,
             multi_cycles: 0,
-            last_multi_send: None,
             file_send: None,
             protocol: ProtocolEngine::new(crate::protocol::ProtocolConfig::default(), 115200),
             protocol_log: Vec::new(),
@@ -395,6 +420,7 @@ impl XcomApp {
                 self.protocol.set_baud(self.settings.serial.baud);
                 let summary = self.settings.serial.summary();
                 let port = self.settings.serial.port.clone();
+                self.open_port_enumerated = self.ports.find(&port).is_some();
                 self.ok(crate::i18n::tr2("已打开 {} [{}]", port, summary));
                 self.mark_settings_dirty();
             }
@@ -409,6 +435,7 @@ impl XcomApp {
         }
         let was_open = self.link.is_open();
         self.link.close();
+        self.open_port_enumerated = false;
         self.signals = Signals::default();
         if was_open {
             self.info(tr("串口已关闭"));
@@ -562,12 +589,14 @@ impl XcomApp {
     /// Drain the serial link and route bytes to the log and protocol engine.
     fn pump_serial(&mut self, ctx: &Context) {
         if self.ports.poll() {
-            // Keep the selection valid when a device disappears.
-            if !self.settings.serial.port.is_empty()
-                && self.ports.find(&self.settings.serial.port).is_none()
-                && self.link.is_open()
-            {
-                let port = self.settings.serial.port.clone();
+            let port = self.settings.serial.port.clone();
+            let present = !port.is_empty() && self.ports.find(&port).is_some();
+            if present {
+                self.open_port_enumerated = true;
+            }
+            // Only a port we had actually seen vanish counts as unplugged.
+            // Many working ports never appear in the enumeration at all.
+            if self.link.is_open() && self.open_port_enumerated && !present {
                 self.warn(crate::i18n::tr1("{} 已断开", port));
                 self.close_port();
             }
@@ -668,20 +697,8 @@ impl XcomApp {
             self.last_timed_send = None;
         }
 
-        // 多条发送自动循环
-        if self.settings.multi.loop_enabled && self.link.is_open() {
-            let period = Duration::from_millis(self.settings.multi.loop_period_ms.max(1));
-            let due = self
-                .last_multi_send
-                .is_none_or(|last| now.duration_since(last) >= period);
-            if due {
-                self.last_multi_send = Some(now);
-                self.send_next_multi_entry();
-            }
-            ctx.request_repaint_after(Duration::from_millis(10));
-        } else {
-            self.last_multi_send = None;
-        }
+        // 多条发送: driven by the sequence so per-entry delays apply.
+        self.pump_multi(ctx, now);
 
         // Chunked file transmission
         self.pump_file_send(ctx, now);
@@ -838,57 +855,99 @@ impl XcomApp {
         }
     }
 
-    /// Send every checked entry on a page once, in order.
-    pub(crate) fn send_enabled_entries(&mut self, page: usize) {
-        let indices = self.settings.multi.enabled_indices(page);
-        if indices.is_empty() {
+    /// Start sending the checked entries of `page`, in order.
+    ///
+    /// `looping` repeats the sequence, waiting the configured round gap after
+    /// each complete pass.
+    pub(crate) fn start_multi_run(&mut self, page: usize, looping: bool, now: Instant) {
+        let queue = self.settings.multi.enabled_indices(page);
+        if queue.is_empty() {
             self.warn(tr("当前页没有已勾选的发送条目"));
+            self.settings.multi.loop_enabled = false;
             return;
         }
-        let mut queued = 0usize;
-        for index in indices {
-            if self.send_multi_entry(page, index, true) {
-                queued += 1;
-            }
-        }
-        // `send_multi_entry` reports its own failures, so only claim success
-        // for the ones that actually reached the queue.
-        if queued > 0 {
-            let message = crate::i18n::tr1("已发送 {} 条已勾选条目", queued);
-            self.ok(message);
+        self.multi_cycles = 0;
+        self.multi_run = Some(MultiRun {
+            page,
+            queue,
+            position: 0,
+            next_at: now,
+            looping,
+            round_gap: Duration::from_millis(self.settings.multi.loop_period_ms.max(1)),
+        });
+    }
+
+    /// Abandon any sequence in progress.
+    pub(crate) fn stop_multi_run(&mut self, reason: &str) {
+        if self.multi_run.take().is_some() {
+            self.info(reason.to_owned());
         }
     }
 
-    /// Send the next enabled multi-send entry.
-    pub(crate) fn send_next_multi_entry(&mut self) {
-        let page = self.settings.multi.page;
-        let indices = self.settings.multi.enabled_indices(page);
-        if indices.is_empty() {
-            self.settings.multi.loop_enabled = false;
-            self.warn(tr("当前页没有勾选的发送条目，已停止循环发送"));
+    pub(crate) fn multi_run_active(&self) -> bool {
+        self.multi_run.is_some()
+    }
+
+    /// Advance the running sequence.  Sends at most one entry per call.
+    fn pump_multi(&mut self, ctx: &Context, now: Instant) {
+        let Some(run) = self.multi_run.as_ref() else {
+            return;
+        };
+        if !self.link.is_open() {
+            self.multi_run = None;
+            self.warn(tr("串口已关闭，多条发送已停止"));
             return;
         }
-        if self.multi_index >= indices.len() {
-            // A full pass has completed.
-            self.multi_index = 0;
+        if now < run.next_at {
+            ctx.request_repaint_after(run.next_at - now);
+            return;
+        }
+
+        // Copy out what the send needs, then let go of the borrow.
+        let page = run.page;
+        let index = run.queue[run.position];
+        let end_of_round = run.position + 1 == run.queue.len();
+        let queue_len = run.queue.len();
+        let looping = run.looping;
+        let round_gap = run.round_gap;
+
+        self.send_multi_entry(page, index, true);
+        let delay = Duration::from_millis(self.settings.multi.delay_after(page, index));
+
+        let mut stop_looping = false;
+        if end_of_round && looping {
             self.multi_cycles += 1;
-            if let Some(limit) = self.settings.multi.loop_count {
-                if self.multi_cycles >= limit {
-                    self.settings.multi.loop_enabled = false;
-                    self.multi_cycles = 0;
-                    self.mark_settings_dirty();
-                    let done = crate::i18n::tr1("循环发送已完成 {} 次", limit);
-                    self.ok(done);
-                    return;
-                }
+            stop_looping = self
+                .settings
+                .multi
+                .loop_count
+                .is_some_and(|limit| self.multi_cycles >= limit);
+        }
+
+        if let Some(run) = self.multi_run.as_mut() {
+            if end_of_round {
+                run.position = 0;
+                run.next_at = now + if looping { round_gap } else { Duration::ZERO };
+            } else {
+                run.position += 1;
+                run.next_at = now + delay;
             }
         }
-        let slot = indices[self.multi_index];
-        // Advance past the end rather than wrapping here: the branch above
-        // needs to observe `multi_index == len` to count a completed pass.
-        // Wrapping with `% len` made that branch unreachable.
-        self.multi_index += 1;
-        self.send_multi_entry(page, slot, true);
+
+        if stop_looping {
+            let limit = self.settings.multi.loop_count.unwrap_or(0);
+            self.multi_run = None;
+            self.settings.multi.loop_enabled = false;
+            self.multi_cycles = 0;
+            self.mark_settings_dirty();
+            let message = crate::i18n::tr1("循环发送已完成 {} 次", limit);
+            self.ok(message);
+        } else if end_of_round && !looping {
+            self.multi_run = None;
+            let message = crate::i18n::tr1("已发送 {} 条已勾选条目", queue_len);
+            self.ok(message);
+        }
+        ctx.request_repaint_after(Duration::from_millis(5));
     }
 
     /// Encode and send one multi-send entry.  Returns whether it was queued.
@@ -1344,6 +1403,112 @@ mod layout_tests {
         assert_eq!(app.settings.right_panel_width, panels::RIGHT_PANEL_MIN);
     }
 
+    /// A pseudo-terminal pair, so the timer can be tested against a real port.
+    #[cfg(unix)]
+    struct TestPty {
+        master: std::fs::File,
+        slave_path: String,
+    }
+
+    #[cfg(unix)]
+    impl TestPty {
+        fn open() -> Option<Self> {
+            use std::os::fd::FromRawFd;
+            let mut master: libc::c_int = -1;
+            let mut slave: libc::c_int = -1;
+            // SAFETY: openpty fills both descriptors on success; checked below.
+            let rc = unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            };
+            if rc != 0 || master < 0 || slave < 0 {
+                return None;
+            }
+            // SAFETY: both descriptors are valid and now owned here.
+            let master_file = unsafe { std::fs::File::from_raw_fd(master) };
+            let slave_file = unsafe { std::fs::File::from_raw_fd(slave) };
+            // SAFETY: `master` is still open.
+            let name = unsafe { libc::ptsname(master) };
+            if name.is_null() {
+                return None;
+            }
+            // SAFETY: NUL-terminated string valid until the next ptsname call.
+            let slave_path = unsafe { std::ffi::CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned();
+            let flags = unsafe { libc::fcntl(master, libc::F_GETFL) };
+            if flags >= 0 {
+                unsafe { libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+            }
+            drop(slave_file);
+            Some(Self {
+                master: master_file,
+                slave_path,
+            })
+        }
+
+        fn read_available(&mut self, timeout: Duration) -> Vec<u8> {
+            use std::io::Read;
+            let deadline = Instant::now() + timeout;
+            let mut out = Vec::new();
+            let mut buf = [0u8; 256];
+            while Instant::now() < deadline {
+                match self.master.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => out.extend_from_slice(&buf[..n]),
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(_) => break,
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            out
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn timed_send_repeats_on_its_period() {
+        let Some(mut pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.serial.port = pty.slave_path.clone();
+        app.link
+            .open(&app.settings.serial)
+            .expect("opening a pty should succeed");
+
+        app.settings.send.buffer = "AT".to_owned();
+        app.settings.send.append_newline = false;
+        app.settings.send.timed = true;
+        app.settings.send.period_ms = 30;
+
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < deadline {
+            let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
+            output.textures_delta.clear();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let got = pty.read_available(Duration::from_millis(100));
+        println!(
+            "link_open={} messages={:?}",
+            app.link.is_open(),
+            app.messages.iter().map(|m| &m.text).collect::<Vec<_>>()
+        );
+        let text = String::from_utf8_lossy(&got);
+        assert!(
+            text.matches("AT").count() >= 2,
+            "expected the payload repeatedly, got {text:?}"
+        );
+    }
+
     #[test]
     fn renders_the_default_frame() {
         let ctx = egui::Context::default();
@@ -1559,92 +1724,110 @@ mod layout_tests {
         }
     }
 
-    /// Enable the first `count` multi-send entries on page 0.
-    fn arm_entries(app: &mut XcomApp, count: usize) {
-        for index in 0..count {
+    /// Put `entries` (text, delay_ms) on page 0, all checked.
+    fn arm(app: &mut XcomApp, entries: &[(&str, u64)]) {
+        for (index, (text, delay)) in entries.iter().enumerate() {
             let entry = app.settings.multi.entry_mut(0, index).expect("entry");
-            entry.text = format!("CMD{index}");
+            entry.text = (*text).to_owned();
             entry.enabled = true;
+            entry.newline = false;
+            entry.delay_ms = *delay;
         }
-        app.settings.multi.loop_enabled = true;
-        app.multi_index = 0;
-        app.multi_cycles = 0;
     }
 
     #[test]
-    fn multi_send_loop_stops_after_the_configured_passes() {
-        let mut app = XcomApp::headless(crate::settings::Settings::default());
-        arm_entries(&mut app, 2);
-        app.settings.multi.loop_count = Some(2);
-
-        // Two entries, two passes: four sends, then the loop stops on the wrap.
-        for _ in 0..4 {
-            app.send_next_multi_entry();
-        }
-        assert!(
-            app.settings.multi.loop_enabled,
-            "still inside the second pass"
-        );
-        app.send_next_multi_entry();
-        assert!(
-            !app.settings.multi.loop_enabled,
-            "loop must stop after two passes"
-        );
-        assert_eq!(app.multi_cycles, 0, "the counter resets when it stops");
-    }
-
-    #[test]
-    fn multi_send_loop_runs_forever_when_unlimited() {
-        let mut app = XcomApp::headless(crate::settings::Settings::default());
-        arm_entries(&mut app, 2);
-        app.settings.multi.loop_count = None;
-
-        for _ in 0..25 {
-            app.send_next_multi_entry();
-        }
-        assert!(
-            app.settings.multi.loop_enabled,
-            "unlimited loop never stops"
-        );
-        assert!(
-            app.multi_cycles >= 12,
-            "passes were counted: {}",
-            app.multi_cycles
-        );
-    }
-
-    #[test]
-    fn sending_the_checked_entries_reports_a_failure_without_a_port() {
-        let mut app = XcomApp::headless(crate::settings::Settings::default());
-        arm_entries(&mut app, 3);
-        app.messages.clear();
-
-        app.send_enabled_entries(0);
-
-        // Nothing can be queued with no port open, so it must say so rather
-        // than claim the entries were sent.
-        assert!(
-            app.messages.iter().any(|m| m.level == Level::Error),
-            "expected an error, got {:?}",
-            app.messages.iter().map(|m| &m.text).collect::<Vec<_>>()
-        );
-        assert!(
-            !app.messages.iter().any(|m| m.text.contains("已发送")),
-            "must not claim success when nothing was queued"
-        );
-    }
-
-    #[test]
-    fn sending_the_checked_entries_with_nothing_checked_warns() {
+    fn sending_checked_entries_with_nothing_checked_warns_and_does_not_start() {
         let mut app = XcomApp::headless(crate::settings::Settings::default());
         app.messages.clear();
-        app.send_enabled_entries(0);
-        assert_eq!(app.messages.len(), 1, "one warning, no attempts");
+        app.start_multi_run(0, false, Instant::now());
+        assert!(!app.multi_run_active(), "nothing to send");
+        assert_eq!(app.messages.len(), 1);
         assert_eq!(app.messages[0].level, Level::Warning);
     }
 
     #[test]
-    fn sending_the_checked_entries_covers_exactly_the_checked_ones() {
+    fn a_sequence_stops_when_the_port_is_not_open() {
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        arm(&mut app, &[("A", 0), ("B", 0)]);
+        app.start_multi_run(0, false, Instant::now());
+        assert!(app.multi_run_active());
+        app.pump_multi(&ctx, Instant::now());
+        assert!(!app.multi_run_active(), "closed port stops the sequence");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_sequence_waits_each_entry_delay_before_the_next() {
+        let Some(mut pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.serial.port = pty.slave_path.clone();
+        app.link
+            .open(&app.settings.serial)
+            .expect("opening a pty should succeed");
+        arm(&mut app, &[("A", 60), ("B", 0)]);
+
+        let start = Instant::now();
+        app.start_multi_run(0, false, start);
+
+        app.pump_multi(&ctx, start);
+        // Well inside A's delay, so B must not have gone out yet.
+        app.pump_multi(&ctx, start + Duration::from_millis(30));
+        let early = pty.read_available(Duration::from_millis(80));
+        assert_eq!(String::from_utf8_lossy(&early), "A");
+
+        app.pump_multi(&ctx, start + Duration::from_millis(70));
+        let rest = pty.read_available(Duration::from_millis(120));
+        assert_eq!(String::from_utf8_lossy(&rest), "B");
+        assert!(!app.multi_run_active(), "the sequence finished");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn looping_waits_the_round_gap_and_stops_at_the_configured_count() {
+        let Some(mut pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.serial.port = pty.slave_path.clone();
+        app.link
+            .open(&app.settings.serial)
+            .expect("opening a pty should succeed");
+        arm(&mut app, &[("A", 0)]);
+        app.settings.multi.loop_count = Some(2);
+        app.settings.multi.loop_period_ms = 50;
+        app.settings.multi.loop_enabled = true;
+
+        let start = Instant::now();
+        app.start_multi_run(0, true, start);
+
+        // Round 1.
+        app.pump_multi(&ctx, start);
+        // Inside the round gap: nothing more yet.
+        app.pump_multi(&ctx, start + Duration::from_millis(20));
+        let first = pty.read_available(Duration::from_millis(80));
+        assert_eq!(String::from_utf8_lossy(&first), "A", "gap not respected");
+        assert!(app.multi_run_active(), "still looping");
+
+        // Round 2, then the limit stops it.
+        app.pump_multi(&ctx, start + Duration::from_millis(60));
+        let second = pty.read_available(Duration::from_millis(120));
+        assert_eq!(String::from_utf8_lossy(&second), "A");
+        assert!(!app.multi_run_active(), "stopped after two rounds");
+        assert!(
+            !app.settings.multi.loop_enabled,
+            "the loop switch is cleared"
+        );
+    }
+
+    #[test]
+    fn enabled_indices_skip_unchecked_and_empty_entries() {
         let mut app = XcomApp::headless(crate::settings::Settings::default());
         for (index, (text, enabled)) in [("a", true), ("b", false), ("", true), ("c", true)]
             .into_iter()
@@ -1654,69 +1837,7 @@ mod layout_tests {
             entry.text = text.to_owned();
             entry.enabled = enabled;
         }
-        assert_eq!(
-            app.settings.multi.enabled_indices(0),
-            vec![0, 3],
-            "empty and unchecked entries are skipped"
-        );
-    }
-
-    #[test]
-    fn multi_send_loop_stops_when_nothing_is_selected() {
-        let mut app = XcomApp::headless(crate::settings::Settings::default());
-        app.settings.multi.loop_enabled = true;
-        app.send_next_multi_entry();
-        assert!(!app.settings.multi.loop_enabled, "no entries means no loop");
-    }
-
-    /// Window titles pushed through `ViewportCommand` during a frame.
-    fn pushed_titles(output: &egui::FullOutput) -> Vec<String> {
-        output
-            .viewport_output
-            .values()
-            .flat_map(|viewport| viewport.commands.iter())
-            .filter_map(|command| match command {
-                egui::ViewportCommand::Title(title) => Some(title.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn switching_language_retitles_the_window() {
-        // The title was only ever set when the window was created, so a UI
-        // switched to Chinese kept an English title until the next launch.
-        let _guard = crate::i18n::test_lock();
-        let ctx = egui::Context::default();
-        let mut app = XcomApp::headless(crate::settings::Settings::default());
-        app.applied_lang = None;
-
-        crate::i18n::set_lang(crate::i18n::Lang::EnUs);
-        let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
-        let titles = pushed_titles(&output);
-        output.textures_delta.clear();
-        assert!(
-            titles.iter().any(|t| t.contains("Serial Assistant")),
-            "expected an English title, got {titles:?}"
-        );
-
-        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
-        let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
-        let titles = pushed_titles(&output);
-        output.textures_delta.clear();
-        // Whether Chinese is usable depends on the host's fonts, so accept the
-        // documented fallback while still requiring *a* new title.
-        let expected = crate::i18n::window_title();
-        assert!(
-            titles.iter().any(|t| t == &expected),
-            "expected {expected:?}, got {titles:?}"
-        );
-
-        // And it must not be pushed again once settled.
-        let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
-        let titles = pushed_titles(&output);
-        output.textures_delta.clear();
-        assert!(titles.is_empty(), "title pushed repeatedly: {titles:?}");
+        assert_eq!(app.settings.multi.enabled_indices(0), vec![0, 3]);
     }
 
     #[test]

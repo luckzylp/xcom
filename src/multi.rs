@@ -9,7 +9,13 @@ use serde::{Deserialize, Serialize};
 /// Number of pages.
 pub const PAGES: usize = 4;
 /// Entries per page.
+/// Entries allocated per page up front.  A page grows beyond this as the
+/// panel gets taller; see [`MultiSend::ensure_len`].
 pub const ENTRIES_PER_PAGE: usize = 10;
+
+/// Upper bound on how many entries a page may grow to, so a tall window
+/// cannot make the settings file unbounded.
+pub const MAX_ENTRIES_PER_PAGE: usize = 200;
 
 /// One preset command.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +29,9 @@ pub struct MultiEntry {
     pub newline: bool,
     /// Free-form description shown next to the entry.
     pub note: String,
+    /// Delay applied *after* this entry is sent, before the next one, in
+    /// milliseconds.  Lets a sequence give a device time to answer.
+    pub delay_ms: u64,
     /// Include this entry when looping.
     pub enabled: bool,
 }
@@ -78,6 +87,11 @@ impl MultiSend {
         }
         self.page = self.page.min(PAGES - 1);
         self.loop_period_ms = self.loop_period_ms.clamp(1, 3_600_000);
+        for page in self.pages.iter_mut() {
+            for entry in page.iter_mut() {
+                entry.delay_ms = entry.delay_ms.min(3_600_000);
+            }
+        }
         // Zero passes would look like a loop that silently does nothing.
         self.loop_count = self.loop_count.map(|n| n.clamp(1, 1_000_000));
     }
@@ -90,6 +104,28 @@ impl MultiSend {
     /// Mutably borrow one entry.
     pub fn entry_mut(&mut self, page: usize, index: usize) -> Option<&mut MultiEntry> {
         self.pages.get_mut(page)?.get_mut(index)
+    }
+
+    /// Grow a page so that at least `len` entries exist.
+    ///
+    /// The panel shows as many rows as fit its height, so pages are sized by
+    /// the window rather than being fixed at ten.
+    /// Returns whether the page actually grew, so callers only persist a real
+    /// change.
+    pub fn ensure_len(&mut self, page: usize, len: usize) -> bool {
+        let len = len.clamp(ENTRIES_PER_PAGE, MAX_ENTRIES_PER_PAGE);
+        if let Some(entries) = self.pages.get_mut(page) {
+            if entries.len() < len {
+                entries.resize(len, MultiEntry::default());
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The delay to apply after sending `index` on `page`.
+    pub fn delay_after(&self, page: usize, index: usize) -> u64 {
+        self.entry(page, index).map_or(0, |entry| entry.delay_ms)
     }
 
     pub fn first_page(&mut self) {
@@ -272,6 +308,7 @@ mod tests {
             hex: true,
             newline: true,
             note: "备注".to_owned(),
+            delay_ms: 0,
             enabled: true,
         };
         let json = m.export_json().unwrap();
@@ -286,6 +323,27 @@ mod tests {
         let mut m = MultiSend::default();
         assert!(m.import_json("not json").is_err());
         assert!(m.import_json("{}").is_err());
+    }
+
+    #[test]
+    fn pages_grow_to_fill_the_panel_but_stay_bounded() {
+        let mut m = MultiSend::default();
+        assert!(m.ensure_len(0, 25), "growth is reported");
+        assert_eq!(m.pages[0].len(), 25);
+        // Growing is monotonic: a smaller request never discards entries the
+        // user may already have filled in.
+        assert!(!m.ensure_len(0, 2), "no growth, nothing to persist");
+        assert_eq!(m.pages[0].len(), 25);
+        assert!(m.ensure_len(0, MAX_ENTRIES_PER_PAGE + 500));
+        assert_eq!(m.pages[0].len(), MAX_ENTRIES_PER_PAGE);
+    }
+
+    #[test]
+    fn per_entry_delay_defaults_to_zero_and_is_reported() {
+        let mut m = MultiSend::default();
+        assert_eq!(m.delay_after(0, 0), 0);
+        m.entry_mut(0, 3).expect("entry").delay_ms = 250;
+        assert_eq!(m.delay_after(0, 3), 250);
     }
 
     #[test]
