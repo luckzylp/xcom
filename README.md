@@ -243,8 +243,32 @@ sudo update-desktop-database /usr/share/applications
 sudo gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
 ```
 
-仅当前用户安装时，把目标换成 `~/.local/share/applications/` 与
-`~/.local/share/icons/hicolor/256x256/apps/` 即可，无需 root。
+仅当前用户安装（无需 root）时，用脚本一次做完：
+
+```bash
+cargo build --release
+./packaging/install-user.sh          # 卸载：--uninstall
+```
+
+它会安装到 Debian 期望的用户级位置，并在最后**检查 `TryExec` 是否能解析到命令**：
+
+```
+~/.local/bin/xcom                                  # 在 PATH 上，所以 Exec=xcom 可用
+~/.local/share/applications/xcom.desktop
+~/.local/share/icons/hicolor/<size>x<size>/apps/xcom.png   # 48/64/128/256/512
+```
+
+**`TryExec` 是最容易踩的坑**：它在 **PATH** 上解析，而不是相对 `Exec`。
+把 `Exec` 写成绝对路径、却把 `TryExec` 留成裸名字，会导致 `TryExec` 找不到命令，
+而 **GNOME 会直接忽略整个条目** —— 菜单里没有图标也没有项，即使图标文件都在。
+模板里这一行**默认注释掉**。
+
+图标由 `packaging/make-icons.py` 按各尺寸分别绘制（而不是缩放同一张位图），
+以保证 48px 下依然清晰：
+
+```bash
+python3 packaging/make-icons.py
+```
 
 `packaging/xcom.desktop` 是一份**逐键注释的模板**，可直接改用：
 

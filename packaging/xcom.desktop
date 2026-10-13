@@ -65,11 +65,14 @@ Terminal=false
 # Pairs with StartupWMClass below.
 StartupNotify=true
 
-# Hide the entry when the command is absent, instead of offering a menu item
-# that fails when clicked.  Note the consequence during development: if the
-# binary is not on PATH yet, the entry disappears — remove this line while
-# testing a build that has not been installed.
-TryExec=xcom
+# TryExec hides the entry when the command cannot be found.  It is resolved on
+# PATH, NOT relative to Exec: setting Exec to an absolute path and leaving
+# TryExec as a bare name means TryExec fails while Exec would have worked, and
+# GNOME then ignores the whole entry — no menu item and no icon, even though
+# every icon file is in place.  Commented out because that failure is silent
+# and easy to misread as an icon problem.  If you enable it, point it at the
+# same thing Exec uses.
+#TryExec=xcom
 
 # Associates the launched window with this entry, so the task bar and the
 # application menu use this name and icon rather than a generic one.
