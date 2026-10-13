@@ -23,6 +23,14 @@ eframe = { version = "0.36", default-features = false, features = [
     "wayland",
     "x11",
 ] }
+# eframe depends on winit with default features off, which silently drops
+# `wayland-csd-adwaita`.  Without it winit falls back to a bare-bones
+# client-side frame: square corners and right-hand window buttons that ignore
+# the desktop's `button-layout` setting.  With it, sctk-adwaita draws a proper
+# Adwaita frame and reads the system button layout (left on GNOME by default).
+# The dependency is purely a feature switch; it is never referenced in code.
+# Only affects Linux: winit gates it behind a non-macOS Unix cfg.
+winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita"] }
 serialport = "4.10"
 encoding_rs = "0.8"
 chardetng = "1.0"

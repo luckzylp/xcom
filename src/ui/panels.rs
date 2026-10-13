@@ -182,10 +182,11 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                     current.clone()
                                 }
                             });
+                        let port_combo_width = (ui.available_width() - 66.0).max(96.0);
                         ui.add_enabled_ui(!open, |ui| {
                             egui::ComboBox::from_id_salt("port_select")
                                 .selected_text(selected_text)
-                                .width(150.0)
+                                .width(port_combo_width)
                                 .show_ui(ui, |ui| {
                                     if ports.is_empty() {
                                         ui.weak("未检测到串口");
@@ -340,9 +341,11 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
             } else {
                 ("打开串口", egui::Color32::from_rgb(0x4C, 0xAF, 0x50))
             };
+            // Leave a gap so the button does not touch the panel separator.
+            let button_width = (ui.available_width() - 10.0).max(96.0);
             if ui
                 .add_sized(
-                    [ui.available_width(), 28.0],
+                    [button_width, 28.0],
                     egui::Button::new(RichText::new(label).strong().color(color)),
                 )
                 .clicked()
@@ -942,6 +945,16 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     let mut send_request: Option<usize> = None;
     let mut dirty = false;
 
+    // Size the two text columns from the space actually available, so dragging
+    // the splitter reflows the table instead of leaving a gap or overflowing.
+    // `fixed` covers the checkbox, index and button columns; the remainder is
+    // shared between 内容 and 备注.
+    let spacing = ui.spacing().item_spacing.x;
+    let fixed = 30.0 + 26.0 + 34.0 + 34.0 + 58.0;
+    let flexible = (ui.available_width() - spacing * 6.0 - fixed).max(150.0);
+    let text_width = (flexible * 0.62).max(90.0);
+    let note_width = (flexible * 0.38).max(60.0);
+
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -966,7 +979,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         if ui
                             .add(
                                 egui::TextEdit::singleline(&mut entry.text)
-                                    .desired_width(150.0)
+                                    .desired_width(text_width)
                                     .hint_text(if entry.hex { "01 02 0A" } else { "指令" }),
                             )
                             .changed()
@@ -976,7 +989,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         if ui
                             .add(
                                 egui::TextEdit::singleline(&mut entry.note)
-                                    .desired_width(90.0)
+                                    .desired_width(note_width)
                                     .hint_text("备注"),
                             )
                             .changed()
