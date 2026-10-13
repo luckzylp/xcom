@@ -401,7 +401,7 @@ impl XcomApp {
         self.link.close();
         self.signals = Signals::default();
         if was_open {
-            self.info("串口已关闭");
+            self.info(tr("串口已关闭"));
         }
     }
 
@@ -776,9 +776,10 @@ impl XcomApp {
                 ProtocolEvent::Malformed { bytes, error } => {
                     self.log_protocol(
                         Level::Warning,
-                        format!(
-                            "← 无效响应 [{}]：{error}",
-                            crate::hex::to_hex_string(&bytes, true)
+                        crate::i18n::tr2(
+                            "← 无效响应 [{}]：{}",
+                            crate::hex::to_hex_string(&bytes, true),
+                            error,
                         ),
                     );
                 }
@@ -1175,6 +1176,24 @@ mod layout_tests {
         render(&mut app, &ctx, "protocol running");
         app.protocol.stop("测试结束");
         render(&mut app, &ctx, "protocol stopped");
+    }
+
+    #[test]
+    fn renders_the_interface_in_english() {
+        // The guard test proves every key has a translation; this proves the
+        // whole frame actually lays out in English without panicking.
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::EnUs);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.show_about = true;
+        for tab in [SideTab::Multi, SideTab::Protocol] {
+            app.side_tab = tab;
+            render(&mut app, &ctx, "english");
+        }
+        assert_eq!(crate::i18n::tr("打开串口"), "Open port");
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        render(&mut app, &ctx, "chinese");
     }
 
     #[test]

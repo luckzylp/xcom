@@ -79,7 +79,7 @@ impl PortDesc {
                 }
                 Some(parts.join(" "))
             }
-            PortKind::Bluetooth => Some("蓝牙".to_owned()),
+            PortKind::Bluetooth => Some(crate::i18n::tr("蓝牙").to_owned()),
             PortKind::Pci => Some("PCI".to_owned()),
             PortKind::Unknown => None,
         }

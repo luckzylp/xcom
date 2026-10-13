@@ -21,15 +21,23 @@ impl fmt::Display for HexError {
             HexError::InvalidChar { ch, index } => {
                 write!(
                     f,
-                    "位置 {} 处的字符 {ch:?} 不是合法的十六进制字符",
-                    index + 1
+                    "{}",
+                    crate::i18n::tr2(
+                        "位置 {} 处的字符 {} 不是合法的十六进制字符",
+                        index + 1,
+                        format!("{ch:?}"),
+                    )
                 )
             }
             HexError::OddDigits { index, digit } => {
                 write!(
                     f,
-                    "位置 {} 处剩余半个字节 {digit:?}，十六进制字符个数必须为偶数",
-                    index + 1
+                    "{}",
+                    crate::i18n::tr2(
+                        "位置 {} 处剩余半个字节 {}，十六进制字符个数必须为偶数",
+                        index + 1,
+                        format!("{digit:?}"),
+                    )
                 )
             }
         }

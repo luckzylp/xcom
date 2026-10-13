@@ -541,7 +541,7 @@ fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
                     .width(160.0)
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(choice.is_none(), "跟随接收编码")
+                            .selectable_label(choice.is_none(), tr("跟随接收编码"))
                             .clicked()
                         {
                             newly_selected = Some(None);

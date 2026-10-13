@@ -115,6 +115,17 @@ pub fn tr_fmt(zh: &'static str, args: &[String]) -> String {
     out
 }
 
+/// Serialises tests that change the process-wide language.
+///
+/// Exposed to the rest of the crate under `cfg(test)` so a UI test that renders
+/// in English cannot flip the language underneath a translation test that is
+/// asserting Chinese.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn table() -> &'static HashMap<&'static str, &'static str> {
     static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     TABLE.get_or_init(|| EN.iter().copied().collect())
@@ -356,7 +367,7 @@ static EN: &[(&str, &str)] = &[
     ("发送协议帧", "send a protocol frame"),
     ("✓ 收到应答 #{}（第 {} 次尝试）", "ACK #{} received (attempt {})"),
     ("✗ 帧 #{} 设备无响应，已停止发送", "No response for frame #{}; sending stopped"),
-    ("← 无效响应 [{}]: {}", "<- invalid response [{}]: {}"),
+    ("← 无效响应 [{}]：{}", "<- invalid response [{}]: {}"),
     ("文件传输完成，共 {} 字节", "File transfer complete, {} bytes"),
     ("地址 {} 功能 {} 序列 {} 数据[{}] {}", "addr {} func {} seq {} data[{}] {}"),
     ("当前页没有勾选的发送条目，已停止循环发送", "No entries selected on this page; looping stopped"),
@@ -386,6 +397,9 @@ static EN: &[(&str, &str)] = &[
     ("当前平台/驱动不支持 1.5 位停止位，已按 2 位停止位处理", "This platform/driver does not support 1.5 stop bits; using 2 instead"),
     ("本系统 (Linux) 仅在数据位为 5 时支持 1.5 位停止位，已按 2 位停止位处理", "On Linux, 1.5 stop bits require 5 data bits; using 2 stop bits instead"),
 
+    ("蓝牙", "Bluetooth"),
+    ("PCI", "PCI"),
+
     // -- parity / flow control (src/serial/config.rs) -----------------------
     ("无",                    "None"),
     ("奇校验",                "Odd"),
@@ -400,8 +414,7 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
-    /// Serialises the tests that touch the process-wide language.
-    static LANG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use super::test_lock as LANG_LOCK;
 
     struct Restore;
 
@@ -437,7 +450,7 @@ mod tests {
 
     #[test]
     fn chinese_passes_through_untouched() {
-        let _guard = LANG_LOCK.lock().unwrap();
+        let _guard = LANG_LOCK();
         let _restore = Restore;
         set_lang(Lang::ZhCn);
         assert_eq!(tr("打开串口"), "打开串口");
@@ -446,7 +459,7 @@ mod tests {
 
     #[test]
     fn english_is_looked_up() {
-        let _guard = LANG_LOCK.lock().unwrap();
+        let _guard = LANG_LOCK();
         let _restore = Restore;
         set_lang(Lang::EnUs);
         assert_eq!(tr("打开串口"), "Open port");
@@ -456,7 +469,7 @@ mod tests {
 
     #[test]
     fn unknown_keys_fall_back_to_the_source() {
-        let _guard = LANG_LOCK.lock().unwrap();
+        let _guard = LANG_LOCK();
         let _restore = Restore;
         set_lang(Lang::EnUs);
         assert_eq!(tr("这个键故意不存在"), "这个键故意不存在");
@@ -464,7 +477,7 @@ mod tests {
 
     #[test]
     fn placeholders_are_substituted_left_to_right() {
-        let _guard = LANG_LOCK.lock().unwrap();
+        let _guard = LANG_LOCK();
         let _restore = Restore;
         set_lang(Lang::EnUs);
         assert_eq!(tr1("当前: {}", "115200"), "Current: 115200");
