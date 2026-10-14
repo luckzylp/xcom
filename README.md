@@ -1,96 +1,94 @@
-# XCOM 串口调试助手
+# XCOM Serial Debug Assistant
 
-> [English](README_EN.md) | 简体中文
+> English | [简体中文](README_ZH.md)
 
-使用 **Rust + egui** 编写的跨平台串口调试工具，参照正点原子 **ATK-XCOM v3.0** 的功能与界面复刻，
-可在 **Windows / Linux / macOS** 上运行。
+A cross-platform serial port debugging tool written in **Rust + egui**, reimplementing the features and UI of the ALIENTEK **ATK-XCOM v3.0**, running on **Windows / Linux / macOS**.
 
-界面**不含任何广告**，并额外支持原版没有的**串口编码自动识别**与**黑色/白色主题**。
+The UI contains **no advertisements** and additionally supports **automatic character-encoding detection** and **dark/light themes** that the original lacks.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ 主题 [黑色主题]  显示工具面板  自定义接收区配色  接收区字号 ─────  关于 恢复默认 │
+│ Theme [Dark]  Show Tool Panel  Custom Rx Colors  Rx Font Size ─────  About Reset│
 ├───────────────┬──────────────────────────────────────────┬───────────────────┤
-│ 串口设置       │ 继续显示 复制选中 全选 清除接收 保存…     │ 多条发送 | 协议传输│
-│  串口   [▾]   │ 编码 自动·UTF-8                          │                   │
-│  波特率 [▾]   ├──────────────────────────────────────────┤  #  内容  备注     │
-│  数据位 停止位 │                                          │  0  AT   查询版本  │
-│  校验位 流控   │            接 收 区（黑色/绿色）           │  1  ...           │
-│  DTR RTS      │                                          │                   │
-│  [打开串口]    │                                          │  循环发送 关联小键盘│
-│ 显示设置       ├──────────────────────────────────────────┤                   │
-│  16进制 时间戳 │ 发送区                                    │                   │
-│  编码设置      │  [16进制发送] [发送新行] [定时发送 1000ms] │                   │
-│                │  [发送文件] [历史▾] [发送 Ctrl+Enter]      │                   │
-├───────────────┴──────────────────────────────────────────┴───────────────────┤
-│ ● /dev/ttyUSB0 [115200-8N1] 编码 自动·UTF-8 发送:0 接收:0 CTS● DSR○ DCD○ 时间 │
+│ Serial Config  │ Continue Show Copy All Clear Save…      │ Multi-Send | Proto │
+│ Port   [▾]    │ Encoding Auto·UTF-8                      │                   │
+│ Baud   [▾]    ├──────────────────────────────────────────┤  # Content  Note  │
+│ Data   Stop   │                                          │  0 AT      Query  │
+│ Parity Flow   │          Receive Area (black/green)       │  1 ...            │
+│ DTR RTS       │                                          │                   │
+│ [Open Port]   │                                          │                   │
+│ Display       ├──────────────────────────────────────────┤  Loop Send Keypad │
+│ Hex Timestamp │ Send Area                                 │                   │
+│ Encoding     │  [Hex Send] [Newline] [Timed 1000ms]       │                   │
+│              │  [Send File] [History▾] [Send Ctrl+Enter]   │                   │
+├──────────────┴──────────────────────────────────────────┴───────────────────┤
+│ ● /dev/ttyUSB0 [115200-8N1] Enc Auto·UTF-8 Tx:0 Rx:0 CTS● DSR○ DCD○ Time     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 功能对照
+## Feature Comparison
 
-功能对齐官方文档（[ATK-XCOM v3.0 说明](http://47.111.11.73/docs/tool/ruanjian/ATK-XCOM.html)），
-下表为逐项对照：
+Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](http://47.111.11.73/docs/tool/ruanjian/ATK-XCOM.html)). The table below compares item by item:
 
-| 官方功能 | 本实现 | 说明 |
+| Official Feature | This Implementation | Notes |
 | --- | --- | --- |
-| 自动搜索可用串口、显示详细串口信息 | ✅ | 后台线程枚举，显示 VID:PID / 厂商 / 产品 / 序列号，支持热插拔 |
-| 超高波特率、自定义波特率 | ✅ | 1200–1382400 常规档位 + 50–12000000 任意值 |
-| 停止位 1 / 1.5 / 2 | ⚠️ | 见 [已知限制](#已知限制) |
-| 数据位 5 / 6 / 7 / 8 | ✅ | |
-| 奇、偶、无校验 | ✅ | |
-| 串口随时插拔 | ✅ | 拔出后自动关闭并提示 |
-| 16 进制显示（可自动转换已有数据） | ✅ | 文本 ⇄ HEX 切换会重新渲染历史数据 |
-| 显示模式：黑底绿字 / 白底黑字 | ✅ | 由主题控制，另可自定义前景/背景色 |
-| 发送内容回显 | ✅ | 发出内容以不同颜色显示在接收区；开关在接收区工具条 |
-| RTS / DTR 控制 | ✅ | 串口打开时可实时切换 |
-| 时间戳（以回车换行断帧） | ✅ | 未收全一帧时在状态栏显示“接收中”预览 |
-| 保存接收窗口为任意格式文件 | ✅ | 可保存为文本，也可保存原始二进制 |
-| 清除接收（同时清零收发计数） | ✅ | |
-| 单条发送：任意字符 / 16 进制 / 自动拆分字节 | ✅ | `0102`、`01 02`、`0x01,0x02`、`01-02` 均可 |
-| 发送新行 | ✅ | CR / LF 可分别勾选 |
-| 定时发送 + 自定义周期 | ✅ | |
-| 发送任意格式文件、随时终止、进度条 | ✅ | 分块发送，可中止 |
-| 快捷键 Ctrl+Enter 发送 | ✅ | |
-| 清除发送（同时清零收发计数） | ✅ | |
-| 状态栏：收发字节数、CTS/DSR/DCD、系统时间 | ✅ | 另有 RI 指示 |
-| 多条发送：4 页、每页 10 条 | ✅ | 条目带备注、使能、HEX、换行开关 |
-| 多条发送：首页/上一页/下一页/尾页 | ✅ | |
-| 多条发送：关联数字键盘 0–9 | ✅ | |
-| 多条发送：自动循环发送 | ✅ | 只发送已勾选的条目；支持**无限循环**或**指定循环次数** |
-| 多条发送：一次发送全部勾选条目 | ✅ | 「发送已勾选」按钮，按顺序各发一次 |
-| 多条发送：导入/导出条目 | ✅ | JSON 格式，便于编辑与版本管理 |
-| 协议传输（Modbus RTU 变种、Send-Ack） | ✅ | 见 [协议传输](#协议传输) |
-| 协议：重发次数、帧周期、校验和/异或/CRC8/CRC16 | ✅ | 算法与官方实现逐字节一致 |
-| 协议：单次 / 自动 / 文件发送 | ✅ | |
-| 协议：响应区显示原始帧 / 自动换行 | ✅ | |
-| **界面广告** | ➖ | **按要求移除** |
+| Auto-scan available serial ports, show detailed port info | ✅ | Background thread enumeration; shows VID:PID / vendor / product / serial number; hot-plug support |
+| Ultra-high baud rates, custom baud rates | ✅ | 1200–1382400 standard steps + 50–12000000 arbitrary values |
+| Stop bits 1 / 1.5 / 2 | ⚠️ | See [Known Limitations](#known-limitations) |
+| Data bits 5 / 6 / 7 / 8 | ✅ | |
+| Odd, even, no parity | ✅ | |
+| Hot-plug serial ports | ✅ | Auto-closes and prompts on disconnect |
+| Hex display (can auto-convert existing data) | ✅ | Text ⇄ HEX toggle re-renders historical data |
+| Display modes: black bg green text / white bg black text | ✅ | Controlled by theme; custom foreground/background colors also available |
+| Echo sent content | ✅ | Sent content shown in a different color in the receive area; toggle in the receive toolbar |
+| RTS / DTR control | ✅ | Switchable in real time while port is open |
+| Timestamps (frame-delimited by CR/LF) | ✅ | Shows "receiving" preview in status bar when a frame is incomplete |
+| Save receive window as any format file | ✅ | Save as text or raw binary |
+| Clear receive (also resets Tx/Rx counters) | ✅ | |
+| Single send: any characters / hex / auto-split bytes | ✅ | `0102`, `01 02`, `0x01,0x02`, `01-02` all accepted |
+| Send newline | ✅ | CR / LF can be individually checked |
+| Timed send + custom interval | ✅ | |
+| Send any format file, abort anytime, progress bar | ✅ | Chunked send, can be cancelled |
+| Ctrl+Enter shortcut to send | ✅ | |
+| Clear sent (also resets Tx/Rx counters) | ✅ | |
+| Status bar: Tx/Rx byte counts, CTS/DSR/DCD, system time | ✅ | Also shows RI indicator |
+| Multi-send: 4 pages, 10 entries each | ✅ | Entries have note, enable, HEX, newline toggles |
+| Multi-send: first/prev/next/last page | ✅ | |
+| Multi-send: link to numeric keypad 0–9 | ✅ | |
+| Multi-send: auto loop send | ✅ | Sends only checked entries; supports **infinite loop** or **specified loop count** |
+| Multi-send: send all checked entries at once | ✅ | "Send Checked" button, each sent once in order |
+| Multi-send: import/export entries | ✅ | JSON format, easy to edit and version-control |
+| Protocol transfer (Modbus RTU variant, Send-Ack) | ✅ | See [Protocol Transfer](#protocol-transfer) |
+| Protocol: retry count, frame period, checksum/XOR/CRC8/CRC16 | ✅ | Algorithms byte-for-byte identical to the official implementation |
+| Protocol: single / auto / file send | ✅ | |
+| Protocol: response area shows raw frames / auto-wrap | ✅ | |
+| **UI advertisements** | ➖ | **Removed as requested** |
 
-### 本实现新增
+### Additions in This Implementation
 
-- **编码自动识别**：无需手动猜测 GBK / UTF-8 / Shift_JIS。
-- **黑色 + 白色主题**（并可跟随系统）。
-- **中英文界面切换**：顶栏可随时切换，首次启动跟随系统 `LANG`，选择会持久化。
-- **接收区文本选择**：鼠标拖选、Ctrl+C 复制、Ctrl+A 全选（基于字形度量，中文等宽字符也能正确选中）。
-- **虚拟化日志视图**：只渲染可见行，长时间高速接收依然流畅。
-- **接收区字号、行距可调**；自动换行宽度随窗口变化。
-- 配置文件持久化，重启后恢复上次的串口与显示设置。
+- **Automatic encoding detection**: No need to manually guess GBK / UTF-8 / Shift_JIS.
+- **Dark + Light themes** (can also follow the system).
+- **Chinese/English UI toggle**: switchable from the top bar at any time; follows system `LANG` on first launch; choice is persisted.
+- **Receive area text selection**: drag-select with mouse, Ctrl+C copy, Ctrl+A select all (based on glyph metrics, CJK full-width characters select correctly).
+- **Virtualized log view**: Only visible lines are rendered, staying smooth during long high-speed reception.
+- **Adjustable receive area font size and line spacing**; auto-wrap width follows window resize.
+- Configuration file persistence; restores last serial and display settings after restart.
 
 ---
 
-## 安装与运行
+## Installation and Running
 
-### 依赖
+### Prerequisites
 
-只需要一个较新的 Rust 工具链（**1.82+**，`edition 2021`）：
+You only need a recent Rust toolchain (**1.82+**, `edition 2021`):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Linux 还需要图形开发库（多数桌面发行版已自带）：
+Linux also requires graphics development libraries (most desktop distros already include them):
 
 ```bash
 # Debian / Ubuntu
@@ -101,140 +99,117 @@ sudo dnf install gcc pkgconf-pkg-config libxkbcommon-devel wayland-devel \
                  libX11-devel mesa-libGL-devel
 ```
 
-### 编译运行
+### Build and Run
 
 ```bash
 cargo run --release
 ```
 
-产物位于 `target/release/xcom`（Windows 为 `xcom.exe`）。
+The binary is at `target/release/xcom` (`xcom.exe` on Windows).
 
-### 界面语言
+### UI Language
 
-顶栏的「语言」下拉框可在**简体中文**与**English** 之间即时切换，无需重启。
+The "Language" dropdown in the top bar switches between **Simplified Chinese** and **English** instantly, without restarting.
 
-- 首次启动时依据 `LC_ALL` / `LC_MESSAGES` / `LANG` 判断（`zh*` → 中文，其余 → 英文），
-  并把结果写入配置，之后以用户的选择为准。
-- 实现采用 gettext 风格：**中文原文即翻译键**，`tr("打开串口")` 这样包裹。这样批量改造
-  是机械的、diff 可读，并且漏翻时回退为中文原文，而不是空白标签。
-- 语言是**进程级全局**而非逐层传递的接收者，因此调用点在闭包、自由函数里都写作
-  `tr(...)`，不需要持有 `App` 引用。
-- 有**守卫测试**扫描全部源码中传给 `tr()` 的字面量，任何一个缺少英文条目都会让测试失败；
-  另有一个测试用样本串喂给扫描器，防止扫描器自身失效导致守卫空转。
+- On first launch, it detects from `LC_ALL` / `LC_MESSAGES` / `LANG` (`zh*` → Chinese, otherwise English), and persists the result; thereafter the user's choice takes precedence.
+- The implementation uses a gettext-style approach: **the Chinese text is the translation key**, wrapped as `tr("打开串口")`. This makes batch conversion mechanical and diffs readable; if a translation is missing, it falls back to the Chinese original rather than showing a blank label.
+- Language is a **process-level global** rather than a receiver passed down through layers, so call sites in closures and free functions just write `tr(...)` without holding an `App` reference.
+- A **guard test** scans all source code for string literals passed to `tr()`; any missing English entry causes the test to fail. A test sample is fed to the scanner to prevent it from silently passing if the scanner itself breaks.
 
-### 窗口边框与圆角
+### Window Frame and Rounded Corners
 
-Linux + Wayland 下由应用自绘客户端边框：
+On Linux + Wayland, the app draws its own client-side frame:
 
-- eframe 以 `default-features = false` 依赖 winit，会**静默关闭** winit 的
-  `wayland-csd-adwaita`。GNOME 的 Mutter 不实现 `xdg-decoration` 协议，
-  因此缺省情况下 winit 只能退回自带的极简边框：直角、窗口按钮在右，
-  并且忽略桌面的 `button-layout` 设置。
-  本项目的 `Cargo.toml` 显式重新启用该 feature，由 `sctk-adwaita` 绘制
-  标准 Adwaita 边框，并通过 XDG Desktop Portal 读取
-  `org.gnome.desktop.wm.preferences button-layout`，因此
-  最小化/最大化/关闭 的位置与桌面设置一致（GNOME 默认在左侧）。
-- 窗口底部圆角由应用自绘：`src/ui/window.rs` 以带圆角的背景覆盖整个窗口，
-  并把 `clear_color` 的 alpha 设为 0。支持 alpha 的合成器上四角透出桌面
-  （圆角），不支持的合成器上四角取面板底色（仅为直角，不会变黑）。
-- Windows 11 / macOS 使用系统原生边框与圆角，不受上述逻辑影响。
+- eframe depends on winit with `default-features = false`, which **silently disables** winit's `wayland-csd-adwaita`. GNOME's Mutter doesn't implement the `xdg-decoration` protocol, so by default winit falls back to a bare-bones frame: square corners, window buttons on the right, ignoring the desktop's `button-layout` setting.
+  This project's `Cargo.toml` explicitly re-enables that feature, so `sctk-adwaita` draws a standard Adwaita frame and reads `org.gnome.desktop.wm.preferences button-layout` via XDG Desktop Portal, so the minimize/maximize/close positions match the desktop setting (left on GNOME by default).
+- The window's bottom rounded corners are drawn by the app: `src/ui/window.rs` overlays a rounded-corner background across the entire window and sets `clear_color`'s alpha to 0. On compositors that support alpha, the corners are transparent (rounded); on those that don't, corners use the panel background (merely square, never black).
+- Windows 11 / macOS use native system frames and rounded corners, unaffected by the above logic.
 
-### 平台说明
+### Platform Notes
 
-| 平台 | 说明 |
+| Platform | Notes |
 | --- | --- |
-| **Linux** | 需要把用户加入 `dialout` 组才能免 sudo 访问串口：`sudo usermod -aG dialout $USER`（重新登录生效）。文件对话框使用 XDG Desktop Portal；若系统未提供 portal，改用「保存原始数据」前的路径选择会无响应，此时可通过配置文件或直接在支持的环境运行。 |
-| **Windows** | 发布版默认不弹出控制台窗口。运行需要 VC++ 运行库（现代 Windows 已内置）。 |
-| **macOS** | 首次运行需在「系统设置 → 隐私与安全性」中允许，串口设备形如 `/dev/tty.usbserial-*`。 |
+| **Linux** | Add your user to the `dialout` group for sudo-free serial port access: `sudo usermod -aG dialout $USER` (re-login required). File dialogs use XDG Desktop Portal; if the system lacks a portal, the path selection before "Save Raw Data" may not respond — use the config file or run in a supported environment. |
+| **Windows** | Release builds don't pop up a console window. Requires the VC++ runtime (built into modern Windows). |
+| **macOS** | On first launch, allow the app in "System Settings → Privacy & Security"; serial devices look like `/dev/tty.usbserial-*`. |
 
-### 中文字体
+### CJK Fonts
 
-界面为中文，程序启动时会自动查找系统中的 CJK 字体，查找顺序为：
+The UI is in Chinese; on startup the program automatically searches for CJK fonts on the system, in this order:
 
-1. 常见字体路径（如 `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`、
-   `C:\Windows\Fonts\msyh.ttc`、`/System/Library/Fonts/PingFang.ttc`）；
-2. 通过 `fontdb` 扫描系统字体，匹配 Noto Sans CJK / 思源黑体 / 微软雅黑 / 苹方 / 文泉驿等。
+1. Common font paths (e.g., `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`, `C:\Windows\Fonts\msyh.ttc`, `/System/Library/Fonts/PingFang.ttc`);
+2. Via `fontdb` scanning system fonts, matching Noto Sans CJK / Source Han Sans / Microsoft YaHei / PingFang / WenQuanYi, etc.
 
-若都找不到，程序仍可运行，但中文会显示为方块，并在状态栏提示安装字体
-（Linux 可安装 `fonts-noto-cjk` 或 `fonts-wqy-microhei`）。
+If none are found, the program still runs but Chinese characters appear as squares, with a status bar prompt to install a font (on Linux, install `fonts-noto-cjk` or `fonts-wqy-microhei`).
 
 ---
 
-## 编码自适应
+## Adaptive Encoding
 
-串口设备的文本编码非常混乱：8051/STM32 固件多为 **GBK**，ESP-IDF 输出 **UTF-8**，
-日本模块常用 **Shift_JIS**。原版工具需要手动选择，选错就是满屏乱码。
+Text encoding from serial devices is highly inconsistent: 8051/STM32 firmware typically uses **GBK**, ESP-IDF outputs **UTF-8**, and Japanese modules often use **Shift_JIS**. The original tool requires manual selection — pick wrong and you get garbled text.
 
-本实现提供**自动识别**（默认）与**手动指定**两种方式：
+This implementation provides both **auto-detection** (default) and **manual selection**:
 
-- 自动识别逐步分析数据流，并对结果加锁：
-  1. 纯 ASCII 通用于所有候选编码，不会触发切换；
-  2. 合法的多字节 UTF-8 直接判定为 UTF-8（这一步避免了 `chardetng` 把短中文 UTF-8 误判为 GBK）；
-  3. 累积足够数据后，只有在当前编码出现明显乱码（替换字符比例超过 1%）时才重新判断；
-  4. 不会切换到解码效果更差的候选编码。
-- 通过增量解码器处理跨数据包被截断的多字节字符，不会出现半个汉字。
-- 切换编码或切换 HEX/文本模式时，**已接收的历史数据会按新设置重新渲染**（受缓存上限约束）。
-- 发送编码默认「跟随接收编码」，也可单独指定。
+- Auto-detection progressively analyzes the data stream and locks the result:
+  1. Pure ASCII is valid for all candidate encodings and never triggers a switch;
+  2. Valid multi-byte UTF-8 is immediately identified as UTF-8 (this avoids `chardetng` misidentifying short Chinese UTF-8 as GBK);
+  3. After accumulating enough data, re-detection only happens when the current encoding shows obvious garbling (replacement character ratio exceeds 1%);
+  4. It never switches to a candidate encoding that decodes worse.
+- An incremental decoder handles multi-byte characters split across data packets — no half-characters.
+- When switching encoding or HEX/text mode, **received historical data is re-rendered under the new setting** (subject to the cache limit).
+- Send encoding defaults to "follow receive encoding" but can be set separately.
 
-状态栏会显示当前生效的编码，例如 `自动·UTF-8`。
+The status bar shows the active encoding, e.g., `Auto·UTF-8`.
 
 ---
 
-## 协议传输
+## Protocol Transfer
 
-协议为 Modbus RTU 演变而来的半双工 **Send-Ack** 模式。帧格式：
+The protocol is a half-duplex **Send-Ack** mode derived from Modbus RTU. Frame format:
 
 ```
 +----------+----------+----------+----------+-------------+----------------+
-| 设备地址  | 帧功能    | 帧序列    | 数据长度  | 数据域       | 校验            |
-| 1 字节   | 1 字节    | 1 字节    | 1 字节   | 0..255 字节  | 1 或 2 字节     |
+| Device   | Function | Sequence | Data     | Data        | Checksum        |
+| Address  |          |          | Length   | Field       |                 |
+| 1 byte   | 1 byte   | 1 byte   | 1 byte   | 0..255 bytes| 1 or 2 bytes    |
 +----------+----------+----------+----------+-------------+----------------+
 ```
 
-- **数据长度**只统计数据域，不包含帧头与校验；最小帧 5 字节，最大 261 字节。
-- **校验覆盖其前的全部字节**（含数据长度字段）。
-- CRC16 为 **CRC-16/MODBUS**（反射多项式 `0xA001`，初值 `0xFFFF`），**低字节在前**，与 Modbus RTU 一致。
-- 校验和（SUM）为字节和的**二进制补码**，即整帧字节和模 256 为 0。
-- CRC8 为 **CRC-8/MAXIM**（反射多项式 `0x31`，初值 `0x00`），`"123456789"` 的校验值为 `0xA1`。
-- 没有起止分隔符：响应帧以**总线空闲**判定边界，阈值为 `320000 / 波特率 + 2` 毫秒。
+- **Data length** counts only the data field, not the header or checksum; minimum frame 5 bytes, maximum 261 bytes.
+- **Checksum covers all preceding bytes** (including the data length field).
+- CRC16 is **CRC-16/MODBUS** (reflected polynomial `0xA001`, initial value `0xFFFF`), **low byte first**, consistent with Modbus RTU.
+- Checksum (SUM) is the **two's complement** of the byte sum, i.e., the byte sum of the entire frame mod 256 equals 0.
+- CRC8 is **CRC-8/MAXIM** (reflected polynomial `0x31`, initial value `0x00`); the checksum of `"123456789"` is `0xA1`.
+- No start/stop delimiters: response frames are bounded by **bus idle time**, threshold = `320000 / baud_rate + 2` milliseconds.
 
-重发机制：帧周期既是自动发送周期，也是**重发超时**。超时后以**相同帧序列**重发，
-最多 `最大重发次数` 次，然后报「设备无响应」。只有新的逻辑帧才会递增帧序列
-（从 0 开始，因此第一帧的帧序列为 `1`）。
+Retransmission: the frame period is both the auto-send interval and the **retransmission timeout**. On timeout, it retransmits with the **same frame sequence**, up to `max retries` times, then reports "device no response". Only new logical frames increment the sequence (starting from 0, so the first frame's sequence is `1`).
 
-响应校验：只校验**帧序列**与**校验值**（以及长度合法性）。设备地址与帧功能按官方示例
-标注为「随意」，仅作显示，不参与校验。
+Response validation: only the **frame sequence** and **checksum** (and length validity) are verified. Device address and function are marked as "arbitrary" per the official example — shown for display only, not validated.
 
-> 帧格式依据：官方 v3.0 说明页的帧格式图、官方论坛公告中的同款表格，
-> 以及从官方 XCOM 二进制（V2.3）反编译得到的 `ManageTransportProtocol.cs` /
-> `CheckTransportProtocol.cs`，并用真实抓包帧交叉验证过。
-> v3.0 页面嵌入了相同的帧格式图、文字说明与 2013 年公告逐字一致，
-> 因此推断 v3.0 未改变该格式（这一步是推断而非直接证据）。
+> Frame format based on: the frame format diagram on the official v3.0 manual page, the same table in the official forum announcement, and decompiled `ManageTransportProtocol.cs` / `CheckTransportProtocol.cs` from the official XCOM binary (V2.3), cross-validated with real captured frames.
+> The v3.0 page embeds the same frame format diagram and text and is verbatim identical to the 2013 announcement, so we infer v3.0 did not change this format (this is inference, not direct evidence).
 
-### 一个实用的约束
+### A Practical Constraint
 
-帧周期**必须大于响应断帧时间**，否则会在响应被识别之前就重发。程序会在帧周期过小时给出提示。
+The frame period **must be greater than the response frame-delimiting time**, otherwise retransmission fires before the response is recognized. The program warns when the frame period is too short.
 
 ---
 
-## 快捷键
+## Keyboard Shortcuts
 
-| 快捷键 | 功能 |
+| Shortcut | Action |
 | --- | --- |
-| `Ctrl + Enter` | 发送单条发送区内容 |
-| `Ctrl + O` | 打开 / 关闭串口 |
-| `Ctrl + C` | 复制接收区选中内容 |
-| `Ctrl + A` | 全选接收区 |
-| `1`–`9`、`0` | 多条发送面板勾选「关联数字键盘」后，发送对应条目 |
+| `Ctrl + Enter` | Send the content of the send area |
+| `Ctrl + O` | Open / close serial port |
+| `Ctrl + C` | Copy selected content in receive area |
+| `Ctrl + A` | Select all in receive area |
+| `1`–`9`, `0` | Send corresponding entry when "link numeric keypad" is checked in multi-send panel |
 
 ---
 
-## 桌面集成（Linux）
+## Desktop Integration (Linux)
 
-`packaging/xcom.desktop` 提供桌面条目（中英文名称、分类、关键字）。
-其中 `StartupWMClass=xcom` 必须与 `src/main.rs` 里的
-`ViewportBuilder::with_app_id("xcom")` 一致，否则合成器无法把窗口关联到该条目，
-任务栏也就拿不到图标和正确名称。
+`packaging/xcom.desktop` provides a desktop entry (Chinese and English names, categories, keywords). The `StartupWMClass=xcom` must match `ViewportBuilder::with_app_id("xcom")` in `src/main.rs`, otherwise the compositor can't associate the window with the entry, and the taskbar won't get the icon or correct name.
 
 ```bash
 cargo build --release
@@ -245,127 +220,107 @@ sudo update-desktop-database /usr/share/applications
 sudo gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
 ```
 
-仅当前用户安装（无需 root）时，用脚本一次做完：
+For current-user-only installation (no root needed), use the script to do it all at once:
 
 ```bash
 cargo build --release
-./packaging/install-user.sh          # 卸载：--uninstall
+./packaging/install-user.sh          # Uninstall: --uninstall
 ```
 
-安装脚本会先做一次**启动耗时自检**（实测约 130 ms），再安装到 Debian 期望的
-用户级位置，并在最后**检查 `TryExec` 是否能解析到命令**：
+The install script first does a **startup-time self-check** (~130 ms measured), then installs to Debian-expected user-level locations, and finally **checks whether `TryExec` resolves to a command**:
 
 ```
-~/.local/bin/xcom                                  # 在 PATH 上，所以 Exec=xcom 可用
+~/.local/bin/xcom                                  # on PATH, so Exec=xcom works
 ~/.local/share/applications/xcom.desktop
 ~/.local/share/icons/hicolor/<size>x<size>/apps/xcom.png   # 48/64/128/256/512
 ```
 
-**`StartupNotify` 必须为 `false`（模板已如此）。** 它表示"应用会在启动完成后
-发出握手信号"（`_NET_STARTUP_INFO` / activation token）。winit 把这个握手机制
-做成**需要应用主动调用的 API**，而 egui/eframe 从不调用它。若声明为 `true`，
-Dock 会一直停留在"正在启动"状态直到该承诺超时 —— 表现为**窗口早已出现，
-但任务栏要等好几秒才显示正确图标**。声明 `false` 后，窗口可通过 app id 立即匹配。
+**`StartupNotify` must be `false` (the template already does this).** It means "the app will send a handshake signal when startup completes" (`_NET_STARTUP_INFO` / activation token). winit makes this handshake **an opt-in API the app must call**, and egui/eframe never calls it. If declared `true`, the Dock stays in "starting" state until the promise times out — **the window is already visible but the taskbar shows a generic icon for several seconds before associating it**. Declaring `false` lets the window match by app id immediately.
 
-**`TryExec` 是最容易踩的坑**：它在 **PATH** 上解析，而不是相对 `Exec`。
-把 `Exec` 写成绝对路径、却把 `TryExec` 留成裸名字，会导致 `TryExec` 找不到命令，
-而 **GNOME 会直接忽略整个条目** —— 菜单里没有图标也没有项，即使图标文件都在。
-模板里这一行**默认注释掉**。
+**`TryExec` is the most common pitfall**: it resolves on **PATH**, not relative to `Exec`. Setting `Exec` to an absolute path while leaving `TryExec` as a bare name causes `TryExec` to fail, and **GNOME ignores the entire entry** — no menu item, no icon, even though all icon files are present. The template has this line **commented out by default**.
 
-图标由 `packaging/make-icons.py` 按各尺寸分别绘制（而不是缩放同一张位图），
-以保证 48px 下依然清晰：
+Icons are drawn at each size individually by `packaging/make-icons.py` (rather than scaling a single bitmap), to stay crisp at 48px:
 
 ```bash
 python3 packaging/make-icons.py
 ```
 
-`packaging/xcom.desktop` 是一份**逐键注释的模板**，可直接改用：
+`packaging/xcom.desktop` is a **key-by-key annotated template** you can adapt directly:
 
-- 修改后用 Debian 自带的校验器确认，**它必须没有任何输出**：
+- After editing, validate with Debian's built-in validator — **it must produce no output**:
   ```bash
   desktop-file-validate packaging/xcom.desktop
   ```
-- `Categories` 只能有**一个主分类**。本项目用 `Development;Electronics;`——
-  主分类 `Development` 加附加分类 `Electronics`。之前写的
-  `Development;Electronics;Utility;` 含两个主分类，会让应用在菜单里出现两次，
-  校验器会给出提示。
-- `Icon` 只能是**图标名**，不能带路径或扩展名；图标通过 hicolor 主题解析。
-- 所有列表型键（`Categories`、`Keywords`）必须以 `;` 结尾。
-- `StartupWMClass` 在 Wayland 下必须等于应用 id，即
-  `src/main.rs` 里的 `with_app_id("xcom")`；X11 下等于窗口的 `WM_CLASS`。
+- `Categories` may have only **one main category**. This project uses `Development;Electronics;` — main category `Development` plus additional category `Electronics`. The previously used `Development;Electronics;Utility;` had two main categories, causing the app to appear twice in the menu, with the validator flagging it.
+- `Icon` must be an **icon name**, never with a path or extension; the icon is resolved through the hicolor theme.
+- All list-type keys (`Categories`, `Keywords`) must end with `;`.
+- `StartupWMClass` on Wayland must equal the app id, i.e., `with_app_id("xcom")` in `src/main.rs`; on X11 it equals the window's `WM_CLASS`.
 
-## 配置文件
+## Configuration File
 
-设置保存在：
+Settings are saved at:
 
-| 平台 | 路径 |
+| Platform | Path |
 | --- | --- |
-| Linux | `$XDG_CONFIG_HOME/xcom/settings.json` 或 `~/.config/xcom/settings.json` |
+| Linux | `$XDG_CONFIG_HOME/xcom/settings.json` or `~/.config/xcom/settings.json` |
 | Windows | `%APPDATA%\xcom\settings.json` |
 | macOS | `~/Library/Application Support/xcom/settings.json` |
 
-文件为可读的 JSON，可以直接编辑。字段使用 `#[serde(default)]`，**旧版本写入的配置在
-新版本中仍可加载**（缺失字段取默认值）。写入采用「临时文件 + 重命名」，中断不会留下半个文件；
-配置损坏时会回退到默认值而不是启动失败。
+The file is readable JSON and can be edited directly. Fields use `#[serde(default)]`, so **configs written by older versions still load in newer versions** (missing fields take default values). Writes use "temp file + rename", so an interruption never leaves a partial file; a corrupted config falls back to defaults rather than failing to start.
 
 ---
 
-## 已知限制
+## Known Limitations
 
-1. **1.5 位停止位**：Windows 的 DCB 支持 `ONE5STOPBITS`，但 Rust 的 `serialport` crate
-   未暴露该能力；Linux/macOS 的 termios 只能在**数据位为 5** 时用 `CSTOPB + CS5` 表达 1.5 位停止位。
-   因此该项在不支持的组合下会**明确提示“已按 2 位停止位处理”**，而不是静默地按错误参数打开。
-2. **文件对话框**依赖 `rfd`：Linux 上走 XDG Desktop Portal，无 portal 的精简环境会拿不到路径。
-   接收数据另提供「保存原始数据」，导入/导出条目使用 JSON 文本，便于绕过图形对话框。
-3. **协议传输**的帧格式基于反编译的 V2.3 官方实现（见上），v3.0 未公开二进制。
-4. 接收缓存默认上限 32 MiB / 20 万行，超出后丢弃最旧的数据——这是为了让长时间运行的内存可控。
-   上限可在「统计」面板调整。
+1. **1.5 stop bits**: Windows DCB supports `ONE5STOPBITS`, but the Rust `serialport` crate doesn't expose it; on Linux/macOS, termios can only express 1.5 stop bits with `CSTOPB + CS5` when **data bits = 5**. Therefore this option **explicitly prompts "treated as 2 stop bits"** on unsupported combinations, rather than silently opening with wrong parameters.
+2. **File dialogs** depend on `rfd`: on Linux it goes through XDG Desktop Portal, which may not get a path in minimal environments without a portal. "Save Raw Data" is provided as an alternative, and entry import/export uses JSON text to bypass the graphical dialog.
+3. **Protocol transfer** frame format is based on decompiled V2.3 official implementation (see above); v3.0 binary has not been published.
+4. The receive cache default limit is 32 MiB / 200k lines; oldest data is dropped when exceeded — this keeps memory bounded during long-running sessions. The limit can be adjusted in the "Statistics" panel.
 
 ---
 
-## 开发
+## Development
 
 ```bash
-cargo test              # 187 个测试
+cargo test              # 187 tests
 cargo clippy --all-targets
 cargo fmt
 ```
 
-测试覆盖：
+Test coverage:
 
-- 十六进制解析/格式化、四处校验算法（含标准校验向量与真实抓包帧）；
-- 日志存储的行分割、CRLF 跨包、自动换行（含中文双列宽）、时间戳断帧、缓存裁剪；
-- 编码自动识别（UTF-8 / GBK 中文流）与跨包多字节解码；
-- 协议状态机的应答、重发、文件分片与顺序；
-- **真实 PTY 回环**：打开设备、收发字节、写计数、重开、握手线——覆盖 reader/writer 线程与事件通道；
-- **无头 UI 布局**：用 `Context::run_ui` 渲染完整一帧，覆盖空日志、两种主题、全部显示模式、
-  双语、极窄窗口等组合，并断言确实产出了图元；
-- **多条发送列宽**：断言列宽随面板变宽而增长，且各列之和始终不超出面板宽度；
-- **循环次数**：断言配置 N 次后在 N 轮结束时停止、无限循环不会停止、无勾选条目时停止；
-- **配置向后兼容**：断言缺少新字段的旧配置文件仍能加载（否则会静默重置全部设置）；
-- **UI 层无未翻译文案**：扫描 `src/ui/`，任何未包进 `tr()` 的中文字面量都会让测试失败；
-- **分隔条拖拽**：模拟真实指针事件序列，断言三个分隔条都能双向拖动、内容随之改变、越界被夹紧、并且尺寸会保持；
-- **真实串口收发**：用 PTY 打开端口、驱动定时发送并断言对端收到重复载荷，以及发送回显确实进入接收区且不污染接收流；
-- **配置向后兼容**：断言缺少新字段的旧配置仍能加载。
+- Hex parsing/formatting, four checksum algorithms (including standard test vectors and real captured frames);
+- Log store line splitting, CRLF across packets, auto-wrap (including CJK double-width), timestamp frame-delimiting, cache trimming;
+- Encoding auto-detection (UTF-8 / GBK Chinese streams) and cross-packet multi-byte decoding;
+- Protocol state machine: response, retransmission, file chunking and ordering;
+- **Real PTY loopback**: opening a device, sending/receiving bytes, write counters, re-opening, handshake lines — covering reader/writer threads and event channels;
+- **Headless UI layout**: using `Context::run_ui` to render a full frame, covering empty logs, both themes, all display modes, bilingual, narrow-window combinations, and asserting primitives are actually produced;
+- **Multi-send column widths**: asserting column widths grow as the panel widens and their sum never exceeds the panel width;
+- **Loop count**: asserting that a configured N-count stops after N rounds, infinite loops don't stop, and no checked entries causes a stop;
+- **Config backward compatibility**: asserting that old config files missing new fields still load (otherwise all settings would silently reset);
+- **UI layer no untranslated text**: scanning `src/ui/`, any Chinese literal not wrapped in `tr()` causes the test to fail;
+- **Splitter drag**: simulating real pointer event sequences, asserting all three splitters can be dragged both ways, content changes accordingly, overflow is clamped, and sizes persist;
+- **Real serial send/receive**: opening a port with PTY, driving timed send and asserting the peer receives repeated payloads, and that send echo indeed enters the receive area without polluting the receive stream;
+- **Config backward compatibility**: asserting that old configs missing new fields still load.
 
-### 代码结构
+### Code Structure
 
 ```
 src/
-  main.rs          程序入口、字体安装
-  app.rs           应用状态、串口/定时器事件泵、快捷键
-  logstore.rs      接收日志：字节流 → 显示行（增量、有界、可重渲染）
-  encoding.rs      编码表、自动识别器、流式解码器
-  hex.rs           宽松十六进制解析与格式化
-  multi.rs         多条发送条目与页面、导入导出
-  settings.rs      配置持久化
-  theme.rs         黑色/白色主题与接收区配色
-  fonts.rs         CJK 字体发现
-  serial/          串口配置、端口枚举（热插拔）、链路与读写线程
-  protocol/        校验、帧格式、传输状态机
-  ui/              log_view（虚拟化可选中日志）、panels（各面板）
+  main.rs          Entry point, font installation
+  app.rs           App state, serial/timer event pump, shortcuts
+  logstore.rs      Receive log: byte stream → display lines (incremental, bounded, re-renderable)
+  encoding.rs      Encoding table, auto-detector, streaming decoder
+  hex.rs           Lenient hex parsing and formatting
+  multi.rs         Multi-send entries and pages, import/export
+  settings.rs      Config persistence
+  theme.rs         Dark/light themes and receive area colors
+  fonts.rs         CJK font discovery
+  serial/          Serial config, port enumeration (hot-plug), link and read/write threads
+  protocol/        Checksum, frame format, transfer state machine
+  ui/              log_view (virtualized selectable log), panels (various panels)
 ```
 
-## 许可
+## License
 
 MIT
