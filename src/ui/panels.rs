@@ -349,19 +349,18 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
                 app.mark_settings_dirty();
             }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(tr("关于")).clicked() {
-                    app.show_about = true;
-                }
-                if ui.button(tr("恢复默认设置")).clicked() {
-                    app.settings = crate::settings::Settings::default();
-                    app.log
-                        .set_limits(app.settings.max_rows, app.settings.max_raw);
-                    app.log.set_options(app.settings.display);
-                    app.mark_settings_dirty();
-                    app.info(tr("已恢复默认设置"));
-                }
-            });
+            ui.separator();
+            if ui.button(tr("恢复默认设置")).clicked() {
+                app.settings = crate::settings::Settings::default();
+                app.log
+                    .set_limits(app.settings.max_rows, app.settings.max_raw);
+                app.log.set_options(app.settings.display);
+                app.mark_settings_dirty();
+                app.info(tr("已恢复默认设置"));
+            }
+            if ui.button(tr("关于")).clicked() {
+                app.show_about = true;
+            }
         });
     });
 }
@@ -960,7 +959,11 @@ fn copy_selection(app: &mut XcomApp, ui: &Ui) {
 fn send_area(app: &mut XcomApp, ui: &mut Ui) {
     probe::set_send_panel_rect(ui.max_rect());
 
-    ui.horizontal(|ui| {
+    const BTN_HEIGHT: f32 = 24.0;
+
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+
         ui.label(RichText::new(tr("发送区")).strong());
         ui.separator();
 
@@ -1011,50 +1014,62 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
             }
         }
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button(tr("清除发送")).clicked() {
-                app.settings.send.buffer.clear();
-                app.tx_bytes = 0;
-                app.rx_bytes = 0;
-                app.mark_settings_dirty();
-                app.info(tr("已清除发送区与收发计数"));
-            }
-            if ui.button(tr("发送文件")).clicked() {
-                if app.file_send.is_some() {
-                    app.abort_file_send();
-                } else if let Some(path) = pick_open_file(tr("选择要发送的文件")) {
-                    app.start_file_send(path);
-                }
-            }
-            if app.file_send.is_some() && ui.button(tr("终止发送")).clicked() {
+        ui.separator();
+
+        let send = ui.add_sized(
+            [92.0, BTN_HEIGHT],
+            egui::Button::new(RichText::new(tr("发送 (Ctrl+Enter)")).strong()),
+        );
+        if send.clicked() {
+            app.send_once();
+        }
+
+        if ui
+            .add_sized([72.0, BTN_HEIGHT], egui::Button::new(tr("发送文件")))
+            .clicked()
+        {
+            if app.file_send.is_some() {
                 app.abort_file_send();
+            } else if let Some(path) = pick_open_file(tr("选择要发送的文件")) {
+                app.start_file_send(path);
             }
+        }
+        if app.file_send.is_some()
+            && ui
+                .add_sized([72.0, BTN_HEIGHT], egui::Button::new(tr("终止发送")))
+                .clicked()
+        {
+            app.abort_file_send();
+        }
 
-            let send = ui.add_sized(
-                [92.0, 26.0],
-                egui::Button::new(RichText::new(tr("发送 (Ctrl+Enter)")).strong()),
-            );
-            if send.clicked() {
-                app.send_once();
-            }
+        if ui
+            .add_sized([72.0, BTN_HEIGHT], egui::Button::new(tr("清除发送")))
+            .clicked()
+        {
+            app.settings.send.buffer.clear();
+            app.tx_bytes = 0;
+            app.rx_bytes = 0;
+            app.mark_settings_dirty();
+            app.info(tr("已清除发送区与收发计数"));
+        }
 
-            egui::ComboBox::from_id_salt("send_history")
-                .selected_text(tr("历史"))
-                .width(70.0)
-                .show_ui(ui, |ui| {
-                    if app.settings.send.history.is_empty() {
-                        ui.weak(tr("暂无历史"));
+        egui::ComboBox::from_id_salt("send_history")
+            .selected_text(tr("历史"))
+            .width(68.0)
+            .height(BTN_HEIGHT)
+            .show_ui(ui, |ui| {
+                if app.settings.send.history.is_empty() {
+                    ui.weak(tr("暂无历史"));
+                }
+                let history = app.settings.send.history.clone();
+                for entry in history {
+                    let preview: String = entry.chars().take(40).collect();
+                    if ui.selectable_label(false, preview).clicked() {
+                        app.settings.send.buffer = entry;
+                        app.mark_settings_dirty();
                     }
-                    let history = app.settings.send.history.clone();
-                    for entry in history {
-                        let preview: String = entry.chars().take(40).collect();
-                        if ui.selectable_label(false, preview).clicked() {
-                            app.settings.send.buffer = entry;
-                            app.mark_settings_dirty();
-                        }
-                    }
-                });
-        });
+                }
+            });
     });
 
     if let Some(send) = app.file_send.as_ref() {
@@ -1137,7 +1152,7 @@ pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
 /// `fixed` is the total width of the checkbox, index and button columns, which
 /// do not scale; everything left over is shared 62/38 between 内容 and 备注.
 fn multi_column_widths(available: f32, spacing: f32) -> (f32, f32) {
-    let fixed = 30.0 + 26.0 + 34.0 + 34.0 + 62.0 + 58.0;
+    let fixed = 30.0 + 24.0 + 30.0 + 32.0 + 58.0 + 52.0;
     // No per-column floor: a floor larger than the leftover space would push
     // the table past the panel edge, which is the very problem this solves.
     // The two columns always sum to the leftover, so the table fits exactly.
@@ -1147,7 +1162,7 @@ fn multi_column_widths(available: f32, spacing: f32) -> (f32, f32) {
 
 fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     // ---- paging -----------------------------------------------------------
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui.button(tr("首页")).clicked() {
             app.settings.multi.first_page();
         }
@@ -1167,7 +1182,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         }
     });
 
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui.button(tr("导入条目")).clicked() {
             if let Some(path) = pick_open_file(tr("导入发送条目")) {
                 match std::fs::read_to_string(&path) {
@@ -1198,9 +1213,6 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                 }
             }
         }
-        // One-shot send of everything checked on this page.  Without this the
-        // 启用 checkboxes only had an effect inside the loop, which is not what
-        // "enabled" suggests.
         let can_send = app.link.is_open() && !app.multi_run_active();
         if ui
             .add_enabled(can_send, egui::Button::new(tr("发送已勾选")))
@@ -1245,7 +1257,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         }
     });
 
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(tr("轮次间隔"));
         let mut forever = app.settings.multi.loop_count.is_none();
         if ui.checkbox(&mut forever, tr("无限循环")).changed() {
@@ -1288,7 +1300,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         }
     });
 
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let mut keypad = app.settings.multi.keypad_enabled;
         if ui
             .checkbox(&mut keypad, tr("关联数字键盘 (1-9,0)"))
@@ -1324,15 +1336,15 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     // These five widths must sum to the `fixed` constant in
     // `multi_column_widths`, or the row will not fill the panel exactly.
     let enable_w = 30.0;
-    let index_w = 26.0;
-    let hex_w = 34.0;
-    let newline_w = 34.0;
+    let index_w = 24.0;
+    let hex_w = 30.0;
+    let newline_w = 32.0;
     // Delay applied after this entry, before the next one.
-    let delay_w = 62.0;
-    let send_w = 58.0;
+    let delay_w = 58.0;
+    let send_w = 52.0;
 
     const ROW_H: f32 = 20.0;
-    const GAP: f32 = 6.0;
+    const GAP: f32 = 5.0;
 
     let (text_width, note_width) = multi_column_widths(ui.available_width(), GAP);
 
@@ -1351,7 +1363,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         .map_or(0, Vec::len)
         .max(visible);
 
-    egui::ScrollArea::vertical()
+    egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(GAP, 4.0);

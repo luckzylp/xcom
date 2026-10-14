@@ -171,6 +171,10 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
         ThemeMode::Light => egui::ThemePreference::Light,
         ThemeMode::System => egui::ThemePreference::System,
     });
+    ctx.all_styles_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+    });
 }
 
 /// A slightly calmer dark theme than egui's default, closer to a native tool.
@@ -200,6 +204,11 @@ fn tuned_dark() -> Visuals {
     v.widgets.inactive.bg_fill = Color32::from_rgb(0x33, 0x33, 0x35);
     v.widgets.hovered.bg_fill = Color32::from_rgb(0x3E, 0x3E, 0x41);
     v.widgets.active.bg_fill = accent.gamma_multiply(0.7);
+
+    v.widgets.noninteractive.corner_radius = egui::CornerRadius::same(4);
+    v.widgets.inactive.corner_radius = egui::CornerRadius::same(4);
+    v.widgets.hovered.corner_radius = egui::CornerRadius::same(4);
+    v.widgets.active.corner_radius = egui::CornerRadius::same(4);
     v
 }
 
@@ -228,6 +237,11 @@ fn tuned_light() -> Visuals {
     v.widgets.inactive.bg_fill = Color32::from_rgb(0xE0, 0xE0, 0xE2);
     v.widgets.hovered.bg_fill = Color32::from_rgb(0xD5, 0xD5, 0xD8);
     v.widgets.active.bg_fill = accent.gamma_multiply(0.6);
+
+    v.widgets.noninteractive.corner_radius = egui::CornerRadius::same(4);
+    v.widgets.inactive.corner_radius = egui::CornerRadius::same(4);
+    v.widgets.hovered.corner_radius = egui::CornerRadius::same(4);
+    v.widgets.active.corner_radius = egui::CornerRadius::same(4);
     v
 }
 

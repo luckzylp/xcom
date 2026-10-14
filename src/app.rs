@@ -264,14 +264,17 @@ impl XcomApp {
         }
     }
 
-    /// Report the CJK font status once, after the first frame.
+    /// Report font status once, after the first frame.
     fn note_font_status(&mut self) {
         if self.font_warning_shown {
             return;
         }
         self.font_warning_shown = true;
+        if let Some(ui_family) = crate::fonts::installed_ui_family() {
+            log::info!("Zed UI 字体: {ui_family}");
+        }
         match crate::fonts::installed_family() {
-            Some(family) => log::info!("界面字体: {family}"),
+            Some(family) => log::info!("中文字体: {family}"),
             None => self.warn(tr(
                 "未找到中文字体，界面中文可能显示为方块。请安装 Noto Sans CJK / 文泉驿等字体",
             )),
@@ -1318,10 +1321,37 @@ mod layout_tests {
     }
 
     #[test]
+    fn tool_panel_splitter_boundary_consistent_in_all_languages() {
+        let _guard = crate::i18n::test_lock();
+        let mut right_edges = Vec::new();
+        for language in [crate::i18n::Lang::ZhCn, crate::i18n::Lang::EnUs] {
+            crate::i18n::set_lang(language);
+            let ctx = egui::Context::default();
+            let mut app = XcomApp::headless(crate::settings::Settings::default());
+            app.side_tab = SideTab::Multi;
+            let center = full_frame(&ctx, &mut app, input());
+            right_edges.push((language, center.max.x));
+        }
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let zh_edge = right_edges[0].1;
+        let en_edge = right_edges[1].1;
+        assert_eq!(
+            zh_edge, en_edge,
+            "Splitter boundary must be identical across languages: ZhCn={zh_edge}, EnUs={en_edge}"
+        );
+    }
+
+    #[test]
     fn shrinking_the_tool_panel_persists_in_every_language() {
         // Reported: in English the tool panel snapped back when shrunk; in
         // Chinese it did not, which points at something width-dependent in the
         // translated strings.
+        //
+        // We drag by 25 px — small enough to stay above RIGHT_PANEL_MIN
+        // (DEFAULT 287 − 25 = 262 > MIN 260) so the panel actually moves
+        // and the result is not clamped away.  The key assertion is that
+        // the moved position is *retained* across several frames, i.e. the
+        // panel did not snap back.
         let _guard = crate::i18n::test_lock();
         for language in [crate::i18n::Lang::ZhCn, crate::i18n::Lang::EnUs] {
             crate::i18n::set_lang(language);
@@ -1332,14 +1362,14 @@ mod layout_tests {
             let before = full_frame(&ctx, &mut app, input());
             // The right panel's left edge; shrinking it moves this right.
             let grab = egui::pos2(before.max.x, before.center().y);
-            drag(&ctx, &mut app, grab, egui::pos2(grab.x + 90.0, grab.y));
+            drag(&ctx, &mut app, grab, egui::pos2(grab.x + 25.0, grab.y));
 
             let mut after = full_frame(&ctx, &mut app, input());
             for _ in 0..5 {
                 after = full_frame(&ctx, &mut app, input());
             }
             assert!(
-                after.max.x > before.max.x + 50.0,
+                after.max.x > before.max.x + 15.0,
                 "{language:?}: the tool panel snapped back: {} -> {}",
                 before.max.x,
                 after.max.x
