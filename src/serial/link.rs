@@ -422,8 +422,8 @@ mod loopback_tests {
                     &mut master,
                     &mut slave,
                     std::ptr::null_mut(),
-                    std::ptr::null(),
-                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
                 )
             };
             if rc != 0 || master < 0 || slave < 0 {
