@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Linux ──────────────────────────────────────────────
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            cross: false
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            cross: false
+          - os: ubuntu-latest
+            target: i686-unknown-linux-gnu
+            cross: true
+          # ── Windows ────────────────────────────────────────────
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            cross: false
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            cross: false
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            cross: false
+          # ── macOS ─────────────────────────────────────────────
+          - os: macos-13
+            target: x86_64-apple-darwin
+            cross: false
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            cross: false
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # ── Install Linux GUI dependencies ─────────────────────────
+      - name: Install Linux GUI dependencies (native)
+        if: runner.os == 'Linux' && matrix.cross == false
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
+
+      - name: Install Linux GUI dependencies (i686 cross-compile)
+        if: runner.os == 'Linux' && matrix.target == 'i686-unknown-linux-gnu'
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-multilib pkg-config \
+            libxkbcommon-dev:i386 libwayland-dev:i386 libx11-dev:i386 \
+            libgl1-mesa-dev:i386 libglib2.0-dev:i386
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # ── Cross-compile env for Linux i686 ───────────────────────
+      - name: Set i686 cross-compile environment
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        run: |
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_ARCH=x86" >> "$GITHUB_ENV"
+
+      # ── Build ──────────────────────────────────────────────────
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # ── Package ────────────────────────────────────────────────
+      - name: Determine artifact name
+        id: artifact
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME:-$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys,json;print(json.load(sys.stdin)["packages"][0]["version"])')}"
+          # Strip leading 'v' from tag if present
+          version="${version#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archive=xcom-${version}-${{ matrix.target }}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          staging="xcom-${{ steps.artifact.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "$staging"
+          bin="target/${{ matrix.target }}/release/xcom"
+          [ -f "$bin" ] || bin="target/${{ matrix.target }}/release/xcom.exe"
+          cp "$bin" "$staging/"
+          cp LICENSE "$staging/"
+          # Include desktop integration files for Linux
+          if [ "${{ matrix.target }}" != "x86_64-apple-darwin" ] && [ "${{ matrix.target }}" != "aarch64-apple-darwin" ]; then
+            mkdir -p "$staging/packaging"
+            cp packaging/xcom.desktop "$staging/packaging/"
+            cp packaging/xcom.png "$staging/packaging/"
+            cp packaging/install-user.sh "$staging/packaging/"
+            if [ -d packaging/icons ]; then
+              mkdir -p "$staging/packaging/icons"
+              cp packaging/icons/*.png "$staging/packaging/icons/" 2>/dev/null || true
+            fi
+          fi
+          tar czf "${{ steps.artifact.outputs.archive }}" "$staging"
+          echo "Created ${{ steps.artifact.outputs.archive }}"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          staging="xcom-${{ steps.artifact.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "$staging"
+          bin="target/${{ matrix.target }}/release/xcom.exe"
+          [ -f "$bin" ] || bin="target/${{ matrix.target }}/release/xcom"
+          cp "$bin" "$staging/"
+          cp LICENSE "$staging/"
+          tar czf "${{ steps.artifact.outputs.archive }}" "$staging"
+          echo "Created ${{ steps.artifact.outputs.archive }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.archive }}
+          path: ${{ steps.artifact.outputs.archive }}
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only create a release when triggered by a tag push
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*.tar.gz

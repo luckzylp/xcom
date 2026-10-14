@@ -1,5 +1,7 @@
 # XCOM 串口调试助手
 
+> [English](README_EN.md) | 简体中文
+
 使用 **Rust + egui** 编写的跨平台串口调试工具，参照正点原子 **ATK-XCOM v3.0** 的功能与界面复刻，
 可在 **Windows / Linux / macOS** 上运行。
 
