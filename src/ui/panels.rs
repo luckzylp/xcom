@@ -530,13 +530,14 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                         ui.weak(tr("未检测到串口"));
                                     }
                                     for port in &ports {
-                                        if ui
-                                            .selectable_label(
-                                                port.name == app.settings.serial.port,
-                                                port.display(),
-                                            )
-                                            .clicked()
-                                        {
+                                        let item = ui.selectable_label(
+                                            port.name == app.settings.serial.port,
+                                            port.display(),
+                                        );
+                                        let item = item.on_hover_text(
+                                            port.detail().unwrap_or_else(|| port.display()),
+                                        );
+                                        if item.clicked() {
                                             app.settings.serial.port = port.name.clone();
                                             app.mark_settings_dirty();
                                         }
@@ -1111,6 +1112,77 @@ fn copy_selection(app: &mut XcomApp, ui: &Ui) {
     }
 }
 
+const SEND_RIGHT_PAD: f32 = 6.0;
+
+fn send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
+    ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+    ui.spacing_mut().interact_size.y = btn_height;
+
+    // Rightmost: 发送 (drawn first in right_to_left)
+    let send_btn = ui.add_sized(
+        [96.0, btn_height],
+        egui::Button::new(RichText::new(tr("发送 (Ctrl+Enter)")).strong()),
+    );
+    probe::push_send_toolbar_rect("send", send_btn.rect);
+    if send_btn.clicked() {
+        app.send_once();
+    }
+
+    // 发送文件 / 终止发送
+    let file_button = if app.file_send.is_some() {
+        ui.add_sized([76.0, btn_height], egui::Button::new(tr("终止发送")))
+    } else {
+        ui.add_sized([76.0, btn_height], egui::Button::new(tr("发送文件")))
+    };
+    probe::push_send_toolbar_rect("file", file_button.rect);
+    if file_button.clicked() {
+        if app.file_send.is_some() {
+            app.abort_file_send();
+        } else if let Some(path) = pick_open_file(tr("选择要发送的文件")) {
+            app.start_file_send(path);
+        }
+    }
+
+    // 清除发送
+    let clear_button = ui.add_sized([76.0, btn_height], egui::Button::new(tr("清除发送")));
+    probe::push_send_toolbar_rect("clear", clear_button.rect);
+    if clear_button.clicked() {
+        app.settings.send.buffer.clear();
+        app.tx_bytes = 0;
+        app.rx_bytes = 0;
+        app.mark_settings_dirty();
+        app.info(tr("已清除发送区与收发计数"));
+    }
+
+    // 历史 (leftmost of the button group)
+    let history = egui::ComboBox::from_id_salt("send_history")
+        .selected_text(tr("历史"))
+        .width(68.0)
+        .show_ui(ui, |ui| {
+            if app.settings.send.history.is_empty() {
+                ui.weak(tr("暂无历史"));
+            }
+            let history = app.settings.send.history.clone();
+            for entry in history {
+                let preview: String = entry.chars().take(40).collect();
+                if ui.selectable_label(false, preview).clicked() {
+                    app.settings.send.buffer = entry;
+                    app.mark_settings_dirty();
+                }
+            }
+        });
+    probe::push_send_toolbar_rect("history", history.response.rect);
+}
+
+fn right_aligned_send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
+    let avail_w = (ui.available_width() - SEND_RIGHT_PAD).max(0.0);
+    ui.allocate_ui_with_layout(
+        egui::vec2(avail_w, btn_height),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| send_actions(app, ui, btn_height),
+    );
+}
+
 /// Lay out only the send editor and report the height it took, so a test can
 /// observe that dragging the separator really resizes it.
 fn send_area(app: &mut XcomApp, ui: &mut Ui) {
@@ -1123,24 +1195,33 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
             fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
         }) + 10.0,
     );
-    // Right margin between the 发送 button and the panel edge.
-    const RIGHT_PAD: f32 = 6.0;
+    // At the minimum window size the center panel is narrower than the left
+    // options plus the fixed-width action group. Keep them on one row when
+    // there is room; otherwise move the actions to a second, right-aligned row
+    // instead of letting the right-to-left layout overlap the options.
+    let one_row_min = 620.0 * (app.settings.fonts.ui_size / 13.0).max(1.0);
+    let actions_on_second_row = ui.available_width() < one_row_min;
 
     ui.horizontal(|ui| {
         ui.set_height(btn_height);
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
 
         // ── Left: label + configuration controls ────────────────────────────
-        ui.label(RichText::new(tr("发送区")).strong());
+        let section_label = ui.label(RichText::new(tr("发送区")).strong());
+        probe::push_send_toolbar_rect("section", section_label.rect);
         ui.separator();
 
         let mut hex = app.settings.send.hex;
-        if ui.checkbox(&mut hex, tr("16进制发送")).changed() {
+        let hex_control = ui.checkbox(&mut hex, tr("16进制发送"));
+        probe::push_send_toolbar_rect("hex", hex_control.rect);
+        if hex_control.changed() {
             app.settings.send.hex = hex;
             app.mark_settings_dirty();
         }
         let mut newline = app.settings.send.append_newline;
-        if ui.checkbox(&mut newline, tr("发送新行")).changed() {
+        let newline_control = ui.checkbox(&mut newline, tr("发送新行"));
+        probe::push_send_toolbar_rect("newline", newline_control.rect);
+        if newline_control.changed() {
             app.settings.send.append_newline = newline;
             app.mark_settings_dirty();
         }
@@ -1181,74 +1262,17 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
             }
         }
 
-        // ── Right: action buttons, right-to-left, with right padding ────────
-        // Reserve RIGHT_PAD on the right edge before placing the 发送 button.
-        let avail_w = (ui.available_width() - RIGHT_PAD).max(0.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(avail_w, btn_height),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
-                ui.spacing_mut().interact_size.y = btn_height;
-
-                // Rightmost: 发送 (drawn first in right_to_left)
-                let send_btn = ui.add_sized(
-                    [96.0, btn_height],
-                    egui::Button::new(RichText::new(tr("发送 (Ctrl+Enter)")).strong()),
-                );
-                probe::push_send_toolbar_rect("send", send_btn.rect);
-                if send_btn.clicked() {
-                    app.send_once();
-                }
-
-                // 发送文件 / 终止发送
-                let file_button = if app.file_send.is_some() {
-                    ui.add_sized([76.0, btn_height], egui::Button::new(tr("终止发送")))
-                } else {
-                    ui.add_sized([76.0, btn_height], egui::Button::new(tr("发送文件")))
-                };
-                probe::push_send_toolbar_rect("file", file_button.rect);
-                if file_button.clicked() {
-                    if app.file_send.is_some() {
-                        app.abort_file_send();
-                    } else if let Some(path) = pick_open_file(tr("选择要发送的文件")) {
-                        app.start_file_send(path);
-                    }
-                }
-
-                // 清除发送
-                let clear_button =
-                    ui.add_sized([76.0, btn_height], egui::Button::new(tr("清除发送")));
-                probe::push_send_toolbar_rect("clear", clear_button.rect);
-                if clear_button.clicked() {
-                    app.settings.send.buffer.clear();
-                    app.tx_bytes = 0;
-                    app.rx_bytes = 0;
-                    app.mark_settings_dirty();
-                    app.info(tr("已清除发送区与收发计数"));
-                }
-
-                // 历史 (leftmost of the button group)
-                let history = egui::ComboBox::from_id_salt("send_history")
-                    .selected_text(tr("历史"))
-                    .width(68.0)
-                    .show_ui(ui, |ui| {
-                        if app.settings.send.history.is_empty() {
-                            ui.weak(tr("暂无历史"));
-                        }
-                        let history = app.settings.send.history.clone();
-                        for entry in history {
-                            let preview: String = entry.chars().take(40).collect();
-                            if ui.selectable_label(false, preview).clicked() {
-                                app.settings.send.buffer = entry;
-                                app.mark_settings_dirty();
-                            }
-                        }
-                    });
-                probe::push_send_toolbar_rect("history", history.response.rect);
-            },
-        );
+        if !actions_on_second_row {
+            right_aligned_send_actions(app, ui, btn_height);
+        }
     });
+
+    if actions_on_second_row {
+        ui.horizontal(|ui| {
+            ui.set_height(btn_height);
+            right_aligned_send_actions(app, ui, btn_height);
+        });
+    }
 
     if let Some(send) = app.file_send.as_ref() {
         let progress = send.progress();

@@ -37,16 +37,36 @@ pub struct PortDesc {
 }
 
 impl PortDesc {
-    /// Long description shown in the port list, e.g.
-    /// `/dev/ttyUSB0  CH340 (1a86:7523)`.
+    /// Compact label shown in the port list, e.g. `/dev/ttyUSB0 (CH340)`.
     pub fn display(&self) -> String {
-        match self.detail() {
-            Some(detail) => format!("{}  {detail}", self.name),
-            None => self.name.clone(),
+        match &self.kind {
+            PortKind::Usb {
+                product,
+                manufacturer,
+                ..
+            } => {
+                let identity = product
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        manufacturer
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                    });
+                identity.map_or_else(
+                    || self.name.clone(),
+                    |identity| format!("{} ({identity})", self.name),
+                )
+            }
+            PortKind::Bluetooth => format!("{} ({})", self.name, crate::i18n::tr("蓝牙")),
+            PortKind::Pci => format!("{} (PCI)", self.name),
+            PortKind::Unknown => self.name.clone(),
         }
     }
 
-    /// The metadata portion alone, if any.
+    /// Full metadata for the hover tooltip, if any.
     pub fn detail(&self) -> Option<String> {
         match &self.kind {
             PortKind::Usb {
@@ -305,6 +325,25 @@ mod tests {
         assert!(detail.contains("1a86:7523"), "{detail}");
         assert!(detail.contains("SN:A1B2"), "{detail}");
         assert!(desc.display().starts_with("/dev/ttyUSB0"));
+    }
+
+    #[test]
+    fn usb_port_label_stays_compact() {
+        let desc = PortDesc {
+            name: "/dev/ttyUSB0".to_owned(),
+            kind: PortKind::Usb {
+                vid: 0x0403,
+                pid: 0x6001,
+                serial: Some("FTDI-123456".to_owned()),
+                manufacturer: Some("FTDI".to_owned()),
+                product: Some("FT232R USB UART".to_owned()),
+            },
+        };
+
+        assert_eq!(desc.display(), "/dev/ttyUSB0 (FT232R USB UART)");
+        let tooltip = desc.detail().unwrap();
+        assert!(tooltip.contains("0403:6001"), "{tooltip}");
+        assert!(tooltip.contains("SN:FTDI-123456"), "{tooltip}");
     }
 
     #[test]

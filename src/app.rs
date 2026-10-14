@@ -1319,6 +1319,55 @@ mod layout_tests {
     }
 
     #[test]
+    fn send_toolbar_does_not_overlap_at_minimum_window_width() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.show_side_panel = true;
+        app.settings.send.append_newline = false;
+
+        for _ in 0..2 {
+            let mut narrow = input();
+            narrow.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(880.0, 540.0),
+            ));
+            full_frame(&ctx, &mut app, narrow);
+        }
+
+        let rects = panels::probe::send_toolbar_rects();
+        let find = |name: &str| {
+            rects
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("{name} control was not laid out"))
+        };
+        let left = [
+            ("section", find("section")),
+            ("hex", find("hex")),
+            ("newline", find("newline")),
+        ];
+        let right = [
+            ("history", find("history")),
+            ("clear", find("clear")),
+            ("file", find("file")),
+            ("send", find("send")),
+        ];
+        for (left_name, left_rect) in left {
+            for (right_name, right_rect) in right {
+                let overlaps = left_rect.min.x < right_rect.max.x
+                    && right_rect.min.x < left_rect.max.x
+                    && left_rect.min.y < right_rect.max.y
+                    && right_rect.min.y < left_rect.max.y;
+                assert!(
+                    !overlaps,
+                    "{left_name} overlapped {right_name}: {left_rect:?} vs {right_rect:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn mixed_script_text_keeps_one_baseline() {
         let ctx = egui::Context::default();
         crate::fonts::install(&ctx, &crate::settings::FontSettings::default());
