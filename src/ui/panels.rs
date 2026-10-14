@@ -28,12 +28,19 @@ pub(crate) mod probe {
     use eframe::egui;
     #[cfg(test)]
     use std::cell::Cell;
+    #[cfg(test)]
+    use std::cell::RefCell;
 
     #[cfg(test)]
     thread_local! {
         static LEFT_CONTENT_WIDTH: Cell<f32> = const { Cell::new(0.0) };
         static SEND_PANEL_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static EDITOR_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static SERIAL_CONTENT_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static OPEN_BUTTON_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static SEND_TOOLBAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
+            const { RefCell::new(Vec::new()) };
+        static MULTI_HEADER_RECTS: RefCell<Vec<egui::Rect>> = const { RefCell::new(Vec::new()) };
     }
 
     #[cfg(test)]
@@ -73,6 +80,74 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn editor_rect() -> egui::Rect {
         EDITOR_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_serial_content_rect(rect: egui::Rect) {
+        SERIAL_CONTENT_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_serial_content_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn serial_content_rect() -> egui::Rect {
+        SERIAL_CONTENT_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_open_button_rect(rect: egui::Rect) {
+        OPEN_BUTTON_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_open_button_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn open_button_rect() -> egui::Rect {
+        OPEN_BUTTON_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_send_toolbar() {
+        SEND_TOOLBAR_RECTS.with(|rects| rects.borrow_mut().clear());
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn begin_send_toolbar() {}
+
+    #[cfg(test)]
+    pub(crate) fn push_send_toolbar_rect(name: &'static str, rect: egui::Rect) {
+        SEND_TOOLBAR_RECTS.with(|rects| rects.borrow_mut().push((name, rect)));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_send_toolbar_rect<R>(_name: &'static str, _rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn send_toolbar_rects() -> Vec<(&'static str, egui::Rect)> {
+        SEND_TOOLBAR_RECTS.with(|rects| rects.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_multi_headers() {
+        MULTI_HEADER_RECTS.with(|rects| rects.borrow_mut().clear());
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn begin_multi_headers() {}
+
+    #[cfg(test)]
+    pub(crate) fn push_multi_header_rect(rect: egui::Rect) {
+        MULTI_HEADER_RECTS.with(|rects| rects.borrow_mut().push(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_multi_header_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn multi_header_rects() -> Vec<egui::Rect> {
+        MULTI_HEADER_RECTS.with(|rects| rects.borrow().clone())
     }
 }
 
@@ -276,6 +351,30 @@ fn combo<T: PartialEq + Copy>(
     changed
 }
 
+/// Let the user choose one installed family, with `None` meaning “automatic”.
+fn font_combo(ui: &mut Ui, id: &str, current: &mut Option<String>) -> bool {
+    let mut changed = false;
+    let selected_text = current.clone().unwrap_or_else(|| tr("自动").to_owned());
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(selected_text)
+        .width(170.0)
+        .height(280.0)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(current.is_none(), tr("自动")).clicked() {
+                *current = None;
+                changed = true;
+            }
+            for family in crate::fonts::available_families() {
+                let selected = current.as_deref() == Some(family.as_str());
+                if ui.selectable_label(selected, family.clone()).clicked() {
+                    *current = Some(family);
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
 // ---------------------------------------------------------------------------
 // Top bar
 // ---------------------------------------------------------------------------
@@ -339,17 +438,6 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
             }
 
             ui.separator();
-            ui.label(tr("接收区字号"));
-            let mut size = app.settings.log_font_size;
-            if ui
-                .add(egui::Slider::new(&mut size, 8.0..=28.0).fixed_decimals(0))
-                .changed()
-            {
-                app.settings.log_font_size = size;
-                app.mark_settings_dirty();
-            }
-
-            ui.separator();
             if ui.button(tr("恢复默认设置")).clicked() {
                 app.settings = crate::settings::Settings::default();
                 app.log
@@ -408,6 +496,8 @@ pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
 
 fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
     let open = app.link.is_open();
+    let serial_bounds = ui.max_rect();
+    probe::set_serial_content_rect(serial_bounds);
     egui::CollapsingHeader::new(tr("串口设置"))
         .default_open(true)
         .show(ui, |ui| {
@@ -599,14 +689,25 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
             // Do not let the button stretch to the panel edge: a full-width
             // button reads as a separator rather than a control.  Cap it and
             // leave a clear gap.
-            let button_width = (ui.available_width() - 24.0).clamp(96.0, 168.0);
-            if ui
-                .add_sized(
-                    [button_width, 28.0],
-                    egui::Button::new(RichText::new(label).strong().color(color)),
-                )
-                .clicked()
-            {
+            let button_width = (serial_bounds.width() - 24.0).clamp(96.0, 168.0);
+            let button_height = 28.0_f32.max(
+                ui.ctx().fonts_mut(|fonts| {
+                    fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
+                }) + 10.0,
+            );
+            let button_center = egui::pos2(
+                serial_bounds.center().x,
+                ui.cursor().min.y + button_height / 2.0,
+            );
+            let open_button = ui.put(
+                egui::Rect::from_center_size(
+                    button_center,
+                    egui::vec2(button_width, button_height),
+                ),
+                egui::Button::new(RichText::new(label).strong().color(color)),
+            );
+            probe::set_open_button_rect(open_button.rect);
+            if open_button.clicked() {
                 app.toggle_port();
             }
             ui.small(crate::i18n::tr1("当前: {}", app.settings.serial.summary()));
@@ -700,6 +801,62 @@ fn display_section(app: &mut XcomApp, ui: &mut Ui) {
                     app.mark_settings_dirty();
                 }
             });
+
+            ui.separator();
+            ui.strong(tr("字体设置"));
+            let mut fonts = app.settings.fonts.clone();
+            let mut font_changed = false;
+            egui::Grid::new("font_grid")
+                .num_columns(2)
+                .spacing([8.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label(tr("界面字体"));
+                    let mut family = fonts.ui_family.clone();
+                    font_changed |= font_combo(ui, "ui_font_family", &mut family);
+                    fonts.ui_family = family;
+                    ui.end_row();
+
+                    ui.label(tr("界面字号"));
+                    let mut size = fonts.ui_size;
+                    font_changed |= ui
+                        .add(egui::Slider::new(&mut size, 9.0..=24.0).fixed_decimals(0))
+                        .changed();
+                    fonts.ui_size = size;
+                    ui.end_row();
+
+                    ui.label(tr("接收区字体"));
+                    let mut family = fonts.receive_family.clone();
+                    font_changed |= font_combo(ui, "receive_font_family", &mut family);
+                    fonts.receive_family = family;
+                    ui.end_row();
+
+                    ui.label(tr("接收区字号"));
+                    let mut size = fonts.receive_size;
+                    font_changed |= ui
+                        .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
+                        .changed();
+                    fonts.receive_size = size;
+                    ui.end_row();
+
+                    ui.label(tr("发送区字体"));
+                    let mut family = fonts.send_family.clone();
+                    font_changed |= font_combo(ui, "send_font_family", &mut family);
+                    fonts.send_family = family;
+                    ui.end_row();
+
+                    ui.label(tr("发送区字号"));
+                    let mut size = fonts.send_size;
+                    font_changed |= ui
+                        .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
+                        .changed();
+                    fonts.send_size = size;
+                    ui.end_row();
+                });
+            if font_changed {
+                fonts.normalize();
+                app.settings.fonts = fonts;
+                app.mark_settings_dirty();
+            }
 
             if changed {
                 app.settings.display = display;
@@ -958,12 +1115,22 @@ fn copy_selection(app: &mut XcomApp, ui: &Ui) {
 /// observe that dragging the separator really resizes it.
 fn send_area(app: &mut XcomApp, ui: &mut Ui) {
     probe::set_send_panel_rect(ui.max_rect());
+    probe::begin_send_toolbar();
 
-    const BTN_HEIGHT: f32 = 24.0;
+    // Toolbar row height: tall enough that text/checkboxes are not clipped.
+    let btn_height = 28.0_f32.max(
+        ui.ctx().fonts_mut(|fonts| {
+            fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
+        }) + 10.0,
+    );
+    // Right margin between the 发送 button and the panel edge.
+    const RIGHT_PAD: f32 = 6.0;
 
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+    ui.horizontal(|ui| {
+        ui.set_height(btn_height);
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
 
+        // ── Left: label + configuration controls ────────────────────────────
         ui.label(RichText::new(tr("发送区")).strong());
         ui.separator();
 
@@ -1014,62 +1181,73 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
             }
         }
 
-        ui.separator();
+        // ── Right: action buttons, right-to-left, with right padding ────────
+        // Reserve RIGHT_PAD on the right edge before placing the 发送 button.
+        let avail_w = (ui.available_width() - RIGHT_PAD).max(0.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(avail_w, btn_height),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+                ui.spacing_mut().interact_size.y = btn_height;
 
-        let send = ui.add_sized(
-            [92.0, BTN_HEIGHT],
-            egui::Button::new(RichText::new(tr("发送 (Ctrl+Enter)")).strong()),
-        );
-        if send.clicked() {
-            app.send_once();
-        }
-
-        if ui
-            .add_sized([72.0, BTN_HEIGHT], egui::Button::new(tr("发送文件")))
-            .clicked()
-        {
-            if app.file_send.is_some() {
-                app.abort_file_send();
-            } else if let Some(path) = pick_open_file(tr("选择要发送的文件")) {
-                app.start_file_send(path);
-            }
-        }
-        if app.file_send.is_some()
-            && ui
-                .add_sized([72.0, BTN_HEIGHT], egui::Button::new(tr("终止发送")))
-                .clicked()
-        {
-            app.abort_file_send();
-        }
-
-        if ui
-            .add_sized([72.0, BTN_HEIGHT], egui::Button::new(tr("清除发送")))
-            .clicked()
-        {
-            app.settings.send.buffer.clear();
-            app.tx_bytes = 0;
-            app.rx_bytes = 0;
-            app.mark_settings_dirty();
-            app.info(tr("已清除发送区与收发计数"));
-        }
-
-        egui::ComboBox::from_id_salt("send_history")
-            .selected_text(tr("历史"))
-            .width(68.0)
-            .height(BTN_HEIGHT)
-            .show_ui(ui, |ui| {
-                if app.settings.send.history.is_empty() {
-                    ui.weak(tr("暂无历史"));
+                // Rightmost: 发送 (drawn first in right_to_left)
+                let send_btn = ui.add_sized(
+                    [96.0, btn_height],
+                    egui::Button::new(RichText::new(tr("发送 (Ctrl+Enter)")).strong()),
+                );
+                probe::push_send_toolbar_rect("send", send_btn.rect);
+                if send_btn.clicked() {
+                    app.send_once();
                 }
-                let history = app.settings.send.history.clone();
-                for entry in history {
-                    let preview: String = entry.chars().take(40).collect();
-                    if ui.selectable_label(false, preview).clicked() {
-                        app.settings.send.buffer = entry;
-                        app.mark_settings_dirty();
+
+                // 发送文件 / 终止发送
+                let file_button = if app.file_send.is_some() {
+                    ui.add_sized([76.0, btn_height], egui::Button::new(tr("终止发送")))
+                } else {
+                    ui.add_sized([76.0, btn_height], egui::Button::new(tr("发送文件")))
+                };
+                probe::push_send_toolbar_rect("file", file_button.rect);
+                if file_button.clicked() {
+                    if app.file_send.is_some() {
+                        app.abort_file_send();
+                    } else if let Some(path) = pick_open_file(tr("选择要发送的文件")) {
+                        app.start_file_send(path);
                     }
                 }
-            });
+
+                // 清除发送
+                let clear_button =
+                    ui.add_sized([76.0, btn_height], egui::Button::new(tr("清除发送")));
+                probe::push_send_toolbar_rect("clear", clear_button.rect);
+                if clear_button.clicked() {
+                    app.settings.send.buffer.clear();
+                    app.tx_bytes = 0;
+                    app.rx_bytes = 0;
+                    app.mark_settings_dirty();
+                    app.info(tr("已清除发送区与收发计数"));
+                }
+
+                // 历史 (leftmost of the button group)
+                let history = egui::ComboBox::from_id_salt("send_history")
+                    .selected_text(tr("历史"))
+                    .width(68.0)
+                    .show_ui(ui, |ui| {
+                        if app.settings.send.history.is_empty() {
+                            ui.weak(tr("暂无历史"));
+                        }
+                        let history = app.settings.send.history.clone();
+                        for entry in history {
+                            let preview: String = entry.chars().take(40).collect();
+                            if ui.selectable_label(false, preview).clicked() {
+                                app.settings.send.buffer = entry;
+                                app.mark_settings_dirty();
+                            }
+                        }
+                    });
+                probe::push_send_toolbar_rect("history", history.response.rect);
+            },
+        );
     });
 
     if let Some(send) = app.file_send.as_ref() {
@@ -1090,7 +1268,7 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
     let editor_size = egui::vec2(available.x, available.y.max(48.0));
     let editor = ui.add(
         egui::TextEdit::multiline(&mut app.settings.send.buffer)
-            .font(egui::TextStyle::Monospace)
+            .font(crate::fonts::send_font_id(app.settings.fonts.send_size))
             .desired_width(editor_size.x)
             .min_size(editor_size)
             .hint_text(if app.settings.send.hex {
@@ -1343,13 +1521,17 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     let delay_w = 58.0;
     let send_w = 52.0;
 
-    const ROW_H: f32 = 20.0;
     const GAP: f32 = 5.0;
+    let row_height = 20.0_f32.max(
+        ui.ctx().fonts_mut(|fonts| {
+            fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
+        }) + 4.0,
+    );
 
     let (text_width, note_width) = multi_column_widths(ui.available_width(), GAP);
 
     // Fill the panel with rows rather than fixing each page at ten entries.
-    let rows_that_fit = ((ui.available_height() - ROW_H * 1.5) / (ROW_H + 4.0)).floor();
+    let rows_that_fit = ((ui.available_height() - row_height * 1.5) / (row_height + 4.0)).floor();
     let visible = rows_that_fit.max(crate::multi::ENTRIES_PER_PAGE as f32) as usize;
     if app.settings.multi.ensure_len(page, visible) {
         app.mark_settings_dirty();
@@ -1367,6 +1549,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(GAP, 4.0);
+            probe::begin_multi_headers();
 
             ui.horizontal(|ui| {
                 for (width, header) in [
@@ -1379,10 +1562,11 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                     (delay_w, tr("延迟")),
                     (send_w, ""),
                 ] {
-                    ui.add_sized(
-                        [width, ROW_H],
+                    let header = ui.add_sized(
+                        [width, row_height],
                         egui::Label::new(RichText::new(header).strong()),
                     );
+                    probe::push_multi_header_rect(header.rect);
                 }
             });
 
@@ -1395,7 +1579,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                     if stripe {
                         let row = egui::Rect::from_min_size(
                             ui.cursor().min,
-                            egui::vec2(ui.available_width(), ROW_H),
+                            egui::vec2(ui.available_width(), row_height),
                         );
                         ui.painter().rect_filled(
                             row,
@@ -1406,14 +1590,14 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                     let mut row_changed = false;
                     row_changed |= ui
                         .add_sized(
-                            [enable_w, ROW_H],
+                            [enable_w, row_height],
                             egui::Checkbox::new(&mut entry.enabled, ""),
                         )
                         .changed();
-                    ui.add_sized([index_w, ROW_H], egui::Label::new(format!("{index}")));
+                    ui.add_sized([index_w, row_height], egui::Label::new(format!("{index}")));
                     row_changed |= ui
                         .add_sized(
-                            [text_width, ROW_H],
+                            [text_width, row_height],
                             egui::TextEdit::singleline(&mut entry.text).hint_text(if entry.hex {
                                 "01 02 0A"
                             } else {
@@ -1423,23 +1607,23 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         .changed();
                     row_changed |= ui
                         .add_sized(
-                            [note_width, ROW_H],
+                            [note_width, row_height],
                             egui::TextEdit::singleline(&mut entry.note).hint_text(tr("备注")),
                         )
                         .changed();
                     row_changed |= ui
-                        .add_sized([hex_w, ROW_H], egui::Checkbox::new(&mut entry.hex, ""))
+                        .add_sized([hex_w, row_height], egui::Checkbox::new(&mut entry.hex, ""))
                         .changed();
                     row_changed |= ui
                         .add_sized(
-                            [newline_w, ROW_H],
+                            [newline_w, row_height],
                             egui::Checkbox::new(&mut entry.newline, ""),
                         )
                         .changed();
                     let mut delay = entry.delay_ms;
                     if ui
                         .add_sized(
-                            [delay_w, ROW_H],
+                            [delay_w, row_height],
                             egui::DragValue::new(&mut delay)
                                 .speed(5.0)
                                 .range(0..=3_600_000)
@@ -1451,7 +1635,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         dirty = true;
                     }
                     if ui
-                        .add_sized([send_w, ROW_H], egui::Button::new(tr("发送")))
+                        .add_sized([send_w, row_height], egui::Button::new(tr("发送")))
                         .clicked()
                     {
                         send_request = Some(index);

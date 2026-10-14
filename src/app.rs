@@ -11,7 +11,7 @@ use crate::i18n::tr;
 use crate::logstore::LogStore;
 use crate::protocol::{ProtocolEngine, ProtocolEvent};
 use crate::serial::{PortWatcher, SerialEvent, SerialLink, Signals};
-use crate::settings::Settings;
+use crate::settings::{FontSettings, Settings};
 use crate::ui::log_view::{self, LogViewOptions, LogViewState};
 use crate::ui::panels;
 
@@ -144,6 +144,8 @@ pub struct XcomApp {
     applied_theme: Option<crate::theme::ThemeMode>,
     /// Last language applied to the window title.
     applied_lang: Option<crate::i18n::Lang>,
+    /// Last font families installed in the egui context.
+    applied_fonts: Option<crate::settings::FontSettings>,
     /// Deferred settings write.
     settings_dirty: bool,
     last_save: Instant,
@@ -186,6 +188,9 @@ impl XcomApp {
         // Apply the persisted theme now so the first frame is already correct.
         crate::theme::apply(&cc.egui_ctx, app.settings.theme);
         app.applied_theme = Some(app.settings.theme);
+        // `main` installs fonts before constructing the app; record that the
+        // startup definitions are already current.
+        app.applied_fonts = Some(app.settings.fonts.clone());
 
         app
     }
@@ -222,6 +227,7 @@ impl XcomApp {
             signals_at: Instant::now(),
             applied_theme: None,
             applied_lang: None,
+            applied_fonts: None,
             settings_dirty: false,
             last_save: Instant::now(),
             font_warning_shown: false,
@@ -1063,6 +1069,20 @@ impl XcomApp {
             crate::theme::apply(ctx, theme);
             self.applied_theme = Some(theme);
         }
+        let fonts = self.settings.fonts.clone();
+        if self
+            .applied_fonts
+            .as_ref()
+            .map(FontSettings::family_signature)
+            != Some(fonts.family_signature())
+        {
+            #[cfg(test)]
+            crate::fonts::install_default_families(ctx);
+            #[cfg(not(test))]
+            crate::fonts::install(ctx, &fonts);
+        }
+        crate::fonts::apply_text_sizes(ctx, &fonts);
+        self.applied_fonts = Some(fonts);
         // The title bar is not re-read from the app, so switching language has
         // to push a new one; otherwise a Chinese UI keeps an English title
         // until the next launch.
@@ -1105,12 +1125,12 @@ pub(crate) fn draw_log(
 ) -> log_view::LogViewOutput {
     let options = LogViewOptions {
         auto_scroll: app.settings.auto_scroll,
-        font_size: app.settings.log_font_size,
+        font: crate::fonts::receive_font_id(app.settings.fonts.receive_size),
         line_spacing: app.settings.line_spacing,
     };
 
     // Tell the store how many columns fit, so text wrapping matches the panel.
-    let font = egui::FontId::monospace(app.settings.log_font_size);
+    let font = crate::fonts::receive_font_id(app.settings.fonts.receive_size);
     let char_width = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'M'));
     if char_width > 0.0 && app.settings.display.wrap {
         let cols = (ui.available_width() / char_width).floor().max(8.0) as usize;
@@ -1154,6 +1174,9 @@ mod layout_tests {
     /// Two passes matter: the first populates panel state (scroll areas, grid
     /// widths) and the second re-reads it, which is where sizing bugs show up.
     fn render(app: &mut XcomApp, ctx: &egui::Context, what: &str) {
+        if app.applied_fonts.is_none() {
+            crate::fonts::install_default_families(ctx);
+        }
         for pass in 0..2 {
             let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
             let shapes = output.shapes.len();
@@ -1193,6 +1216,7 @@ mod layout_tests {
 
     /// Lay out every real panel for one frame, returning the centre column.
     fn full_frame(ctx: &egui::Context, app: &mut XcomApp, raw: egui::RawInput) -> egui::Rect {
+        crate::fonts::install_default_families(ctx);
         let slot = std::cell::Cell::new(egui::Rect::NOTHING);
         let mut output = ctx.run_ui(raw, |ui| {
             panels::top_bar(app, ui);
@@ -1233,6 +1257,121 @@ mod layout_tests {
         let presses = [None, Some(true), None, None, Some(false)];
         for (position, pressed) in positions.into_iter().zip(presses) {
             full_frame(ctx, app, pointer(position, pressed));
+        }
+    }
+
+    #[test]
+    fn open_port_button_is_horizontally_centered() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+
+        full_frame(&ctx, &mut app, input());
+
+        let content = panels::probe::serial_content_rect();
+        let button = panels::probe::open_button_rect();
+        assert!(content.width() > 0.0, "serial content was not laid out");
+        assert!(button.width() > 0.0, "open button was not laid out");
+        let offset = (button.center().x - content.center().x).abs();
+        assert!(
+            offset <= 0.75,
+            "open button is {offset:.2}px from the serial section centre"
+        );
+    }
+
+    #[test]
+    fn send_history_combobox_matches_action_button_height() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+
+        full_frame(&ctx, &mut app, input());
+
+        let rects = panels::probe::send_toolbar_rects();
+        let find = |name: &str| {
+            rects
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("{name} control was not laid out"))
+        };
+        let history = find("history");
+        let send = find("send");
+        let file = find("file");
+        let clear = find("clear");
+        for (name, rect) in [("file", file), ("clear", clear)] {
+            assert!(
+                (rect.height() - send.height()).abs() <= 0.25,
+                "{name} height {:.2} differs from send {:.2}",
+                rect.height(),
+                send.height()
+            );
+        }
+        assert!(
+            (history.height() - send.height()).abs() <= 0.25,
+            "history height {:.2} differs from send button {:.2}",
+            history.height(),
+            send.height()
+        );
+        assert!(
+            (history.center().y - send.center().y).abs() <= 0.5,
+            "history is vertically misaligned by {:.2}px",
+            (history.center().y - send.center().y).abs()
+        );
+    }
+
+    #[test]
+    fn mixed_script_text_keeps_one_baseline() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, &crate::settings::FontSettings::default());
+        let mut output = ctx.run_ui(input(), |_| ());
+        output.textures_delta.clear();
+        let text = "启用#内容备注HEX新行延迟";
+        for font in [
+            egui::FontId::proportional(14.0),
+            egui::FontId::monospace(14.0),
+        ] {
+            let galley = ctx.fonts_mut(|fonts| {
+                fonts.layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE)
+            });
+
+            let baselines: Vec<(char, f32)> = galley
+                .rows
+                .iter()
+                .flat_map(|row| row.glyphs.iter())
+                .map(|glyph| (glyph.chr, glyph.pos.y))
+                .collect();
+            assert_eq!(baselines.len(), text.chars().count());
+            let min = baselines
+                .iter()
+                .map(|(_, y)| *y)
+                .fold(f32::INFINITY, f32::min);
+            let max = baselines
+                .iter()
+                .map(|(_, y)| *y)
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                max - min <= 0.01,
+                "ASCII/CJK glyphs use different baselines in {font:?}: {min:.3}..={max:.3} ({baselines:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_send_headers_are_vertically_aligned() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.side_tab = SideTab::Multi;
+
+        full_frame(&ctx, &mut app, input());
+
+        let headers = panels::probe::multi_header_rects();
+        assert_eq!(headers.len(), 8, "every table column must have a header");
+        let first_centre = headers[0].center().y;
+        for (index, rect) in headers.iter().enumerate() {
+            assert!(
+                (rect.center().y - first_centre).abs() <= 0.25,
+                "header {index} is vertically misaligned: {:?} vs {first_centre:.2}",
+                rect.center()
+            );
         }
     }
 
@@ -1556,6 +1695,7 @@ mod layout_tests {
         };
         let ctx = egui::Context::default();
         let mut app = XcomApp::headless(crate::settings::Settings::default());
+        crate::fonts::install_default_families(&ctx);
         app.settings.serial.port = pty.slave_path.clone();
         if let Err(e) = app.link.open(&app.settings.serial) {
             eprintln!("skipping: cannot open serial port: {e}");
@@ -1600,8 +1740,13 @@ mod layout_tests {
         for field in [
             "echo_sent",
             "auto_scroll",
-            "log_font_size",
             "line_spacing",
+            "fonts.ui_family",
+            "fonts.receive_family",
+            "fonts.send_family",
+            "fonts.ui_size",
+            "fonts.receive_size",
+            "fonts.send_size",
             "loop_enabled",
             "loop_count",
         ] {
@@ -1799,7 +1944,9 @@ mod layout_tests {
         let ctx = egui::Context::default();
         for (size, spacing) in [(8.0, 0.0), (28.0, 10.0)] {
             let mut app = seeded();
-            app.settings.log_font_size = size;
+            app.settings.fonts.ui_size = 24.0;
+            app.settings.fonts.receive_size = size;
+            app.settings.fonts.send_size = size;
             app.settings.line_spacing = spacing;
             app.settings.display.wrap = true;
             render(&mut app, &ctx, "extreme settings");
@@ -1811,6 +1958,7 @@ mod layout_tests {
         // Guards the wrapping maths, which divides by the glyph width.
         let ctx = egui::Context::default();
         let mut app = seeded();
+        crate::fonts::install_default_families(&ctx);
         app.settings.display.wrap = true;
         for width in [240.0f32, 480.0, 1024.0] {
             let narrow = || egui::RawInput {

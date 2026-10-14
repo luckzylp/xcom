@@ -132,7 +132,7 @@ impl LogViewState {
 /// How the view should behave this frame.
 pub struct LogViewOptions {
     pub auto_scroll: bool,
-    pub font_size: f32,
+    pub font: FontId,
     pub line_spacing: f32,
 }
 
@@ -165,7 +165,7 @@ pub fn show(
     state: &mut LogViewState,
     options: &LogViewOptions,
 ) -> LogViewOutput {
-    let font = FontId::monospace(options.font_size);
+    let font = options.font.clone();
     let row_height = ui.ctx().fonts_mut(|f| f.row_height(&font)) + options.line_spacing;
     let char_width = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'M'));
     let total_rows = store.row_count();

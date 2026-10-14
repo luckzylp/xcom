@@ -73,7 +73,8 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Chinese/English UI toggle**: switchable from the top bar at any time; follows system `LANG` on first launch; choice is persisted.
 - **Receive area text selection**: drag-select with mouse, Ctrl+C copy, Ctrl+A select all (based on glyph metrics, CJK full-width characters select correctly).
 - **Virtualized log view**: Only visible lines are rendered, staying smooth during long high-speed reception.
-- **Adjustable receive area font size and line spacing**; auto-wrap width follows window resize.
+- **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.
+- **Adjustable receive area line spacing**; auto-wrap width follows window resize and the selected font.
 - Configuration file persistence; restores last serial and display settings after restart.
 
 ---
@@ -141,6 +142,8 @@ The UI is in Chinese; on startup the program automatically searches for CJK font
 2. Via `fontdb` scanning system fonts, matching Noto Sans CJK / Source Han Sans / Microsoft YaHei / PingFang / WenQuanYi, etc.
 
 If none are found, the program still runs but Chinese characters appear as squares, with a status bar prompt to install a font (on Linux, install `fonts-noto-cjk` or `fonts-wqy-microhei`).
+
+The default interface stack prefers a font that contains both Latin and CJK glyphs (such as Noto Sans CJK SC, Microsoft YaHei, or PingFang SC). This avoids the vertical baseline mismatch that occurs when ASCII comes from one font and Chinese from a fallback. Users can still select any installed interface, receive, or send font in **Display Settings → Font Settings**.
 
 ---
 
@@ -282,7 +285,7 @@ The file is readable JSON and can be edited directly. Fields use `#[serde(defaul
 ## Development
 
 ```bash
-cargo test              # 187 tests
+cargo test              # 196 tests
 cargo clippy --all-targets
 cargo fmt
 ```

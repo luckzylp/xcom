@@ -17,6 +17,57 @@ use crate::protocol::ProtocolConfig;
 use crate::serial::SerialConfig;
 use crate::theme::{LogColorOverride, ThemeMode};
 
+fn default_receive_font_size() -> f32 {
+    13.0
+}
+
+/// User selections for the three independently configurable text areas.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FontSettings {
+    /// `None` selects the platform's preferred UI font.
+    pub ui_family: Option<String>,
+    /// `None` selects the preferred monospace font for the receive view.
+    pub receive_family: Option<String>,
+    /// `None` selects the preferred monospace font for the send editor.
+    pub send_family: Option<String>,
+    /// Point size used by general interface controls.
+    pub ui_size: f32,
+    /// Point size used by the receive view.
+    pub receive_size: f32,
+    /// Point size used by the send editor.
+    pub send_size: f32,
+}
+
+impl Default for FontSettings {
+    fn default() -> Self {
+        Self {
+            ui_family: None,
+            receive_family: None,
+            send_family: None,
+            ui_size: 13.0,
+            receive_size: 13.0,
+            send_size: 13.0,
+        }
+    }
+}
+
+impl FontSettings {
+    pub(crate) fn normalize(&mut self) {
+        self.ui_size = self.ui_size.clamp(9.0, 24.0);
+        self.receive_size = self.receive_size.clamp(8.0, 32.0);
+        self.send_size = self.send_size.clamp(8.0, 32.0);
+    }
+
+    pub(crate) fn family_signature(&self) -> (Option<&str>, Option<&str>, Option<&str>) {
+        (
+            self.ui_family.as_deref(),
+            self.receive_family.as_deref(),
+            self.send_family.as_deref(),
+        )
+    }
+}
+
 /// Options for the single-send panel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -98,6 +149,8 @@ pub struct Settings {
     pub send: SendSettings,
     pub multi: MultiSend,
     pub protocol: ProtocolConfig,
+    /// Persistent font selections and sizes.
+    pub fonts: FontSettings,
     /// The protocol panel's data field, restored on startup.
     pub protocol_data: String,
     /// Keep the receive view pinned to the newest line.
@@ -108,6 +161,10 @@ pub struct Settings {
     pub paused: bool,
     /// Extra spacing between log rows, in points.
     pub line_spacing: f32,
+    /// Legacy receive font size from versions before font families became configurable.
+    ///
+    /// Kept only to migrate old JSON; new files serialize `fonts.receive_size`.
+    #[serde(default = "default_receive_font_size", skip_serializing)]
     pub log_font_size: f32,
     /// Maximum retained display rows.
     pub max_rows: usize,
@@ -137,12 +194,13 @@ impl Default for Settings {
             send: SendSettings::default(),
             multi: MultiSend::default(),
             protocol: ProtocolConfig::default(),
+            fonts: FontSettings::default(),
             protocol_data: String::new(),
             auto_scroll: true,
             echo_sent: true,
             paused: false,
             line_spacing: 0.0,
-            log_font_size: 13.0,
+            log_font_size: FontSettings::default().receive_size,
             max_rows: 200_000,
             max_raw: 32 * 1024 * 1024,
             left_panel_width: crate::ui::panels::LEFT_PANEL_DEFAULT,
@@ -157,7 +215,8 @@ impl Settings {
     /// Clamp anything that could be nonsensical after a hand-edit.
     pub fn normalize(&mut self) {
         self.send.period_ms = self.send.period_ms.clamp(1, 3_600_000);
-        self.log_font_size = self.log_font_size.clamp(8.0, 32.0);
+        self.fonts.normalize();
+        self.log_font_size = self.fonts.receive_size;
         self.line_spacing = self.line_spacing.clamp(0.0, 12.0);
         self.max_rows = self.max_rows.clamp(1_000, 5_000_000);
         self.max_raw = self.max_raw.clamp(64 * 1024, 512 * 1024 * 1024);
@@ -229,6 +288,9 @@ impl Settings {
         };
         match serde_json::from_str::<Self>(&text) {
             Ok(mut settings) => {
+                if text.contains("\"log_font_size\"") {
+                    settings.fonts.receive_size = settings.log_font_size;
+                }
                 settings.normalize();
                 settings
             }
@@ -284,8 +346,44 @@ mod tests {
         assert_eq!(settings.send.period_ms, 250);
         // Fields absent from the document keep their defaults.
         assert!(settings.send.append_newline);
-        assert_eq!(settings.log_font_size, Settings::default().log_font_size);
+        assert_eq!(
+            settings.fonts.receive_size,
+            Settings::default().fonts.receive_size
+        );
         assert_eq!(settings.multi.pages.len(), crate::multi::PAGES);
+    }
+
+    #[test]
+    fn font_selections_round_trip_through_json() {
+        let mut settings = Settings::default();
+        settings.fonts.ui_family = Some("Noto Sans CJK SC".to_owned());
+        settings.fonts.receive_family = Some("Noto Sans Mono CJK SC".to_owned());
+        settings.fonts.send_family = Some("Sarasa Mono SC".to_owned());
+        settings.fonts.ui_size = 14.0;
+        settings.fonts.receive_size = 15.0;
+        settings.fonts.send_size = 16.0;
+
+        let text = serde_json::to_string(&settings).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.fonts, settings.fonts);
+        assert!(
+            !text.contains("log_font_size"),
+            "legacy size should not be written"
+        );
+    }
+
+    #[test]
+    fn legacy_receive_font_size_is_migrated() {
+        let path = std::env::temp_dir().join(format!(
+            "xcom-font-legacy-{}-{}.json",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, r#"{"log_font_size":19}"#).unwrap();
+        let settings = Settings::load_from(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(settings.fonts.receive_size, 19.0);
     }
 
     #[test]
@@ -336,12 +434,21 @@ mod tests {
     fn normalize_clamps_hostile_values() {
         let mut settings = Settings {
             log_font_size: 900.0,
+            fonts: crate::settings::FontSettings {
+                ui_size: 1.0,
+                receive_size: 900.0,
+                send_size: 900.0,
+                ..Default::default()
+            },
             max_rows: 0,
             max_raw: 1,
             ..Default::default()
         };
         settings.send.period_ms = 0;
         settings.normalize();
+        assert_eq!(settings.fonts.ui_size, 9.0);
+        assert_eq!(settings.fonts.receive_size, 32.0);
+        assert_eq!(settings.fonts.send_size, 32.0);
         assert_eq!(settings.log_font_size, 32.0);
         assert_eq!(settings.send.period_ms, 1);
         assert!(settings.max_rows >= 1_000);

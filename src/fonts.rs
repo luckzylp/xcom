@@ -13,6 +13,8 @@ use std::sync::Arc;
 
 use eframe::egui;
 
+use crate::settings::FontSettings;
+
 /// Family names that indicate CJK coverage, in descending preference.
 ///
 /// Ordering matters: a sans-serif with broad coverage is a better UI font than
@@ -73,6 +75,7 @@ const KNOWN_PATHS: &[&str] = &[
 const KNOWN_PATHS: &[&str] = &[];
 
 /// A loaded font face, ready to hand to egui.
+#[derive(Clone)]
 pub struct LoadedFont {
     /// Family name, for display in the UI.
     pub family: String,
@@ -80,6 +83,13 @@ pub struct LoadedFont {
     /// Face index within a font collection (`.ttc`).
     pub index: u32,
 }
+
+/// Stable egui family names for the two independently selectable text areas.
+///
+/// egui supports named font families, which lets the receive and send editors
+/// use different faces without changing the interface font.
+pub const RECEIVE_FONT_FAMILY: &str = "xcom-receive";
+pub const SEND_FONT_FAMILY: &str = "xcom-send";
 
 /// Well-known UI font paths (Zed / IBM Plex / clean sans).
 #[cfg(target_os = "linux")]
@@ -119,6 +129,9 @@ const PREFERRED_UI_FAMILIES: &[&str] = &[
 
 /// Monospace font family preference list.
 const PREFERRED_MONO_FAMILIES: &[&str] = &[
+    "Noto Sans Mono CJK SC",
+    "Sarasa Mono SC",
+    "Source Han Mono SC",
     "ZedMono Nerd Font Mono",
     "ZedMono NFM",
     "ZedMono Nerd Font",
@@ -126,6 +139,44 @@ const PREFERRED_MONO_FAMILIES: &[&str] = &[
     "JetBrains Mono",
     "DejaVu Sans Mono",
 ];
+
+/// All installed family names, sorted for the settings combo boxes.
+pub fn available_families() -> Vec<String> {
+    static FAMILIES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    FAMILIES
+        .get_or_init(|| {
+            let mut db = fontdb::Database::new();
+            db.load_system_fonts();
+            let mut names = std::collections::BTreeSet::new();
+            for face in db.faces() {
+                for (name, _) in &face.families {
+                    names.insert(name.clone());
+                }
+            }
+            names.into_iter().collect()
+        })
+        .clone()
+}
+
+/// Load an exact family chosen by the user.
+pub fn find_family(name: &str) -> Option<LoadedFont> {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let face = db.faces().find(|face| {
+        face.families
+            .iter()
+            .any(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+    })?;
+    let data = db.with_face_data(face.id, |bytes, _| bytes.to_vec())?;
+    if data.is_empty() {
+        return None;
+    }
+    Some(LoadedFont {
+        family: name.to_owned(),
+        data,
+        index: face.index,
+    })
+}
 
 /// Try to find a Zed-like UI font.
 pub fn find_ui_font() -> Option<LoadedFont> {
@@ -145,6 +196,11 @@ pub fn find_ui_font() -> Option<LoadedFont> {
 
 /// Try to find a Zed-like Monospace font.
 pub fn find_mono_font() -> Option<LoadedFont> {
+    // Prefer a CJK-capable monospace face: using one face for Latin and CJK
+    // keeps mixed-script receive/send text on the same baseline.
+    if let Some(font) = scan_families(PREFERRED_MONO_FAMILIES) {
+        return Some(font);
+    }
     for path in KNOWN_MONO_PATHS {
         if let Ok(data) = std::fs::read(path) {
             if !data.is_empty() {
@@ -156,7 +212,7 @@ pub fn find_mono_font() -> Option<LoadedFont> {
             }
         }
     }
-    scan_families(PREFERRED_MONO_FAMILIES)
+    None
 }
 
 /// Family name of the UI font installed at startup.
@@ -196,13 +252,7 @@ fn scan_families(preferred: &[&str]) -> Option<LoadedFont> {
                     .iter()
                     .any(|(name, _)| name.eq_ignore_ascii_case(wanted))
             })
-            .map(|face| {
-                (
-                    face.id,
-                    face.index,
-                    face.families.first().map(|(n, _)| n.clone()),
-                )
-            });
+            .map(|face| (face.id, face.index, (*wanted).to_owned()));
         let Some((id, index, name)) = family else {
             continue;
         };
@@ -211,7 +261,7 @@ fn scan_families(preferred: &[&str]) -> Option<LoadedFont> {
             continue;
         }
         return Some(LoadedFont {
-            family: name.unwrap_or_else(|| (*wanted).to_owned()),
+            family: name,
             data,
             index,
         });
@@ -251,53 +301,216 @@ pub fn installed_family() -> Option<String> {
     INSTALLED_FAMILY.get().cloned().flatten()
 }
 
+fn add_font(fonts: &mut egui::FontDefinitions, key: &str, font: &LoadedFont) {
+    let mut data = egui::FontData::from_owned(font.data.clone());
+    data.index = font.index;
+    fonts.font_data.insert(key.to_owned(), Arc::new(data));
+    fonts
+        .families
+        .entry(egui::FontFamily::Name(Arc::from(key)))
+        .or_default()
+        .insert(0, key.to_owned());
+}
+
+fn bind_font_key(fonts: &mut egui::FontDefinitions, family: &egui::FontFamily, key: &str) {
+    fonts
+        .families
+        .entry(family.clone())
+        .or_default()
+        .insert(0, key.to_owned());
+}
+
+fn bind_font_keys(fonts: &mut egui::FontDefinitions, family: &egui::FontFamily, keys: &[String]) {
+    let list = fonts.families.entry(family.clone()).or_default();
+    for key in keys {
+        list.insert(0, key.clone());
+    }
+}
+
+fn push_cjk_fallback(fonts: &mut egui::FontDefinitions, family: egui::FontFamily) {
+    fonts
+        .families
+        .entry(family)
+        .or_default()
+        .push("cjk".to_owned());
+}
+
+/// Font IDs used by the receive and send widgets.
+pub fn receive_font_id(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(Arc::from(RECEIVE_FONT_FAMILY)))
+}
+
+pub fn send_font_id(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(Arc::from(SEND_FONT_FAMILY)))
+}
+
+/// Apply configured point sizes without changing widget visuals.
+pub fn apply_text_sizes(ctx: &egui::Context, settings: &FontSettings) {
+    ctx.global_style_mut(|style| {
+        style.text_styles = [
+            (
+                egui::TextStyle::Small,
+                egui::FontId::proportional(settings.ui_size * 0.69),
+            ),
+            (
+                egui::TextStyle::Body,
+                egui::FontId::proportional(settings.ui_size),
+            ),
+            (
+                egui::TextStyle::Button,
+                egui::FontId::proportional(settings.ui_size),
+            ),
+            (
+                egui::TextStyle::Heading,
+                egui::FontId::proportional(settings.ui_size * 1.38),
+            ),
+            (
+                egui::TextStyle::Monospace,
+                receive_font_id(settings.receive_size),
+            ),
+        ]
+        .into();
+    });
+}
+
+/// Bind the named receive/send families to egui's built-in fonts in tests.
+///
+/// Headless layout tests do not need to scan multi-megabyte system fonts; they
+/// only need the custom family names to exist so text layout cannot panic.
+#[cfg(test)]
+pub(crate) fn install_default_families(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let monospace = fonts
+        .families
+        .get(&egui::FontFamily::Monospace)
+        .cloned()
+        .unwrap_or_default();
+    for name in [RECEIVE_FONT_FAMILY, SEND_FONT_FAMILY] {
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(Arc::from(name)), monospace.clone());
+    }
+    ctx.set_fonts(fonts);
+}
+
 /// Install the application font stack.
 ///
 /// Zed default UI font is made primary for proportional text, Zed Mono for
 /// monospace text, and the CJK face is appended as fallback for both.
-pub fn install(ctx: &egui::Context) -> FontStatus {
+pub fn install(ctx: &egui::Context, settings: &FontSettings) -> FontStatus {
     let mut fonts = egui::FontDefinitions::default();
+    let builtin_monospace = fonts
+        .families
+        .get(&egui::FontFamily::Monospace)
+        .cloned()
+        .unwrap_or_default();
 
-    if let Some(ui_font) = find_ui_font() {
-        let mut data = egui::FontData::from_owned(ui_font.data);
-        data.index = ui_font.index;
-        fonts.font_data.insert("zed_ui".to_owned(), Arc::new(data));
+    let cjk = find_cjk_font();
+    let ui_font = settings
+        .ui_family
+        .as_deref()
+        .and_then(find_family)
+        .or_else(|| cjk.clone())
+        .or_else(find_ui_font);
+    if let Some(ui_font) = ui_font {
+        add_font(&mut fonts, "ui", &ui_font);
         fonts
             .families
             .entry(egui::FontFamily::Proportional)
             .or_default()
-            .insert(0, "zed_ui".to_owned());
+            .insert(0, "ui".to_owned());
         let _ = INSTALLED_UI_FAMILY.set(Some(ui_font.family));
     } else {
         let _ = INSTALLED_UI_FAMILY.set(None);
     }
 
-    if let Some(mono_font) = find_mono_font() {
-        let mut data = egui::FontData::from_owned(mono_font.data);
-        data.index = mono_font.index;
-        fonts.font_data.insert("zed_mono".to_owned(), Arc::new(data));
+    // If there is no CJK monospace face, using the CJK UI face is still
+    // better than mixing a Latin monospace with a CJK fallback: the latter
+    // reintroduces the one-pixel baseline split on Windows/macOS.
+    let default_mono = find_mono_font().or_else(|| cjk.clone());
+    let mono_keys = if default_mono.is_some() {
+        vec!["mono".to_owned()]
+    } else {
+        builtin_monospace
+    };
+    if let Some(mono_font) = default_mono.clone() {
+        add_font(&mut fonts, "mono", &mono_font);
         fonts
             .families
             .entry(egui::FontFamily::Monospace)
             .or_default()
-            .insert(0, "zed_mono".to_owned());
+            .insert(0, "mono".to_owned());
     }
 
-    let cjk = find_cjk_font();
     if let Some(ref font) = cjk {
         let mut data = egui::FontData::from_owned(font.data.clone());
         data.index = font.index;
         fonts.font_data.insert("cjk".to_owned(), Arc::new(data));
 
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-            fonts
-                .families
-                .entry(family)
-                .or_default()
-                .push("cjk".to_owned());
-        }
+        push_cjk_fallback(&mut fonts, egui::FontFamily::Proportional);
+        push_cjk_fallback(&mut fonts, egui::FontFamily::Monospace);
     }
 
+    let receive_custom = settings.receive_family.as_deref().and_then(find_family);
+    let send_custom = settings.send_family.as_deref().and_then(find_family);
+    let receive_family = egui::FontFamily::Name(Arc::from(RECEIVE_FONT_FAMILY));
+    let send_family = egui::FontFamily::Name(Arc::from(SEND_FONT_FAMILY));
+    match (&receive_custom, &send_custom) {
+        // One loaded face can back both named families, avoiding two copies
+        // of a multi-megabyte CJK font when the user chooses the same family.
+        (Some(receive), Some(send))
+            if receive.family == send.family && receive.index == send.index =>
+        {
+            add_font(&mut fonts, "area", receive);
+            bind_font_key(&mut fonts, &receive_family, "area");
+            bind_font_key(&mut fonts, &send_family, "area");
+        }
+        (Some(font), None) | (None, Some(font)) => {
+            add_font(&mut fonts, "area", font);
+            if receive_custom.is_some() {
+                bind_font_key(&mut fonts, &receive_family, "area");
+                bind_font_keys(&mut fonts, &send_family, &mono_keys);
+            } else {
+                bind_font_keys(&mut fonts, &receive_family, &mono_keys);
+                bind_font_key(&mut fonts, &send_family, "area");
+            }
+        }
+        (Some(receive), Some(send)) => {
+            add_font(&mut fonts, RECEIVE_FONT_FAMILY, receive);
+            add_font(&mut fonts, SEND_FONT_FAMILY, send);
+            bind_font_key(
+                &mut fonts,
+                &egui::FontFamily::Name(Arc::from(RECEIVE_FONT_FAMILY)),
+                RECEIVE_FONT_FAMILY,
+            );
+            bind_font_key(
+                &mut fonts,
+                &egui::FontFamily::Name(Arc::from(SEND_FONT_FAMILY)),
+                SEND_FONT_FAMILY,
+            );
+        }
+        (None, None) => {
+            bind_font_keys(&mut fonts, &receive_family, &mono_keys);
+            bind_font_keys(&mut fonts, &send_family, &mono_keys);
+        }
+    }
+    if cjk.is_some() {
+        push_cjk_fallback(&mut fonts, receive_family);
+        push_cjk_fallback(&mut fonts, send_family);
+    }
+
+    // The fallback list may already exist if a custom family was unavailable.
+    // Keeping exactly one `cjk` entry makes the definition deterministic.
+    for family in [
+        egui::FontFamily::Proportional,
+        egui::FontFamily::Monospace,
+        egui::FontFamily::Name(Arc::from(RECEIVE_FONT_FAMILY)),
+        egui::FontFamily::Name(Arc::from(SEND_FONT_FAMILY)),
+    ] {
+        if let Some(list) = fonts.families.get_mut(&family) {
+            list.dedup();
+        }
+    }
     ctx.set_fonts(fonts);
 
     match cjk {
@@ -323,6 +536,46 @@ mod tests {
             assert!(!name.is_empty());
             assert!(seen.insert(*name), "duplicate family {name}");
         }
+    }
+
+    #[test]
+    fn custom_receive_and_send_families_are_installed() {
+        let families = available_families();
+        let Some(family) = ["Noto Sans", "DejaVu Sans", "Arial", "Helvetica"]
+            .into_iter()
+            .find(|candidate| families.iter().any(|family| family == candidate))
+        else {
+            // A minimal CI image may only have egui's built-in fonts.
+            return;
+        };
+        let settings = FontSettings {
+            receive_family: Some(family.to_owned()),
+            send_family: Some(family.to_owned()),
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+
+        install(&ctx, &settings);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| ());
+        output.textures_delta.clear();
+
+        let receive = receive_font_id(settings.receive_size);
+        let send = send_font_id(settings.send_size);
+        let has_mesh = |font: egui::FontId| {
+            ctx.fonts_mut(|fonts| {
+                let galley = fonts.layout_no_wrap("A".to_owned(), font, egui::Color32::WHITE);
+                galley
+                    .rows
+                    .iter()
+                    .flat_map(|row| row.glyphs.iter())
+                    .any(|glyph| glyph.chr == 'A' && !glyph.uv_rect.is_nothing())
+            })
+        };
+        assert!(
+            has_mesh(receive),
+            "receive font did not provide a glyph mesh"
+        );
+        assert!(has_mesh(send), "send font did not provide a glyph mesh");
     }
 
     #[test]

@@ -36,6 +36,7 @@ fn main() -> eframe::Result<()> {
     // Alpha is what makes the rounded corners possible: the pixels we never
     // paint stay see-through.  Only needed where we supply the frame ourselves.
     let transparent = ui::window::PAINTS_OWN_BACKGROUND;
+    let startup_fonts = settings.fonts.clone();
 
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -54,12 +55,13 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(|cc| {
             // Fonts must be installed before the first frame is laid out.
-            match fonts::install(&cc.egui_ctx) {
+            match fonts::install(&cc.egui_ctx, &startup_fonts) {
                 fonts::FontStatus::Loaded(family) => log::info!("已加载中文字体: {family}"),
                 fonts::FontStatus::Missing => {
                     log::warn!("未找到中文字体，界面中文可能显示为方块")
                 }
             }
+            fonts::apply_text_sizes(&cc.egui_ctx, &startup_fonts);
             let app = app::XcomApp::new(cc);
             log::info!("启动完成用时 {:?}", started.elapsed());
             Ok(Box::new(app))
