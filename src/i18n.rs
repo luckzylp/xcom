@@ -223,10 +223,10 @@ pub fn classify(locale: Option<&str>) -> Lang {
 /// Guess the language from the environment.
 pub fn system_lang() -> Lang {
     for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        if let Ok(value) = std::env::var(key) {
-            if !value.trim().is_empty() {
-                return classify(Some(&value));
-            }
+        if let Ok(value) = std::env::var(key)
+            && !value.trim().is_empty()
+        {
+            return classify(Some(&value));
         }
     }
     Lang::EnUs
@@ -264,7 +264,14 @@ static EN: &[(&str, &str)] = &[
     ("已刷新串口列表",         "Port list refreshed"),
     ("波特率",                "Baud rate"),
     ("（自定义）",            "(custom)"),
-    ("自定义 ",               "Custom "),
+    ("自定义波特率",           "Custom baud rate"),
+    ("已保存的自定义波特率",   "Saved custom baud rates"),
+    ("暂无自定义波特率",       "No custom baud rates yet"),
+    ("管理自定义波特率",       "Manage custom baud rates"),
+    ("自定义波特率列表已满",   "The custom baud rate list is full"),
+    ("该波特率已存在或为标准值", "This baud rate already exists or is standard"),
+    ("删除",                  "Delete"),
+    ("添加",                 "Add"),
     ("数据位",                "Data bits"),
     ("停止位",                "Stop bits"),
     ("校验位",                "Parity"),

@@ -300,11 +300,11 @@ impl XcomApp {
             "{text}"
         );
         // Collapse an immediate repeat rather than flooding the list.
-        if let Some(last) = self.messages.last_mut() {
-            if last.text == text {
-                last.at = Instant::now();
-                return;
-            }
+        if let Some(last) = self.messages.last_mut()
+            && last.text == text
+        {
+            last.at = Instant::now();
+            return;
         }
         self.messages.push(Message {
             level,
@@ -1260,8 +1260,14 @@ mod layout_tests {
         }
     }
 
+    fn click(ctx: &egui::Context, app: &mut XcomApp, pos: egui::Pos2) {
+        for pressed in [None, Some(true), Some(false)] {
+            full_frame(ctx, app, pointer(pos, pressed));
+        }
+    }
+
     #[test]
-    fn open_port_button_is_horizontally_centered() {
+    fn open_port_button_is_shifted_left_of_center() {
         let ctx = egui::Context::default();
         let mut app = seeded();
 
@@ -1271,10 +1277,10 @@ mod layout_tests {
         let button = panels::probe::open_button_rect();
         assert!(content.width() > 0.0, "serial content was not laid out");
         assert!(button.width() > 0.0, "open button was not laid out");
-        let offset = (button.center().x - content.center().x).abs();
+        let offset = button.center().x - content.center().x;
         assert!(
-            offset <= 0.75,
-            "open button is {offset:.2}px from the serial section centre"
+            (offset + 16.0).abs() <= 0.75,
+            "open button offset should be -16.00px from the serial section centre, got {offset:.2}px"
         );
     }
 
@@ -1290,16 +1296,164 @@ mod layout_tests {
 
         let content = panels::probe::serial_content_rect();
         let refresh = panels::probe::refresh_button_rect();
+        let combo = panels::probe::serial_combo_rects()
+            .into_iter()
+            .find(|(name, _)| *name == "port")
+            .map(|(_, rect)| rect)
+            .expect("port combo was not laid out");
         assert!(refresh.width() > 0.0, "refresh button was not laid out");
         assert!(
             refresh.max.x <= content.max.x + 0.25,
             "refresh button is clipped by serial content: {refresh:?} outside {content:?}"
         );
+        assert!(
+            combo.max.x <= content.max.x + 0.25,
+            "port combo is clipped by serial content: {combo:?} outside {content:?}"
+        );
     }
 
     #[test]
-    fn software_version_is_v0_2_0() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.0");
+    fn serial_port_combo_and_refresh_share_row_in_both_languages() {
+        let _guard = crate::i18n::test_lock();
+        for language in [crate::i18n::Lang::ZhCn, crate::i18n::Lang::EnUs] {
+            crate::i18n::set_lang(language);
+            let ctx = egui::Context::default();
+            let mut app = seeded();
+            for _ in 0..2 {
+                full_frame(&ctx, &mut app, input());
+            }
+
+            let combos = panels::probe::serial_combo_rects();
+            let find_combo = |name: &str| {
+                combos
+                    .iter()
+                    .find(|(candidate, _)| *candidate == name)
+                    .map(|(_, rect)| *rect)
+                    .unwrap_or_else(|| panic!("{language:?}: {name} combo missing"))
+            };
+            let combo = find_combo("port");
+            let baud_combo = find_combo("baud");
+            let data_bits = find_combo("data_bits");
+            let refresh = panels::probe::refresh_button_rect();
+            let custom_baud_button = panels::probe::custom_baud_button_rect();
+            assert!(combo.width() > 0.0, "{language:?}: port combo missing");
+            assert!(
+                data_bits.width() > 0.0,
+                "{language:?}: data-bits combo missing"
+            );
+            assert!(refresh.width() > 0.0, "{language:?}: refresh missing");
+            for name in ["baud", "stop_bits", "parity", "flow"] {
+                let rect = find_combo(name);
+                assert!(
+                    rect.width() > 0.0,
+                    "{language:?}: {name} combo was not laid out"
+                );
+            }
+            for (name, rect) in combos {
+                if name == "port" || name == "baud" {
+                    assert!(
+                        rect.width() <= data_bits.width() + 0.25,
+                        "{language:?}: {name} combo plus its icon should fit within the standard combo column"
+                    );
+                } else {
+                    assert!(
+                        (rect.width() - data_bits.width()).abs() <= 0.25,
+                        "{language:?}: {name} combo width {:.2} differs from data-bits {:.2}",
+                        rect.width(),
+                        data_bits.width()
+                    );
+                }
+            }
+            let content = panels::probe::serial_content_rect();
+            assert!(
+                combo.max.x <= content.max.x + 0.25,
+                "{language:?}: port combo is clipped: {combo:?} outside {content:?}"
+            );
+            assert!(
+                (combo.center().y - refresh.center().y).abs() <= 0.5,
+                "{language:?}: refresh moved to another row: {combo:?} vs {refresh:?}"
+            );
+            assert!(
+                refresh.min.x >= combo.max.x,
+                "{language:?}: refresh must be to the right of the port selector: {combo:?} vs {refresh:?}"
+            );
+            assert!(
+                custom_baud_button.width() > 0.0,
+                "{language:?}: custom-baud manager button was not laid out"
+            );
+            assert!(
+                custom_baud_button.min.x >= baud_combo.max.x,
+                "{language:?}: custom-baud manager button must sit to the right of the baud selector"
+            );
+            assert!(
+                (custom_baud_button.center().y - baud_combo.center().y).abs() <= 0.5,
+                "{language:?}: custom-baud manager button is not vertically centered with the baud selector"
+            );
+            assert!(
+                !combo.intersects(refresh),
+                "{language:?}: port combo overlaps refresh: {combo:?} vs {refresh:?}"
+            );
+        }
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+    }
+
+    #[test]
+    fn custom_baud_manager_adds_and_removes_rates_from_the_popup() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+
+        full_frame(&ctx, &mut app, input());
+        let manage = panels::probe::custom_baud_button_rect();
+        assert!(manage.width() > 0.0, "custom-baud manager button missing");
+        click(&ctx, &mut app, manage.center());
+
+        let popup = panels::probe::custom_baud_window_rect();
+        let input_rect = panels::probe::custom_baud_input_rect();
+        let add = panels::probe::custom_baud_add_rect();
+        assert!(
+            popup.width() > 0.0,
+            "custom-baud manager popup did not open"
+        );
+        assert!(input_rect.width() > 0.0, "custom-baud input missing");
+        assert!(add.width() > 0.0, "custom-baud add button missing");
+        assert!(!app.settings.serial.custom_bauds.contains(&115_201));
+        click(&ctx, &mut app, add.center());
+        assert!(
+            app.settings.serial.custom_bauds.contains(&115_201),
+            "clicking Add did not persist the entered baud rate"
+        );
+        assert_eq!(app.settings.serial.baud, 115_200);
+        assert!(app.settings.serial.baud_choices().contains(&115_201));
+
+        full_frame(&ctx, &mut app, input());
+        let delete = panels::probe::custom_baud_delete_rects()
+            .into_iter()
+            .find(|(baud, _)| *baud == 115_201)
+            .map(|(_, rect)| rect)
+            .expect("the newly added baud rate was not listed in the popup");
+        click(&ctx, &mut app, delete.center());
+        assert!(
+            !app.settings.serial.custom_bauds.contains(&115_201),
+            "clicking Delete did not remove the baud rate"
+        );
+        assert!(!app.settings.serial.baud_choices().contains(&115_201));
+    }
+
+    #[test]
+    fn software_version_is_v0_3_0() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.3.0");
+    }
+
+    #[test]
+    fn rust_version_requirement_is_1_90_0() {
+        let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .expect("Cargo.toml is readable");
+        assert!(
+            manifest.contains("rust-version = \"1.90.0\""),
+            "Cargo.toml must require Rust 1.90.0"
+        );
     }
 
     #[test]

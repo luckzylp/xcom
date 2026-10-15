@@ -14,7 +14,7 @@ use crate::encoding::EncodingId;
 use crate::i18n::{self, Lang, tr};
 use crate::logstore::{HexStyle, ViewMode};
 use crate::protocol::{ChecksumKind, TaskKind};
-use crate::serial::config::{CUSTOM_BAUD_RANGE, STANDARD_BAUDS};
+use crate::serial::config::{CUSTOM_BAUD_RANGE, MAX_CUSTOM_BAUDS, STANDARD_BAUDS};
 use crate::serial::{DataBitsSel, FlowSel, ParitySel, StopBitsSel};
 use crate::theme::{self, ThemeMode};
 
@@ -39,6 +39,14 @@ pub(crate) mod probe {
         static SERIAL_CONTENT_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static OPEN_BUTTON_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static REFRESH_BUTTON_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static CUSTOM_BAUD_BUTTON_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static CUSTOM_BAUD_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static CUSTOM_BAUD_INPUT_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static CUSTOM_BAUD_ADD_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static CUSTOM_BAUD_DELETE_RECTS: RefCell<Vec<(u32, egui::Rect)>> =
+            const { RefCell::new(Vec::new()) };
+        static SERIAL_COMBO_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
+            const { RefCell::new(Vec::new()) };
         static SEND_TOOLBAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
         static MULTI_HEADER_RECTS: RefCell<Vec<egui::Rect>> = const { RefCell::new(Vec::new()) };
@@ -123,6 +131,103 @@ pub(crate) mod probe {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_custom_baud_button_rect(rect: egui::Rect) {
+        CUSTOM_BAUD_BUTTON_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_custom_baud_button_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn custom_baud_button_rect() -> egui::Rect {
+        CUSTOM_BAUD_BUTTON_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_custom_baud_manager() {
+        CUSTOM_BAUD_WINDOW_RECT.with(|c| c.set(egui::Rect::NOTHING));
+        CUSTOM_BAUD_INPUT_RECT.with(|c| c.set(egui::Rect::NOTHING));
+        CUSTOM_BAUD_ADD_RECT.with(|c| c.set(egui::Rect::NOTHING));
+        CUSTOM_BAUD_DELETE_RECTS.with(|rects| rects.borrow_mut().clear());
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn begin_custom_baud_manager() {}
+
+    #[cfg(test)]
+    pub(crate) fn set_custom_baud_window_rect(rect: egui::Rect) {
+        CUSTOM_BAUD_WINDOW_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_custom_baud_window_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn custom_baud_window_rect() -> egui::Rect {
+        CUSTOM_BAUD_WINDOW_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_custom_baud_input_rect(rect: egui::Rect) {
+        CUSTOM_BAUD_INPUT_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_custom_baud_input_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn custom_baud_input_rect() -> egui::Rect {
+        CUSTOM_BAUD_INPUT_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_custom_baud_add_rect(rect: egui::Rect) {
+        CUSTOM_BAUD_ADD_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_custom_baud_add_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn custom_baud_add_rect() -> egui::Rect {
+        CUSTOM_BAUD_ADD_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_custom_baud_delete_rect(baud: u32, rect: egui::Rect) {
+        CUSTOM_BAUD_DELETE_RECTS.with(|rects| rects.borrow_mut().push((baud, rect)));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_custom_baud_delete_rect<R>(_baud: u32, _rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn custom_baud_delete_rects() -> Vec<(u32, egui::Rect)> {
+        CUSTOM_BAUD_DELETE_RECTS.with(|rects| rects.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_serial_combos() {
+        SERIAL_COMBO_RECTS.with(|rects| rects.borrow_mut().clear());
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn begin_serial_combos() {}
+
+    #[cfg(test)]
+    pub(crate) fn push_serial_combo_rect(name: &'static str, rect: egui::Rect) {
+        SERIAL_COMBO_RECTS.with(|rects| rects.borrow_mut().push((name, rect)));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_serial_combo_rect<R>(_name: &'static str, _rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn serial_combo_rects() -> Vec<(&'static str, egui::Rect)> {
+        SERIAL_COMBO_RECTS.with(|rects| rects.borrow().clone())
+    }
+
+    #[cfg(test)]
     pub(crate) fn begin_send_toolbar() {
         SEND_TOOLBAR_RECTS.with(|rects| rects.borrow_mut().clear());
     }
@@ -166,9 +271,10 @@ pub(crate) mod probe {
 }
 
 /// Serial-settings panel width, in points.
-pub(crate) const LEFT_PANEL_DEFAULT: f32 = 272.0;
-pub(crate) const LEFT_PANEL_MIN: f32 = 232.0;
+pub(crate) const LEFT_PANEL_DEFAULT: f32 = 300.0;
+pub(crate) const LEFT_PANEL_MIN: f32 = 269.0;
 pub(crate) const LEFT_PANEL_MAX: f32 = 460.0;
+const SERIAL_COMBO_WIDTH: f32 = 140.0;
 
 /// Tool panel width.  The default is two thirds of the original 430 so the
 /// receive area gets more room out of the box.
@@ -290,10 +396,9 @@ pub(crate) fn apply_splitters(app: &mut XcomApp, ui: &mut Ui) {
         // using the later one would make the first delta zero.
         if response.is_pointer_button_down_on()
             && ui.data(|data| data.get_temp::<(f32, egui::Pos2)>(state_id).is_none())
+            && let Some(pointer) = response.interact_pointer_pos()
         {
-            if let Some(pointer) = response.interact_pointer_pos() {
-                ui.data_mut(|data| data.insert_temp(state_id, (current, pointer)));
-            }
+            ui.data_mut(|data| data.insert_temp(state_id, (current, pointer)));
         }
 
         if response.dragged() {
@@ -351,7 +456,7 @@ fn combo<T: PartialEq + Copy>(
     let mut changed = false;
     egui::ComboBox::from_id_salt(id)
         .selected_text(label(*current))
-        .width(140.0)
+        .width(SERIAL_COMBO_WIDTH)
         .show_ui(ui, |ui| {
             for option in options {
                 if ui
@@ -510,8 +615,15 @@ pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
 
 fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
     let open = app.link.is_open();
+    let manager_id = egui::Id::new("custom_baud_manager");
+    let input_id = egui::Id::new("custom_baud_input");
+    let mut manager_open = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(manager_id).unwrap_or(false));
+    probe::begin_custom_baud_manager();
     let serial_bounds = ui.max_rect();
     probe::set_serial_content_rect(serial_bounds);
+    probe::begin_serial_combos();
     egui::CollapsingHeader::new(tr("串口设置"))
         .default_open(true)
         .show(ui, |ui| {
@@ -520,7 +632,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label(tr("串口"));
-                    ui.horizontal_wrapped(|ui| {
+                    ui.horizontal(|row_ui| {
                         let ports = app.ports.ports().to_vec();
                         let current = app.settings.serial.port.clone();
                         let selected_text = ports
@@ -534,31 +646,45 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                     current.clone()
                                 }
                             });
-                        let port_combo_width = (ui.available_width() - 66.0).max(96.0);
-                        ui.add_enabled_ui(!open, |ui| {
-                            egui::ComboBox::from_id_salt("port_select")
-                                .selected_text(selected_text)
-                                .width(port_combo_width)
-                                .show_ui(ui, |ui| {
-                                    if ports.is_empty() {
-                                        ui.weak(tr("未检测到串口"));
-                                    }
-                                    for port in &ports {
-                                        let item = ui.selectable_label(
-                                            port.name == app.settings.serial.port,
-                                            port.display(),
-                                        );
-                                        let item = item.on_hover_text(
-                                            port.detail().unwrap_or_else(|| port.display()),
-                                        );
-                                        if item.clicked() {
-                                            app.settings.serial.port = port.name.clone();
-                                            app.mark_settings_dirty();
+                        let refresh_width = 24.0;
+                        let port_combo_width = (row_ui.available_width()
+                            - refresh_width
+                            - row_ui.spacing().item_spacing.x)
+                            .clamp(72.0, SERIAL_COMBO_WIDTH);
+                        let port_combo_rect = row_ui
+                            .add_enabled_ui(!open, |ui| {
+                                let port_combo = egui::ComboBox::from_id_salt("port_select")
+                                    .selected_text(selected_text)
+                                    .width(port_combo_width)
+                                    .truncate()
+                                    .show_ui(ui, |ui| {
+                                        if ports.is_empty() {
+                                            ui.weak(tr("未检测到串口"));
                                         }
-                                    }
-                                });
-                        });
-                        let refresh = ui.add_enabled(!open, egui::Button::new(tr("刷新")));
+                                        for port in &ports {
+                                            let item = ui.selectable_label(
+                                                port.name == app.settings.serial.port,
+                                                port.display(),
+                                            );
+                                            let item = item.on_hover_text(
+                                                port.detail().unwrap_or_else(|| port.display()),
+                                            );
+                                            if item.clicked() {
+                                                app.settings.serial.port = port.name.clone();
+                                                app.mark_settings_dirty();
+                                            }
+                                        }
+                                    });
+                                probe::push_serial_combo_rect("port", port_combo.response.rect);
+                                port_combo.response.rect
+                            })
+                            .inner;
+                        let refresh = row_ui
+                            .add_sized(
+                                [refresh_width, port_combo_rect.height()],
+                                egui::Button::new("↻"),
+                            )
+                            .on_hover_text(tr("刷新"));
                         probe::set_refresh_button_rect(refresh.rect);
                         if refresh.clicked() {
                             app.ports.poll();
@@ -569,7 +695,8 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
 
                     // ---- baud rate ------------------------------------
                     ui.label(tr("波特率"));
-                    ui.horizontal(|ui| {
+                    ui.horizontal(|row_ui| {
+                        let choices = app.settings.serial.baud_choices();
                         let standard = STANDARD_BAUDS.contains(&app.settings.serial.baud);
                         let mut baud = app.settings.serial.baud;
                         let label = if standard {
@@ -577,33 +704,41 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                         } else {
                             format!("{baud}{}", tr("（自定义）"))
                         };
-                        ui.add_enabled_ui(!open, |ui| {
-                            egui::ComboBox::from_id_salt("baud_select")
-                                .selected_text(label)
-                                .width(110.0)
-                                .show_ui(ui, |ui| {
-                                    for rate in STANDARD_BAUDS {
-                                        if ui
-                                            .selectable_value(&mut baud, rate, rate.to_string())
-                                            .clicked()
-                                        {
-                                            app.settings.serial.baud = rate;
-                                            app.mark_settings_dirty();
+                        let manager_width = 24.0;
+                        let baud_width = (row_ui.available_width()
+                            - manager_width
+                            - row_ui.spacing().item_spacing.x)
+                            .clamp(72.0, SERIAL_COMBO_WIDTH);
+                        let baud_combo_rect = row_ui
+                            .add_enabled_ui(!open, |ui| {
+                                let combo = egui::ComboBox::from_id_salt("baud_select")
+                                    .selected_text(label)
+                                    .width(baud_width)
+                                    .truncate()
+                                    .show_ui(ui, |ui| {
+                                        for rate in choices {
+                                            if ui
+                                                .selectable_value(&mut baud, rate, rate.to_string())
+                                                .clicked()
+                                            {
+                                                app.settings.serial.baud = rate;
+                                                app.mark_settings_dirty();
+                                            }
                                         }
-                                    }
-                                });
-                        });
-                        let mut custom = app.settings.serial.baud;
-                        let response = ui.add_enabled(
-                            !open,
-                            egui::DragValue::new(&mut custom)
-                                .speed(100.0)
-                                .range(CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1)
-                                .prefix(tr("自定义 ")),
-                        );
-                        if response.changed() {
-                            app.settings.serial.baud = custom;
-                            app.mark_settings_dirty();
+                                    });
+                                probe::push_serial_combo_rect("baud", combo.response.rect);
+                                combo.response.rect
+                            })
+                            .inner;
+                        let manage = row_ui
+                            .add_sized(
+                                [manager_width, baud_combo_rect.height()],
+                                egui::Button::new("+"),
+                            )
+                            .on_hover_text(tr("管理自定义波特率"));
+                        probe::set_custom_baud_button_rect(manage.rect);
+                        if manage.clicked() {
+                            manager_open = true;
                         }
                     });
                     ui.end_row();
@@ -619,6 +754,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                 app.settings.serial.data_bits = value;
                                 app.mark_settings_dirty();
                             }
+                            probe::push_serial_combo_rect("data_bits", ui.min_rect());
                         });
                     }
                     ui.end_row();
@@ -634,6 +770,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                 app.settings.serial.stop_bits = value;
                                 app.mark_settings_dirty();
                             }
+                            probe::push_serial_combo_rect("stop_bits", ui.min_rect());
                         });
                     }
                     ui.end_row();
@@ -649,6 +786,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                 app.settings.serial.parity = value;
                                 app.mark_settings_dirty();
                             }
+                            probe::push_serial_combo_rect("parity", ui.min_rect());
                         });
                     }
                     ui.end_row();
@@ -664,6 +802,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                 app.settings.serial.flow = value;
                                 app.mark_settings_dirty();
                             }
+                            probe::push_serial_combo_rect("flow", ui.min_rect());
                         });
                     }
                     ui.end_row();
@@ -673,20 +812,16 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                         let mut dtr = app.settings.serial.dtr;
                         if ui.checkbox(&mut dtr, "DTR").changed() {
                             app.settings.serial.dtr = dtr;
-                            if open {
-                                if let Err(err) = app.link.set_dtr(dtr) {
-                                    app.error(crate::i18n::tr1("设置 DTR 失败: {}", err));
-                                }
+                            if open && let Err(err) = app.link.set_dtr(dtr) {
+                                app.error(crate::i18n::tr1("设置 DTR 失败: {}", err));
                             }
                             app.mark_settings_dirty();
                         }
                         let mut rts = app.settings.serial.rts;
                         if ui.checkbox(&mut rts, "RTS").changed() {
                             app.settings.serial.rts = rts;
-                            if open {
-                                if let Err(err) = app.link.set_rts(rts) {
-                                    app.error(crate::i18n::tr1("设置 RTS 失败: {}", err));
-                                }
+                            if open && let Err(err) = app.link.set_rts(rts) {
+                                app.error(crate::i18n::tr1("设置 RTS 失败: {}", err));
                             }
                             app.mark_settings_dirty();
                         }
@@ -710,7 +845,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                 }) + 10.0,
             );
             let button_center = egui::pos2(
-                serial_bounds.center().x,
+                serial_bounds.center().x - 16.0,
                 ui.cursor().min.y + button_height / 2.0,
             );
             let open_button = ui.put(
@@ -727,6 +862,76 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
             ui.small(crate::i18n::tr1("当前: {}", app.settings.serial.summary()));
             ui.small(tr("提示: 串口打开时无法修改通信参数，需先关闭串口"));
         });
+
+    let ctx = ui.ctx().clone();
+    let mut pending_baud = ctx.data(|data| data.get_temp::<u32>(input_id).unwrap_or(115_201));
+    let mut remove_baud = None;
+    let popup = egui::Window::new(tr("自定义波特率"))
+        .id(manager_id)
+        .default_width(300.0)
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut manager_open)
+        .show(&ctx, |ui| {
+            let can_add = app.settings.serial.can_add_custom_baud(pending_baud);
+            ui.horizontal(|ui| {
+                let input = ui.add_sized(
+                    [176.0, 26.0],
+                    egui::DragValue::new(&mut pending_baud)
+                        .speed(100.0)
+                        .range(CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1),
+                );
+                probe::set_custom_baud_input_rect(input.rect);
+                let add = ui.add_enabled(can_add, egui::Button::new(tr("添加")));
+                probe::set_custom_baud_add_rect(add.rect);
+                if add.clicked() && app.settings.serial.add_custom_baud(pending_baud) {
+                    app.mark_settings_dirty();
+                }
+            });
+            if !can_add {
+                let hint = if app.settings.serial.custom_bauds.len() >= MAX_CUSTOM_BAUDS {
+                    tr("自定义波特率列表已满")
+                } else {
+                    tr("该波特率已存在或为标准值")
+                };
+                ui.weak(hint);
+            }
+            ui.separator();
+            ui.label(tr("已保存的自定义波特率"));
+            egui::ScrollArea::vertical()
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    let rates = app.settings.serial.custom_bauds.clone();
+                    if rates.is_empty() {
+                        ui.weak(tr("暂无自定义波特率"));
+                    }
+                    for rate in rates {
+                        ui.horizontal(|ui| {
+                            ui.label(rate.to_string());
+                            ui.weak("bps");
+                            let delete = ui
+                                .add_sized([26.0, 24.0], egui::Button::new("−"))
+                                .on_hover_text(tr("删除"));
+                            probe::push_custom_baud_delete_rect(rate, delete.rect);
+                            if delete.clicked() {
+                                remove_baud = Some(rate);
+                            }
+                        });
+                    }
+                });
+        });
+    if let Some(popup) = popup {
+        probe::set_custom_baud_window_rect(popup.response.rect);
+    }
+    if let Some(rate) = remove_baud
+        && app.settings.serial.remove_custom_baud(rate)
+    {
+        app.mark_settings_dirty();
+    }
+    ctx.data_mut(|data| {
+        data.insert_temp(manager_id, manager_open);
+        data.insert_temp(input_id, pending_baud);
+    });
 }
 
 fn display_section(app: &mut XcomApp, ui: &mut Ui) {
@@ -1398,34 +1603,33 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     });
 
     ui.horizontal_wrapped(|ui| {
-        if ui.button(tr("导入条目")).clicked() {
-            if let Some(path) = pick_open_file(tr("导入发送条目")) {
-                match std::fs::read_to_string(&path) {
-                    Ok(text) => {
-                        let multi = &mut app.settings.multi;
-                        match multi.import_json(&text) {
-                            Ok(count) => {
-                                app.mark_settings_dirty();
-                                app.ok(crate::i18n::tr1("已导入 {} 个条目", count));
-                            }
-                            Err(err) => app.error(err),
+        if ui.button(tr("导入条目")).clicked()
+            && let Some(path) = pick_open_file(tr("导入发送条目"))
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let multi = &mut app.settings.multi;
+                    match multi.import_json(&text) {
+                        Ok(count) => {
+                            app.mark_settings_dirty();
+                            app.ok(crate::i18n::tr1("已导入 {} 个条目", count));
                         }
+                        Err(err) => app.error(err),
                     }
-                    Err(err) => app.error(crate::i18n::tr1("读取文件失败: {}", err)),
                 }
+                Err(err) => app.error(crate::i18n::tr1("读取文件失败: {}", err)),
             }
         }
-        if ui.button(tr("导出条目")).clicked() {
-            if let Some(path) = pick_save_file(tr("导出发送条目"), "xcom-entries.json", "json")
-            {
-                let multi = &app.settings.multi;
-                match multi.export_json() {
-                    Ok(text) => match std::fs::write(&path, text) {
-                        Ok(()) => app.ok(crate::i18n::tr1("已导出到 {}", path.display())),
-                        Err(err) => app.error(crate::i18n::tr1("写入失败: {}", err)),
-                    },
-                    Err(err) => app.error(err),
-                }
+        if ui.button(tr("导出条目")).clicked()
+            && let Some(path) = pick_save_file(tr("导出发送条目"), "xcom-entries.json", "json")
+        {
+            let multi = &app.settings.multi;
+            match multi.export_json() {
+                Ok(text) => match std::fs::write(&path, text) {
+                    Ok(()) => app.ok(crate::i18n::tr1("已导出到 {}", path.display())),
+                    Err(err) => app.error(crate::i18n::tr1("写入失败: {}", err)),
+                },
+                Err(err) => app.error(err),
             }
         }
         let can_send = app.link.is_open() && !app.multi_run_active();
@@ -1813,12 +2017,11 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
         if ui
             .add_enabled(enabled && !running, egui::Button::new(tr("文件发送")))
             .clicked()
+            && let Some(path) = pick_open_file(tr("选择要传输的文件"))
         {
-            if let Some(path) = pick_open_file(tr("选择要传输的文件")) {
-                match std::fs::read(&path) {
-                    Ok(data) => start_protocol_file(app, data, &path),
-                    Err(err) => app.error(crate::i18n::tr1("读取文件失败: {}", err)),
-                }
+            match std::fs::read(&path) {
+                Ok(data) => start_protocol_file(app, data, &path),
+                Err(err) => app.error(crate::i18n::tr1("读取文件失败: {}", err)),
             }
         }
         if ui

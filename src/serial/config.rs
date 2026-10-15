@@ -138,6 +138,9 @@ pub const STANDARD_BAUDS: [u32; 20] = [
 /// Lowest/highest baud rate accepted for a custom value.
 pub const CUSTOM_BAUD_RANGE: (u32, u32) = (50, 12_000_000);
 
+/// Upper bound on remembered custom baud rates.
+pub const MAX_CUSTOM_BAUDS: usize = 16;
+
 /// Everything needed to open a port.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -145,6 +148,8 @@ pub struct SerialConfig {
     /// Port device path, e.g. `/dev/ttyUSB0` or `COM3`.
     pub port: String,
     pub baud: u32,
+    /// User-added baud rates shown alongside the standard rates.
+    pub custom_bauds: Vec<u32>,
     pub data_bits: DataBitsSel,
     pub stop_bits: StopBitsSel,
     pub parity: ParitySel,
@@ -160,6 +165,7 @@ impl Default for SerialConfig {
         Self {
             port: String::new(),
             baud: 115200,
+            custom_bauds: Vec::new(),
             data_bits: DataBitsSel::Eight,
             stop_bits: StopBitsSel::One,
             parity: ParitySel::None,
@@ -183,6 +189,62 @@ pub struct OpenPlan {
 }
 
 impl SerialConfig {
+    /// Whether a non-standard baud rate can be remembered.
+    pub fn can_add_custom_baud(&self, baud: u32) -> bool {
+        (CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1).contains(&baud)
+            && !STANDARD_BAUDS.contains(&baud)
+            && !self.custom_bauds.contains(&baud)
+            && self
+                .custom_bauds
+                .iter()
+                .filter(|candidate| {
+                    (CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1).contains(candidate)
+                        && !STANDARD_BAUDS.contains(candidate)
+                })
+                .count()
+                < MAX_CUSTOM_BAUDS
+    }
+
+    /// Add a valid, non-standard baud rate for future runs.
+    pub fn add_custom_baud(&mut self, baud: u32) -> bool {
+        self.normalize_custom_bauds();
+        if !self.can_add_custom_baud(baud) {
+            return false;
+        }
+        self.custom_bauds.push(baud);
+        self.custom_bauds.sort_unstable();
+        true
+    }
+
+    /// Remove a remembered baud rate.
+    pub fn remove_custom_baud(&mut self, baud: u32) -> bool {
+        let previous_len = self.custom_bauds.len();
+        self.custom_bauds.retain(|candidate| *candidate != baud);
+        previous_len != self.custom_bauds.len()
+    }
+
+    /// Standard and remembered choices, sorted without duplicates.
+    pub fn baud_choices(&self) -> Vec<u32> {
+        let mut choices: std::collections::BTreeSet<u32> = STANDARD_BAUDS.into_iter().collect();
+        choices.extend(
+            self.custom_bauds
+                .iter()
+                .copied()
+                .filter(|baud| (CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1).contains(baud)),
+        );
+        choices.into_iter().collect()
+    }
+
+    fn normalize_custom_bauds(&mut self) {
+        self.custom_bauds.retain(|baud| {
+            (CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1).contains(baud)
+                && !STANDARD_BAUDS.contains(baud)
+        });
+        self.custom_bauds.sort_unstable();
+        self.custom_bauds.dedup();
+        self.custom_bauds.truncate(MAX_CUSTOM_BAUDS);
+    }
+
     /// A one-line summary such as `115200 8-N-1`.
     pub fn summary(&self) -> String {
         let parity = match self.parity {
@@ -282,5 +344,37 @@ mod tests {
         if plan.note.is_none() {
             assert!(cfg!(target_os = "linux") && cfg.data_bits == DataBitsSel::Five);
         }
+    }
+
+    #[test]
+    fn custom_bauds_can_be_added_removed_and_persisted() {
+        let mut cfg = SerialConfig::default();
+        assert!(cfg.add_custom_baud(123456));
+        assert!(!cfg.add_custom_baud(123456));
+        assert!(cfg.add_custom_baud(72000));
+        assert!(!cfg.add_custom_baud(9600));
+        assert!(!cfg.add_custom_baud(CUSTOM_BAUD_RANGE.0 - 1));
+        assert!(!cfg.add_custom_baud(CUSTOM_BAUD_RANGE.1 + 1));
+
+        assert_eq!(cfg.custom_bauds, vec![72000, 123456]);
+        let choices = cfg.baud_choices();
+        assert!(choices.contains(&72000));
+        assert!(choices.contains(&123456));
+        assert_eq!(
+            choices
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            choices.len()
+        );
+
+        let text = serde_json::to_string(&cfg).unwrap();
+        let back: SerialConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.custom_bauds, cfg.custom_bauds);
+        assert_eq!(back.baud_choices(), cfg.baud_choices());
+
+        assert!(cfg.remove_custom_baud(72000));
+        assert!(!cfg.remove_custom_baud(72000));
+        assert!(!cfg.baud_choices().contains(&72000));
     }
 }

@@ -181,14 +181,14 @@ pub fn find_family(name: &str) -> Option<LoadedFont> {
 /// Try to find a Zed-like UI font.
 pub fn find_ui_font() -> Option<LoadedFont> {
     for path in KNOWN_UI_PATHS {
-        if let Ok(data) = std::fs::read(path) {
-            if !data.is_empty() {
-                return Some(LoadedFont {
-                    family: file_stem(path),
-                    data,
-                    index: 0,
-                });
-            }
+        if let Ok(data) = std::fs::read(path)
+            && !data.is_empty()
+        {
+            return Some(LoadedFont {
+                family: file_stem(path),
+                data,
+                index: 0,
+            });
         }
     }
     scan_families(PREFERRED_UI_FAMILIES)
@@ -202,14 +202,14 @@ pub fn find_mono_font() -> Option<LoadedFont> {
         return Some(font);
     }
     for path in KNOWN_MONO_PATHS {
-        if let Ok(data) = std::fs::read(path) {
-            if !data.is_empty() {
-                return Some(LoadedFont {
-                    family: file_stem(path),
-                    data,
-                    index: 0,
-                });
-            }
+        if let Ok(data) = std::fs::read(path)
+            && !data.is_empty()
+        {
+            return Some(LoadedFont {
+                family: file_stem(path),
+                data,
+                index: 0,
+            });
         }
     }
     None
@@ -226,14 +226,14 @@ pub fn installed_ui_family() -> Option<String> {
 /// Try to find a CJK-capable system font.
 pub fn find_cjk_font() -> Option<LoadedFont> {
     for path in KNOWN_PATHS {
-        if let Ok(data) = std::fs::read(path) {
-            if !data.is_empty() {
-                return Some(LoadedFont {
-                    family: file_stem(path),
-                    data,
-                    index: 0,
-                });
-            }
+        if let Ok(data) = std::fs::read(path)
+            && !data.is_empty()
+        {
+            return Some(LoadedFont {
+                family: file_stem(path),
+                data,
+                index: 0,
+            });
         }
     }
     scan_families(PREFERRED_FAMILIES)

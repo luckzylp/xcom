@@ -114,11 +114,11 @@ impl MultiSend {
     /// change.
     pub fn ensure_len(&mut self, page: usize, len: usize) -> bool {
         let len = len.clamp(ENTRIES_PER_PAGE, MAX_ENTRIES_PER_PAGE);
-        if let Some(entries) = self.pages.get_mut(page) {
-            if entries.len() < len {
-                entries.resize(len, MultiEntry::default());
-                return true;
-            }
+        if let Some(entries) = self.pages.get_mut(page)
+            && entries.len() < len
+        {
+            entries.resize(len, MultiEntry::default());
+            return true;
         }
         false
     }

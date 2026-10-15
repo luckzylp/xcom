@@ -202,12 +202,11 @@ impl AutoDetector {
         // 2. Well-formed multi-byte UTF-8 is, in practice, always UTF-8.  This
         //    check is what prevents chardetng from mislabelling short Chinese
         //    UTF-8 fragments as GBK.
-        if self.window.len() >= 8 {
-            if let Ok(text) = std::str::from_utf8(&self.window) {
-                if !text.is_ascii() {
-                    return self.set(UTF_8);
-                }
-            }
+        if self.window.len() >= 8
+            && let Ok(text) = std::str::from_utf8(&self.window)
+            && !text.is_ascii()
+        {
+            return self.set(UTF_8);
         }
 
         // 3. Once locked in, only reconsider when the active encoding is

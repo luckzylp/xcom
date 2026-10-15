@@ -35,7 +35,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Official Feature | This Implementation | Notes |
 | --- | --- | --- |
 | Auto-scan available serial ports, show detailed port info | ✅ | Background thread enumeration; shows VID:PID / vendor / product / serial number; hot-plug support |
-| Ultra-high baud rates, custom baud rates | ✅ | 1200–1382400 standard steps + 50–12000000 arbitrary values |
+| Ultra-high baud rates, custom baud rates | ✅ | Standard + persistent custom choices, 50–12000000 |
 | Stop bits 1 / 1.5 / 2 | ⚠️ | See [Known Limitations](#known-limitations) |
 | Data bits 5 / 6 / 7 / 8 | ✅ | |
 | Odd, even, no parity | ✅ | |
@@ -83,7 +83,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 
 ### Prerequisites
 
-You only need a recent Rust toolchain (**1.85+**, `edition 2024`):
+You only need a recent Rust toolchain (**1.90+**, `edition 2024`):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -285,7 +285,7 @@ The file is readable JSON and can be edited directly. Fields use `#[serde(defaul
 ## Development
 
 ```bash
-cargo test              # 201 tests
+cargo test              # 204 tests
 cargo clippy --all-targets
 cargo fmt
 ```

@@ -238,33 +238,33 @@ pub fn show(
         // ---- interaction (before painting so the highlight is current) ----
         let pointer = response.interact_pointer_pos();
         if response.drag_started() {
-            if let Some(pos) = pointer {
-                if let Some(caret) = hit_test(&visible, rect, row_height, pos) {
-                    state.drag_anchor = Some(caret);
-                    state.selection = Some(Selection {
-                        anchor: caret,
-                        head: caret,
-                    });
-                }
+            if let Some(pos) = pointer
+                && let Some(caret) = hit_test(&visible, rect, row_height, pos)
+            {
+                state.drag_anchor = Some(caret);
+                state.selection = Some(Selection {
+                    anchor: caret,
+                    head: caret,
+                });
             }
         } else if response.dragged() {
-            if let (Some(pos), Some(anchor)) = (pointer, state.drag_anchor) {
-                if let Some(caret) = hit_test_clamped(&visible, rect, row_height, pos) {
-                    state.selection = Some(Selection {
-                        anchor,
-                        head: caret,
-                    });
-                }
+            if let (Some(pos), Some(anchor)) = (pointer, state.drag_anchor)
+                && let Some(caret) = hit_test_clamped(&visible, rect, row_height, pos)
+            {
+                state.selection = Some(Selection {
+                    anchor,
+                    head: caret,
+                });
             }
         } else if response.clicked() {
             // A plain click collapses the selection to a caret.
-            if let Some(pos) = pointer {
-                if let Some(caret) = hit_test(&visible, rect, row_height, pos) {
-                    state.selection = Some(Selection {
-                        anchor: caret,
-                        head: caret,
-                    });
-                }
+            if let Some(pos) = pointer
+                && let Some(caret) = hit_test(&visible, rect, row_height, pos)
+            {
+                state.selection = Some(Selection {
+                    anchor: caret,
+                    head: caret,
+                });
             }
             state.drag_anchor = None;
         } else if response.drag_stopped() {
@@ -290,11 +290,12 @@ pub fn show(
     // focus, regardless of which panel is active.
     let copy_pressed =
         ui.input(|i| i.key_pressed(egui::Key::C) && i.modifiers.command && !i.modifiers.shift);
-    if copy_pressed && state.has_selection() {
-        if let Some(text) = state.selected_text(store) {
-            ui.ctx().copy_text(text);
-            output.copied = true;
-        }
+    if copy_pressed
+        && state.has_selection()
+        && let Some(text) = state.selected_text(store)
+    {
+        ui.ctx().copy_text(text);
+        output.copied = true;
     }
 
     let select_all = ui.input(|i| i.key_pressed(egui::Key::A) && i.modifiers.command);
