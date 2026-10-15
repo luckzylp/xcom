@@ -8,9 +8,10 @@
 
 use std::io;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use serialport::{ClearBuffer, SerialPort};
@@ -21,6 +22,13 @@ use super::config::{OpenPlan, SerialConfig};
 const READ_TIMEOUT: Duration = Duration::from_millis(50);
 /// Capacity of the outgoing byte queue.
 const WRITE_QUEUE: usize = 512;
+/// How often the handshake lines are sampled by the background thread.
+///
+/// They change slowly, so 5 Hz is plenty.  The sampling must happen off the UI
+/// thread: on Windows a USB CDC port can block `GetCommModemStatus` for hundreds
+/// of milliseconds while the reader thread holds a pending `ReadFile`, and doing
+/// that from the frame callback froze the whole window.
+const SIGNAL_PERIOD: Duration = Duration::from_millis(200);
 
 /// Something that happened on the link, reported to the UI thread.
 #[derive(Debug, Clone)]
@@ -58,6 +66,10 @@ pub struct SerialLink {
     stop: Arc<AtomicBool>,
     reader: Option<JoinHandle<()>>,
     writer: Option<JoinHandle<()>>,
+    /// Latest handshake-line snapshot, refreshed by a background thread so the
+    /// UI thread never blocks on a modem-status syscall.
+    signals: Arc<Mutex<Signals>>,
+    signals_thread: Option<JoinHandle<()>>,
 }
 
 impl SerialLink {
@@ -74,6 +86,8 @@ impl SerialLink {
             stop: Arc::new(AtomicBool::new(false)),
             reader: None,
             writer: None,
+            signals: Arc::new(Mutex::new(Signals::default())),
+            signals_thread: None,
         }
     }
 
@@ -126,6 +140,12 @@ impl SerialLink {
         let writer_port = port
             .try_clone()
             .map_err(|err| crate::i18n::tr1("无法复制串口句柄: {}", err))?;
+        // A third handle for the handshake sampler: the modem-status calls must
+        // not share a handle with the reader, whose pending read is what makes
+        // them slow on Windows.
+        let signals_port = port
+            .try_clone()
+            .map_err(|err| crate::i18n::tr1("无法复制串口句柄: {}", err))?;
 
         let stop = Arc::new(AtomicBool::new(false));
         let (write_tx, write_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(WRITE_QUEUE);
@@ -141,6 +161,11 @@ impl SerialLink {
             self.events_tx.clone(),
             Arc::clone(&stop),
         ));
+        self.signals_thread = Some(spawn_signals(
+            signals_port,
+            Arc::clone(&self.signals),
+            Arc::clone(&stop),
+        ));
 
         self.port = Some(port);
         self.config = Some(config.clone());
@@ -149,9 +174,9 @@ impl SerialLink {
         Ok(())
     }
 
-    /// Close the port and stop both worker threads.
+    /// Close the port and stop every worker thread.
     pub fn close(&mut self) {
-        if !self.is_open() && self.reader.is_none() {
+        if !self.is_open() && self.reader.is_none() && self.signals_thread.is_none() {
             return;
         }
         // Dropping the control handle first means the modem-line calls the UI
@@ -169,6 +194,17 @@ impl SerialLink {
         if let Some(handle) = self.writer.take() {
             let _ = handle.join();
         }
+        // The signals thread is *not* joined: a modem-status query in progress
+        // can block for hundreds of milliseconds on Windows, and joining it
+        // from the UI thread would reintroduce the exact freeze the background
+        // thread exists to prevent.  Dropping the handle detaches the thread;
+        // it will observe `stop` on its next loop iteration and exit.  The
+        // shared `Arc<Mutex<Signals>>` keeps the snapshot alive until then, and
+        // is reset below so the UI sees a clean state immediately.
+        drop(self.signals_thread.take());
+        // Reset the cached snapshot so a reopened port starts from a clean
+        // state.  Poisoned-lock recovery matches `signals()`.
+        *self.signals.lock().unwrap_or_else(|e| e.into_inner()) = Signals::default();
 
         // Drain stale events so a reopened port does not inherit them.
         while self.events_rx.try_recv().is_ok() {}
@@ -204,18 +240,16 @@ impl SerialLink {
         out
     }
 
-    /// Sample the handshake input lines.
+    /// The most recent handshake-line snapshot.
     ///
-    /// Returns `None` when no port is open.  Individual lines that the driver
-    /// cannot report read back as `false` rather than failing the whole sample.
-    pub fn signals(&mut self) -> Option<Signals> {
-        let port = self.port.as_mut()?;
-        Some(Signals {
-            cts: port.read_clear_to_send().unwrap_or(false),
-            dsr: port.read_data_set_ready().unwrap_or(false),
-            dcd: port.read_carrier_detect().unwrap_or(false),
-            ri: port.read_ring_indicator().unwrap_or(false),
-        })
+    /// Never touches the driver: the lines are polled by a background thread and
+    /// this only reads the cached sample, so it cannot stall the caller.  This
+    /// matters on Windows, where a modem-status query on a busy USB CDC port can
+    /// block for hundreds of milliseconds.  Returns `None` when no port is open.
+    pub fn signals(&self) -> Option<Signals> {
+        self.port.as_ref()?;
+        let slot = self.signals.lock().unwrap_or_else(|e| e.into_inner());
+        Some(*slot)
     }
 
     /// Drive DTR.
@@ -286,6 +320,51 @@ fn spawn_reader(
         .expect("failed to spawn serial reader thread")
 }
 
+/// Poll the handshake input lines on a background thread and publish a snapshot.
+///
+/// Doing this from the frame callback is what used to freeze the window: on
+/// Windows a USB CDC port can leave `GetCommModemStatus` blocked for hundreds of
+/// milliseconds while the reader thread holds a pending `ReadFile`.  Isolating
+/// the queries here keeps the UI thread responsive no matter how slow the driver
+/// is.  The lock is only ever held to swap a `Copy` value, never across IO.
+///
+/// The cadence backs off to at least the duration of the last query, so a driver
+/// that serialises modem queries against the reader's pending read cannot be
+/// hammered into starving data reception.
+fn spawn_signals(
+    mut port: Box<dyn SerialPort>,
+    out: Arc<Mutex<Signals>>,
+    stop: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    thread::Builder::new()
+        .name("serial-signals".to_owned())
+        .spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let started = Instant::now();
+                let sample = Signals {
+                    cts: port.read_clear_to_send().unwrap_or(false),
+                    dsr: port.read_data_set_ready().unwrap_or(false),
+                    dcd: port.read_carrier_detect().unwrap_or(false),
+                    ri: port.read_ring_indicator().unwrap_or(false),
+                };
+                if let Ok(mut slot) = out.lock() {
+                    *slot = sample;
+                }
+                // At least as long idle as that sample took, and never less
+                // than the nominal period.  Sleep in slices so shutdown is
+                // prompt.
+                let nap = SIGNAL_PERIOD.max(started.elapsed());
+                let mut slept = Duration::ZERO;
+                while slept < nap && !stop.load(Ordering::Relaxed) {
+                    let slice = Duration::from_millis(50).min(nap - slept);
+                    thread::sleep(slice);
+                    slept += slice;
+                }
+            }
+        })
+        .expect("failed to spawn serial signals thread")
+}
+
 fn spawn_writer(
     mut port: Box<dyn SerialPort>,
     queue: Receiver<Vec<u8>>,
@@ -352,7 +431,7 @@ mod tests {
 
     #[test]
     fn new_link_is_closed() {
-        let mut link = SerialLink::new();
+        let link = SerialLink::new();
         assert!(!link.is_open());
         assert!(link.signals().is_none());
         assert!(link.send(vec![1, 2, 3]).is_err());

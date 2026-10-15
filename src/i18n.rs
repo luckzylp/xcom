@@ -190,6 +190,11 @@ fn probe_title_font_covers_cjk() -> Option<bool> {
 }
 
 /// Whether a fontconfig charset list (`20-7f a0-127 12b …`) includes `codepoint`.
+///
+/// Only the Linux title-bar probe calls this in production, but it is pure
+/// parsing and is unit-tested on every platform, so it stays compiled
+/// everywhere; only the unused-on-Windows/macOS warning is suppressed.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn charset_covers(charset: &str, codepoint: u32) -> bool {
     charset
         .split_whitespace()

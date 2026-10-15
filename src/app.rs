@@ -136,9 +136,8 @@ pub struct XcomApp {
     pub(crate) show_side_panel: bool,
     pub(crate) show_about: bool,
 
-    /// Handshake line states, sampled periodically.
+    /// Handshake line states, sampled by a background thread.
     pub(crate) signals: Signals,
-    signals_at: Instant,
 
     /// Last theme applied, so styling only runs on change.
     applied_theme: Option<crate::theme::ThemeMode>,
@@ -224,7 +223,6 @@ impl XcomApp {
             show_side_panel: true,
             show_about: false,
             signals: Signals::default(),
-            signals_at: Instant::now(),
             applied_theme: None,
             applied_lang: None,
             applied_fonts: None,
@@ -630,20 +628,21 @@ impl XcomApp {
         let epoch_ms = chrono::Local::now().timestamp_millis();
         let mut saw_data = false;
 
+        // Coalesce all Data events into one buffer before handing them to the
+        // log store and protocol engine.  On Windows, ReadFile with
+        // COMMTIMEOUTS returns immediately when any bytes are available, so the
+        // reader thread can produce many tiny chunks per frame.  Calling
+        // `ingest` (and therefore `LogStore::append` -> `refresh_cur_rows`)
+        // once per chunk made the per-frame cost O(chunks x live_line_len);
+        // batching reduces it to O(total_bytes + live_line_len).
+        let mut rx_buf: Vec<u8> = Vec::new();
+
         for event in self.link.poll() {
             match event {
                 SerialEvent::Data(bytes) => {
                     saw_data = true;
                     self.rx_bytes += bytes.len() as u64;
-                    if self.show_paused {
-                        // Freeze the display: buffer instead of rendering.
-                        self.pending_rx.extend_from_slice(&bytes);
-                    } else {
-                        self.ingest(&bytes, epoch_ms);
-                    }
-                    if self.protocol.is_running() || self.protocol_panel_visible() {
-                        self.protocol.on_bytes(&bytes, now);
-                    }
+                    rx_buf.extend_from_slice(&bytes);
                 }
                 SerialEvent::Written(count) => {
                     self.tx_bytes += count as u64;
@@ -656,14 +655,27 @@ impl XcomApp {
             }
         }
 
-        if saw_data && !self.show_paused {
-            ctx.request_repaint();
+        if !rx_buf.is_empty() {
+            if self.show_paused {
+                self.pending_rx.extend_from_slice(&rx_buf);
+            } else {
+                self.ingest(&rx_buf, epoch_ms);
+            }
+            if self.protocol.is_running() || self.protocol_panel_visible() {
+                self.protocol.on_bytes(&rx_buf, now);
+            }
         }
 
-        // Handshake lines change slowly; sampling them at 5 Hz is plenty and
-        // avoids ioctl traffic on every frame.
-        if self.link.is_open() && self.signals_at.elapsed() >= Duration::from_millis(200) {
-            self.signals_at = Instant::now();
+        if saw_data && !self.show_paused {
+            // Throttle to ~60 FPS so the UI thread retains idle time to process
+            // pointer and keyboard input even while data is streaming in.
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
+
+        // The handshake lines are polled by a background thread; reading the
+        // cached snapshot is a zero-syscall lock+copy, so it is cheap enough
+        // to do every frame.
+        if self.link.is_open() {
             if let Some(signals) = self.link.signals() {
                 self.signals = signals;
             }
@@ -1521,8 +1533,8 @@ mod layout_tests {
     }
 
     #[test]
-    fn software_version_is_v0_3_0() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.3.0");
+    fn software_version_is_v0_4_0() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.4.0");
     }
 
     #[test]
