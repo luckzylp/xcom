@@ -1439,6 +1439,85 @@ mod layout_tests {
             "clicking Delete did not remove the baud rate"
         );
         assert!(!app.settings.serial.baud_choices().contains(&115_201));
+
+        // The dialog draws its own header, so its close button must work too.
+        full_frame(&ctx, &mut app, input());
+        let close = panels::probe::custom_baud_close_rect();
+        assert!(close.width() > 0.0, "the dialog close button is missing");
+        click(&ctx, &mut app, close.center());
+        // Closing fades the window out, so the dialog only reports as gone once
+        // the animation finishes.
+        let mut dismissed = false;
+        for _ in 0..90 {
+            full_frame(&ctx, &mut app, input());
+            if panels::probe::custom_baud_window_rect() == egui::Rect::NOTHING {
+                dismissed = true;
+                break;
+            }
+        }
+        assert!(
+            dismissed,
+            "clicking the custom close button did not dismiss the dialog"
+        );
+    }
+
+    #[test]
+    fn custom_baud_button_draws_an_icon_instead_of_a_plus() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+
+        full_frame(&ctx, &mut app, input());
+
+        let manage = panels::probe::custom_baud_button_rect();
+        assert!(manage.width() > 0.0, "custom-baud manager button missing");
+        let label = panels::probe::custom_baud_button_label();
+        assert!(
+            !label.contains('+'),
+            "the custom-baud button must not fall back to a plus sign, got {label:?}"
+        );
+        assert!(
+            panels::probe::custom_baud_icon_shapes() > 0,
+            "the custom-baud button painted no icon geometry"
+        );
+    }
+
+    #[test]
+    fn custom_baud_dialog_title_is_body_sized_not_heading_sized() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+
+        full_frame(&ctx, &mut app, input());
+        let manage = panels::probe::custom_baud_button_rect();
+        click(&ctx, &mut app, manage.center());
+
+        let window = panels::probe::custom_baud_window_rect();
+        let header = panels::probe::custom_baud_header_rect();
+        let title = panels::probe::custom_baud_title_rect();
+        assert!(window.width() > 0.0, "the dialog did not open");
+        assert!(header.height() > 0.0, "the dialog header was not laid out");
+        assert!(title.height() > 0.0, "the dialog title was not laid out");
+
+        // The window's own title bar used `TextStyle::Heading` (~1.38x body),
+        // which is what made the dialog title look oversized.
+        let body_row = ctx.fonts_mut(|fonts| {
+            fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
+        });
+        let ratio = title.height() / body_row;
+        assert!(
+            (ratio - 1.0).abs() <= 0.05,
+            "the dialog title is {ratio:.2}x the body row height ({:.1}px vs {:.1}px)",
+            title.height(),
+            body_row
+        );
+        let top_gap = header.top() - window.top();
+        assert!(
+            top_gap <= 10.0,
+            "the dialog header leaves a {top_gap:.1}px band above it"
+        );
     }
 
     #[test]

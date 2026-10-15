@@ -45,6 +45,11 @@ pub(crate) mod probe {
         static CUSTOM_BAUD_ADD_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static CUSTOM_BAUD_DELETE_RECTS: RefCell<Vec<(u32, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
+        static CUSTOM_BAUD_HEADER_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static CUSTOM_BAUD_TITLE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static CUSTOM_BAUD_CLOSE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static CUSTOM_BAUD_BUTTON_LABEL: RefCell<String> = const { RefCell::new(String::new()) };
+        static CUSTOM_BAUD_ICON_SHAPES: Cell<usize> = const { Cell::new(0) };
         static SERIAL_COMBO_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
         static SEND_TOOLBAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
@@ -149,6 +154,11 @@ pub(crate) mod probe {
         CUSTOM_BAUD_INPUT_RECT.with(|c| c.set(egui::Rect::NOTHING));
         CUSTOM_BAUD_ADD_RECT.with(|c| c.set(egui::Rect::NOTHING));
         CUSTOM_BAUD_DELETE_RECTS.with(|rects| rects.borrow_mut().clear());
+        CUSTOM_BAUD_HEADER_RECT.with(|c| c.set(egui::Rect::NOTHING));
+        CUSTOM_BAUD_TITLE_RECT.with(|c| c.set(egui::Rect::NOTHING));
+        CUSTOM_BAUD_CLOSE_RECT.with(|c| c.set(egui::Rect::NOTHING));
+        CUSTOM_BAUD_BUTTON_LABEL.with(|c| c.borrow_mut().clear());
+        CUSTOM_BAUD_ICON_SHAPES.with(|c| c.set(0));
     }
     #[cfg(not(test))]
     #[inline(always)]
@@ -204,6 +214,71 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn custom_baud_delete_rects() -> Vec<(u32, egui::Rect)> {
         CUSTOM_BAUD_DELETE_RECTS.with(|rects| rects.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_custom_baud_header_rect(rect: egui::Rect) {
+        CUSTOM_BAUD_HEADER_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_custom_baud_header_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn custom_baud_header_rect() -> egui::Rect {
+        CUSTOM_BAUD_HEADER_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_custom_baud_title_rect(rect: egui::Rect) {
+        CUSTOM_BAUD_TITLE_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_custom_baud_title_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn custom_baud_title_rect() -> egui::Rect {
+        CUSTOM_BAUD_TITLE_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_custom_baud_close_rect(rect: egui::Rect) {
+        CUSTOM_BAUD_CLOSE_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_custom_baud_close_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn custom_baud_close_rect() -> egui::Rect {
+        CUSTOM_BAUD_CLOSE_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_custom_baud_button_label(label: &str) {
+        CUSTOM_BAUD_BUTTON_LABEL.with(|c| *c.borrow_mut() = label.to_owned());
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_custom_baud_button_label(_label: &str) {}
+
+    #[cfg(test)]
+    pub(crate) fn custom_baud_button_label() -> String {
+        CUSTOM_BAUD_BUTTON_LABEL.with(|c| c.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_custom_baud_icon_shapes(shapes: usize) {
+        CUSTOM_BAUD_ICON_SHAPES.with(|c| c.set(shapes));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_custom_baud_icon_shapes(_shapes: usize) {}
+
+    #[cfg(test)]
+    pub(crate) fn custom_baud_icon_shapes() -> usize {
+        CUSTOM_BAUD_ICON_SHAPES.with(|c| c.get())
     }
 
     #[cfg(test)]
@@ -613,6 +688,42 @@ pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
     });
 }
 
+/// Paint the "custom baud rate" icon: a tune / sliders glyph.
+///
+/// Drawn as geometry rather than a font symbol on purpose.  The UI falls back
+/// to whatever CJK face the system offers, and such a face cannot be relied on
+/// to carry a symbol like U+2699 (gear) or U+270E (pencil); a missing glyph
+/// renders as tofu.  Painting the shape keeps it identical on every platform.
+///
+/// Returns the number of painted shapes so a test can prove the icon is real.
+fn paint_tune_icon(ui: &Ui, rect: egui::Rect, color: egui::Color32) -> usize {
+    let painter = ui.painter();
+    let side = rect.size().min_elem();
+    let half = side * 0.34;
+    let center = rect.center();
+    let stroke = egui::Stroke::new(1.4, color);
+    let knob_radius = (side * 0.09).clamp(1.2, 2.6);
+    // Three rails with a knob on each: the conventional "adjust / customise"
+    // glyph.  Knobs alternate sides so the rails read as controls, not bullets.
+    let rows = [-0.70_f32, 0.0, 0.70];
+    let knobs = [0.45_f32, -0.55, 0.45];
+    let mut shapes = 0;
+    for (row, knob) in rows.iter().zip(knobs) {
+        let y = center.y + row * half;
+        painter.line_segment(
+            [
+                egui::pos2(center.x - half, y),
+                egui::pos2(center.x + half, y),
+            ],
+            stroke,
+        );
+        shapes += 1;
+        painter.circle_filled(egui::pos2(center.x + knob * half, y), knob_radius, color);
+        shapes += 1;
+    }
+    shapes
+}
+
 fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
     let open = app.link.is_open();
     let manager_id = egui::Id::new("custom_baud_manager");
@@ -730,12 +841,15 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                 combo.response.rect
                             })
                             .inner;
-                        let manage = row_ui
-                            .add_sized(
-                                [manager_width, baud_combo_rect.height()],
-                                egui::Button::new("+"),
-                            )
-                            .on_hover_text(tr("管理自定义波特率"));
+                        let manage = row_ui.add_sized(
+                            [manager_width, baud_combo_rect.height()],
+                            egui::Button::new(""),
+                        );
+                        let icon_shapes =
+                            paint_tune_icon(row_ui, manage.rect, row_ui.visuals().text_color());
+                        probe::set_custom_baud_icon_shapes(icon_shapes);
+                        probe::set_custom_baud_button_label("");
+                        let manage = manage.on_hover_text(tr("管理自定义波特率"));
                         probe::set_custom_baud_button_rect(manage.rect);
                         if manage.clicked() {
                             manager_open = true;
@@ -866,23 +980,58 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     let mut pending_baud = ctx.data(|data| data.get_temp::<u32>(input_id).unwrap_or(115_201));
     let mut remove_baud = None;
+    let mut close_requested = false;
+    // `title_bar(false)` drops egui's own bar, whose `TextStyle::Heading`
+    // caption (~1.4x the body) is what made this small dialog look
+    // top-heavy.  Without a title bar egui falls back to "drag anywhere", so
+    // the compact header we draw below keeps the dialog movable.
     let popup = egui::Window::new(tr("自定义波特率"))
         .id(manager_id)
-        .default_width(300.0)
+        .title_bar(false)
+        .default_width(288.0)
         .collapsible(false)
         .resizable(false)
         .open(&mut manager_open)
         .show(&ctx, |ui| {
+            ui.set_min_width(268.0);
+
+            // ── compact header ──────────────────────────────────────────
+            let header = ui.horizontal(|ui| {
+                let icon_side = ui.spacing().interact_size.y.min(18.0);
+                let (icon_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(icon_side, icon_side), egui::Sense::hover());
+                paint_tune_icon(ui, icon_rect, ui.visuals().text_color());
+                let title = ui.label(RichText::new(tr("自定义波特率")).strong());
+                probe::set_custom_baud_title_rect(title.rect);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let close = ui
+                        .add_sized([22.0, 18.0], egui::Button::new("×").frame(false))
+                        .on_hover_text(tr("关闭"));
+                    probe::set_custom_baud_close_rect(close.rect);
+                    if close.clicked() {
+                        close_requested = true;
+                    }
+                });
+            });
+            probe::set_custom_baud_header_rect(header.response.rect);
+            ui.separator();
+
+            // ── add a rate ──────────────────────────────────────────────
             let can_add = app.settings.serial.can_add_custom_baud(pending_baud);
+            ui.add_space(2.0);
+            ui.label(tr("添加波特率"));
             ui.horizontal(|ui| {
                 let input = ui.add_sized(
-                    [176.0, 26.0],
+                    [(ui.available_width() - 64.0).max(96.0), 24.0],
                     egui::DragValue::new(&mut pending_baud)
                         .speed(100.0)
                         .range(CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1),
                 );
                 probe::set_custom_baud_input_rect(input.rect);
-                let add = ui.add_enabled(can_add, egui::Button::new(tr("添加")));
+                let add = ui.add_enabled(
+                    can_add,
+                    egui::Button::new(tr("添加")).min_size(egui::vec2(56.0, 24.0)),
+                );
                 probe::set_custom_baud_add_rect(add.rect);
                 if add.clicked() && app.settings.serial.add_custom_baud(pending_baud) {
                     app.mark_settings_dirty();
@@ -896,10 +1045,14 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                 };
                 ui.weak(hint);
             }
+
+            // ── saved rates ─────────────────────────────────────────────
+            ui.add_space(4.0);
             ui.separator();
+            ui.add_space(2.0);
             ui.label(tr("已保存的自定义波特率"));
             egui::ScrollArea::vertical()
-                .max_height(220.0)
+                .max_height(200.0)
                 .show(ui, |ui| {
                     let rates = app.settings.serial.custom_bauds.clone();
                     if rates.is_empty() {
@@ -907,21 +1060,29 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                     }
                     for rate in rates {
                         ui.horizontal(|ui| {
-                            ui.label(rate.to_string());
+                            ui.label(RichText::new(rate.to_string()).monospace());
                             ui.weak("bps");
-                            let delete = ui
-                                .add_sized([26.0, 24.0], egui::Button::new("−"))
-                                .on_hover_text(tr("删除"));
-                            probe::push_custom_baud_delete_rect(rate, delete.rect);
-                            if delete.clicked() {
-                                remove_baud = Some(rate);
-                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let delete = ui
+                                        .add_sized([24.0, 22.0], egui::Button::new("−"))
+                                        .on_hover_text(tr("删除"));
+                                    probe::push_custom_baud_delete_rect(rate, delete.rect);
+                                    if delete.clicked() {
+                                        remove_baud = Some(rate);
+                                    }
+                                },
+                            );
                         });
                     }
                 });
         });
     if let Some(popup) = popup {
         probe::set_custom_baud_window_rect(popup.response.rect);
+    }
+    if close_requested {
+        manager_open = false;
     }
     if let Some(rate) = remove_baud
         && app.settings.serial.remove_custom_baud(rate)
