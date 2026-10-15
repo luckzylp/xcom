@@ -55,6 +55,8 @@ pub(crate) mod probe {
         static SEND_TOOLBAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
         static MULTI_HEADER_RECTS: RefCell<Vec<egui::Rect>> = const { RefCell::new(Vec::new()) };
+        static TOP_BAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
+            const { RefCell::new(Vec::new()) };
     }
 
     #[cfg(test)]
@@ -343,6 +345,27 @@ pub(crate) mod probe {
     pub(crate) fn multi_header_rects() -> Vec<egui::Rect> {
         MULTI_HEADER_RECTS.with(|rects| rects.borrow().clone())
     }
+
+    #[cfg(test)]
+    pub(crate) fn begin_top_bar() {
+        TOP_BAR_RECTS.with(|rects| rects.borrow_mut().clear());
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn begin_top_bar() {}
+
+    #[cfg(test)]
+    pub(crate) fn push_top_bar_rect(name: &'static str, rect: egui::Rect) {
+        TOP_BAR_RECTS.with(|rects| rects.borrow_mut().push((name, rect)));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_top_bar_rect<R>(_name: &'static str, _rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn top_bar_rects() -> Vec<(&'static str, egui::Rect)> {
+        TOP_BAR_RECTS.with(|rects| rects.borrow().clone())
+    }
 }
 
 /// Serial-settings panel width, in points.
@@ -528,8 +551,20 @@ fn combo<T: PartialEq + Copy>(
     options: &[T],
     label: impl Fn(T) -> String,
 ) -> bool {
+    combo_response(ui, id, current, options, label).0
+}
+
+/// As [`combo`], but also hands back the response rect so a test can measure
+/// where the control actually landed.
+fn combo_response<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    id: &str,
+    current: &mut T,
+    options: &[T],
+    label: impl Fn(T) -> String,
+) -> (bool, egui::Rect) {
     let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
+    let response = egui::ComboBox::from_id_salt(id)
         .selected_text(label(*current))
         .width(SERIAL_COMBO_WIDTH)
         .show_ui(ui, |ui| {
@@ -541,8 +576,9 @@ fn combo<T: PartialEq + Copy>(
                     changed = true;
                 }
             }
-        });
-    changed
+        })
+        .response;
+    (changed, response.rect)
 }
 
 /// Let the user choose one installed family, with `None` meaning “automatic”.
@@ -575,20 +611,35 @@ fn font_combo(ui: &mut Ui, id: &str, current: &mut Option<String>) -> bool {
 
 pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
     egui::Panel::top("top_bar").show(ui, |ui| {
+        probe::begin_top_bar();
+        // One row, one centre line.  `horizontal_wrapped` seeds its row extent
+        // from `interact_size.y` and re-centres every item against the row as
+        // it stands *at that moment*: as soon as a control is taller than that
+        // seed the row grows mid-row and each later item drifts by a pixel or
+        // two.  Sizing the row up front keeps one shared centre.
+        let row_height = ui.ctx().fonts_mut(|fonts| {
+            fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
+        }) + 10.0;
+        ui.spacing_mut().interact_size.y = row_height;
         ui.horizontal_wrapped(|ui| {
-            ui.label(tr("主题"));
+            let theme_label = ui.label(tr("主题"));
+            probe::push_top_bar_rect("theme_label", theme_label.rect);
             let mut theme_mode = app.settings.theme;
-            if combo(ui, "theme_mode", &mut theme_mode, &ThemeMode::ALL, |m| {
-                format!("{} {}", m.icon(), tr(m.label()))
-            }) {
+            let (theme_changed, theme_rect) =
+                combo_response(ui, "theme_mode", &mut theme_mode, &ThemeMode::ALL, |m| {
+                    format!("{} {}", m.icon(), tr(m.label()))
+                });
+            probe::push_top_bar_rect("theme_combo", theme_rect);
+            if theme_changed {
                 app.settings.theme = theme_mode;
                 app.mark_settings_dirty();
             }
 
             ui.separator();
-            ui.label(tr("语言"));
+            let lang_label = ui.label(tr("语言"));
+            probe::push_top_bar_rect("lang_label", lang_label.rect);
             let mut language = i18n::lang();
-            egui::ComboBox::from_id_salt("language")
+            let lang_combo = egui::ComboBox::from_id_salt("language")
                 .selected_text(language.label())
                 .width(110.0)
                 .show_ui(ui, |ui| {
@@ -603,16 +654,17 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
                         }
                     }
                 });
+            probe::push_top_bar_rect("lang_combo", lang_combo.response.rect);
 
             ui.separator();
-            ui.checkbox(&mut app.show_side_panel, tr("显示工具面板"));
+            let side_panel = ui.checkbox(&mut app.show_side_panel, tr("显示工具面板"));
+            probe::push_top_bar_rect("side_panel", side_panel.rect);
 
             ui.separator();
             let mut log_colors = app.settings.log_colors;
-            if ui
-                .checkbox(&mut log_colors.enabled, tr("自定义接收区配色"))
-                .changed()
-            {
+            let log_colors_checkbox = ui.checkbox(&mut log_colors.enabled, tr("自定义接收区配色"));
+            probe::push_top_bar_rect("log_colors", log_colors_checkbox.rect);
+            if log_colors_checkbox.changed() {
                 app.settings.log_colors = log_colors;
                 app.mark_settings_dirty();
             }
@@ -632,7 +684,9 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
             }
 
             ui.separator();
-            if ui.button(tr("恢复默认设置")).clicked() {
+            let reset = ui.button(tr("恢复默认设置"));
+            probe::push_top_bar_rect("reset", reset.rect);
+            if reset.clicked() {
                 app.settings = crate::settings::Settings::default();
                 app.log
                     .set_limits(app.settings.max_rows, app.settings.max_raw);
@@ -640,7 +694,9 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
                 app.mark_settings_dirty();
                 app.info(tr("已恢复默认设置"));
             }
-            if ui.button(tr("关于")).clicked() {
+            let about = ui.button(tr("关于"));
+            probe::push_top_bar_rect("about", about.rect);
+            if about.clicked() {
                 app.show_about = true;
             }
         });
@@ -1503,47 +1559,57 @@ fn copy_selection(app: &mut XcomApp, ui: &Ui) {
 
 const SEND_RIGHT_PAD: f32 = 6.0;
 
-fn send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
-    ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
-    ui.spacing_mut().interact_size.y = btn_height;
+/// Which edge of the toolbar the action group is anchored to.
+enum ActionsAnchor {
+    /// The roomy case: one row with the options, the group hugging the right.
+    Right,
+    /// The cramped case: a row of its own, the group starting at the left.
+    Left,
+}
 
-    // Rightmost: 发送 (drawn first in right_to_left)
-    let send_btn = ui.add_sized(
+/// The single send button, rightmost of the group.
+fn send_button(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
+    let button = ui.add_sized(
         [96.0, btn_height],
         egui::Button::new(RichText::new(tr("发送 (Ctrl+Enter)")).strong()),
     );
-    probe::push_send_toolbar_rect("send", send_btn.rect);
-    if send_btn.clicked() {
+    probe::push_send_toolbar_rect("send", button.rect);
+    if button.clicked() {
         app.send_once();
     }
+}
 
-    // 发送文件 / 终止发送
-    let file_button = if app.file_send.is_some() {
+/// 发送文件, or 终止发送 while a file transfer is running.
+fn file_button(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
+    let button = if app.file_send.is_some() {
         ui.add_sized([76.0, btn_height], egui::Button::new(tr("终止发送")))
     } else {
         ui.add_sized([76.0, btn_height], egui::Button::new(tr("发送文件")))
     };
-    probe::push_send_toolbar_rect("file", file_button.rect);
-    if file_button.clicked() {
+    probe::push_send_toolbar_rect("file", button.rect);
+    if button.clicked() {
         if app.file_send.is_some() {
             app.abort_file_send();
         } else if let Some(path) = pick_open_file(tr("选择要发送的文件")) {
             app.start_file_send(path);
         }
     }
+}
 
-    // 清除发送
-    let clear_button = ui.add_sized([76.0, btn_height], egui::Button::new(tr("清除发送")));
-    probe::push_send_toolbar_rect("clear", clear_button.rect);
-    if clear_button.clicked() {
+fn clear_button(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
+    let button = ui.add_sized([76.0, btn_height], egui::Button::new(tr("清除发送")));
+    probe::push_send_toolbar_rect("clear", button.rect);
+    if button.clicked() {
         app.settings.send.buffer.clear();
         app.tx_bytes = 0;
         app.rx_bytes = 0;
         app.mark_settings_dirty();
         app.info(tr("已清除发送区与收发计数"));
     }
+}
 
-    // 历史 (leftmost of the button group)
+/// The history dropdown, leftmost of the group.
+fn history_button(app: &mut XcomApp, ui: &mut Ui) {
     let history = egui::ComboBox::from_id_salt("send_history")
         .selected_text(tr("历史"))
         .width(68.0)
@@ -1563,12 +1629,46 @@ fn send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
     probe::push_send_toolbar_rect("history", history.response.rect);
 }
 
+/// Lay out 历史 · 清除发送 · 发送文件 · 发送, in that reading order.
+///
+/// The group is added in reverse for a right-to-left ui, which places the first
+/// widget at its *right* edge; a left-anchored row needs the natural order.
+fn send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32, anchor: ActionsAnchor) {
+    ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+    ui.spacing_mut().interact_size.y = btn_height;
+
+    match anchor {
+        ActionsAnchor::Right => {
+            send_button(app, ui, btn_height);
+            file_button(app, ui, btn_height);
+            clear_button(app, ui, btn_height);
+            history_button(app, ui);
+        }
+        ActionsAnchor::Left => {
+            history_button(app, ui);
+            clear_button(app, ui, btn_height);
+            file_button(app, ui, btn_height);
+            send_button(app, ui, btn_height);
+        }
+    }
+}
+
 fn right_aligned_send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
     let avail_w = (ui.available_width() - SEND_RIGHT_PAD).max(0.0);
     ui.allocate_ui_with_layout(
         egui::vec2(avail_w, btn_height),
         egui::Layout::right_to_left(egui::Align::Center),
-        |ui| send_actions(app, ui, btn_height),
+        |ui| send_actions(app, ui, btn_height, ActionsAnchor::Right),
+    );
+}
+
+/// The cramped case: the group takes a row of its own and starts at the left
+/// edge, so it lines up with the 发送区 options above it.
+fn left_aligned_send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), btn_height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| send_actions(app, ui, btn_height, ActionsAnchor::Left),
     );
 }
 
@@ -1659,7 +1759,7 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
     if actions_on_second_row {
         ui.horizontal(|ui| {
             ui.set_height(btn_height);
-            right_aligned_send_actions(app, ui, btn_height);
+            left_aligned_send_actions(app, ui, btn_height);
         });
     }
 

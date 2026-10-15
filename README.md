@@ -287,7 +287,7 @@ The file is readable JSON and can be edited directly. Fields use `#[serde(defaul
 ## Development
 
 ```bash
-cargo test              # 204 tests
+cargo test              # 223 tests
 cargo clippy --all-targets
 cargo fmt
 ```

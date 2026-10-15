@@ -1533,8 +1533,8 @@ mod layout_tests {
     }
 
     #[test]
-    fn software_version_is_v0_4_0() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.4.0");
+    fn software_version_is_v0_4_1() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.4.1");
     }
 
     #[test]
@@ -1544,6 +1544,147 @@ mod layout_tests {
         assert!(
             manifest.contains("rust-version = \"1.90.0\""),
             "Cargo.toml must require Rust 1.90.0"
+        );
+    }
+
+    /// Every control on the top bar shares one vertical centre line.
+    ///
+    /// The theme and language labels used to sit above their own dropdowns, and
+    /// all four used to sit above the buttons on the right.  The bar lays out in
+    /// a wrapping row, and egui re-centres each item against the row as it
+    /// stands at that moment; a taller interface font is what makes the row
+    /// outgrow its seed and the items drift apart.  A taller font is a supported
+    /// setting, so it is also the tightest way to drive the bug.
+    #[test]
+    fn top_bar_controls_share_one_vertical_centre() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.fonts.ui_size = 20.0;
+        crate::fonts::apply_text_sizes(&ctx, &app.settings.fonts);
+
+        full_frame(&ctx, &mut app, input());
+
+        let rects = panels::probe::top_bar_rects();
+        let centre = |name: &str| {
+            rects
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .map(|(_, rect)| rect.center().y)
+                .unwrap_or_else(|| panic!("{name} was not laid out"))
+        };
+        // 关于 is part of the button group the labels must line up with.
+        let reference = centre("about");
+        for name in [
+            "theme_label",
+            "theme_combo",
+            "lang_label",
+            "lang_combo",
+            "side_panel",
+            "log_colors",
+            "reset",
+        ] {
+            let offset = centre(name) - reference;
+            assert!(
+                offset.abs() <= 0.75,
+                "{name} is {offset:.2}px off the top bar's centre line \
+                 (its centre {:.1}, the button row's {reference:.1})",
+                centre(name)
+            );
+        }
+    }
+
+    /// The send toolbar's actions drop to a left-aligned row when the options
+    /// above them leave no room for the whole group.
+    #[test]
+    fn send_toolbar_wraps_its_actions_to_a_left_aligned_row() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.show_side_panel = true;
+        app.settings.send.append_newline = false;
+
+        for _ in 0..2 {
+            let mut narrow = input();
+            narrow.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(880.0, 540.0),
+            ));
+            full_frame(&ctx, &mut app, narrow);
+        }
+
+        let rects = panels::probe::send_toolbar_rects();
+        let find = |name: &str| {
+            rects
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("{name} control was not laid out"))
+        };
+        let section = find("section");
+        let history = find("history");
+        let clear = find("clear");
+        let file = find("file");
+        let send = find("send");
+
+        assert!(
+            history.min.y >= section.max.y,
+            "the actions stayed on the options row: {history:?} vs {section:?}"
+        );
+        assert!(
+            (history.min.x - section.min.x).abs() <= 0.75,
+            "the wrapped action row starts at {:.1}px, not the row's left edge {:.1}px",
+            history.min.x,
+            section.min.x
+        );
+        // The group still reads 历史 · 清除发送 · 发送文件 · 发送.
+        for (left, right) in [("history", clear), ("clear", file), ("file", send)] {
+            let left_rect = find(left);
+            assert!(
+                left_rect.max.x <= right.min.x,
+                "{left} ({left_rect:?}) is not left of its neighbour ({right:?})"
+            );
+        }
+        for (name, rect) in [("clear", clear), ("file", file), ("send", send)] {
+            assert!(
+                (rect.center().y - history.center().y).abs() <= 0.75,
+                "{name} is on a different line from 历史: {:?} vs {history:?}",
+                rect.center()
+            );
+        }
+    }
+
+    /// The roomy case is unchanged: one row, group against the right edge.
+    #[test]
+    fn send_toolbar_actions_stay_right_aligned_when_they_fit() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.send.append_newline = false;
+
+        full_frame(&ctx, &mut app, input());
+
+        let rects = panels::probe::send_toolbar_rects();
+        let find = |name: &str| {
+            rects
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("{name} control was not laid out"))
+        };
+        let hex = find("hex");
+        let history = find("history");
+        let send = find("send");
+        let panel = panels::probe::send_panel_rect();
+        assert!(
+            (send.center().y - hex.center().y).abs() <= 0.75,
+            "the actions left the options row: {:?} vs {hex:?}",
+            send.center()
+        );
+        assert!(
+            history.min.x > hex.max.x,
+            "the options and the actions overlap: {hex:?} vs {history:?}"
+        );
+        assert!(
+            panel.max.x - send.max.x <= 8.0,
+            "the action group no longer hugs the right edge: {send:?} in {panel:?}"
         );
     }
 
