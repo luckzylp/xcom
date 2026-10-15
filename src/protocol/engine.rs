@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::checksum::ChecksumKind;
-use super::frame::{self, FrameError, ReceivedFrame, MAX_DATA};
+use super::frame::{self, FrameError, MAX_DATA, ReceivedFrame};
 
 /// User-facing configuration of the protocol panel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

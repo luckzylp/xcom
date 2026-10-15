@@ -83,7 +83,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 
 ### Prerequisites
 
-You only need a recent Rust toolchain (**1.82+**, `edition 2021`):
+You only need a recent Rust toolchain (**1.85+**, `edition 2024`):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -285,7 +285,7 @@ The file is readable JSON and can be edited directly. Fields use `#[serde(defaul
 ## Development
 
 ```bash
-cargo test              # 198 tests
+cargo test              # 201 tests
 cargo clippy --all-targets
 cargo fmt
 ```

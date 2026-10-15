@@ -23,8 +23,8 @@
 //! table.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -273,6 +273,10 @@ static EN: &[(&str, &str)] = &[
     ("打开串口",              "Open port"),
     ("关闭串口",              "Close port"),
     ("当前: {}",              "Current: {}"),
+    ("产品: {}",              "Product: {}"),
+    ("厂商: {}",              "Manufacturer: {}"),
+    ("PID/VID: {}",            "PID/VID: {}"),
+    ("SN: {}",                "SN: {}"),
     ("提示: 串口打开时无法修改通信参数，需先关闭串口",
                               "Note: close the port before changing its parameters"),
 

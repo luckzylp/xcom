@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use encoding_rs::Encoding;
 use serde::{Deserialize, Serialize};
 
-use crate::encoding::{decode, StreamDecoder};
+use crate::encoding::{StreamDecoder, decode};
 use crate::hex::{to_dump, to_hex_string};
 
 /// Where a display row came from.
@@ -732,11 +732,7 @@ pub fn char_width(ch: char) -> usize {
         || (0x1F300..=0x1F64F).contains(&cp)        // Emoji
         || (0x1F900..=0x1F9FF).contains(&cp)
         || (0x20000..=0x3FFFD).contains(&cp); // CJK ext B and beyond
-    if wide {
-        2
-    } else {
-        1
-    }
+    if wide { 2 } else { 1 }
 }
 
 #[cfg(test)]

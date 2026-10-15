@@ -85,7 +85,7 @@
 
 ### 依赖
 
-只需要一个较新的 Rust 工具链（**1.82+**，`edition 2021`）：
+只需要一个较新的 Rust 工具链（**1.85+**，`edition 2024`）：
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -331,7 +331,7 @@ python3 packaging/make-icons.py
 ## 开发
 
 ```bash
-cargo test              # 198 个测试
+cargo test              # 201 个测试
 cargo clippy --all-targets
 cargo fmt
 ```

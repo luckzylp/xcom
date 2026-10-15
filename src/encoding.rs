@@ -7,7 +7,7 @@
 //! that locks on to the most likely encoding as bytes arrive.
 
 use encoding_rs::{
-    Encoding, BIG5, EUC_JP, EUC_KR, GB18030, GBK, ISO_8859_2, ISO_8859_5, KOI8_R, SHIFT_JIS, UTF_8,
+    BIG5, EUC_JP, EUC_KR, Encoding, GB18030, GBK, ISO_8859_2, ISO_8859_5, KOI8_R, SHIFT_JIS, UTF_8,
     WINDOWS_1251, WINDOWS_1252,
 };
 use serde::{Deserialize, Serialize};

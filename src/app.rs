@@ -1279,6 +1279,30 @@ mod layout_tests {
     }
 
     #[test]
+    fn english_refresh_button_stays_inside_serial_content() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::EnUs);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.left_panel_width = crate::ui::panels::LEFT_PANEL_MIN;
+
+        full_frame(&ctx, &mut app, input());
+
+        let content = panels::probe::serial_content_rect();
+        let refresh = panels::probe::refresh_button_rect();
+        assert!(refresh.width() > 0.0, "refresh button was not laid out");
+        assert!(
+            refresh.max.x <= content.max.x + 0.25,
+            "refresh button is clipped by serial content: {refresh:?} outside {content:?}"
+        );
+    }
+
+    #[test]
+    fn software_version_is_v0_2_0() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.0");
+    }
+
+    #[test]
     fn send_history_combobox_matches_action_button_height() {
         let ctx = egui::Context::default();
         let mut app = seeded();

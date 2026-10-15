@@ -6,12 +6,12 @@
 //! which is also what gives us hot-plug detection for free.
 
 use std::cmp::Ordering;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 use serialport::SerialPortType;
 
 /// What kind of bus a port sits on.
@@ -37,36 +37,12 @@ pub struct PortDesc {
 }
 
 impl PortDesc {
-    /// Compact label shown in the port list, e.g. `/dev/ttyUSB0 (CH340)`.
+    /// Compact item label: just the OS port name, e.g. `/dev/ttyUSB0` or `COM3`.
     pub fn display(&self) -> String {
-        match &self.kind {
-            PortKind::Usb {
-                product,
-                manufacturer,
-                ..
-            } => {
-                let identity = product
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        manufacturer
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                    });
-                identity.map_or_else(
-                    || self.name.clone(),
-                    |identity| format!("{} ({identity})", self.name),
-                )
-            }
-            PortKind::Bluetooth => format!("{} ({})", self.name, crate::i18n::tr("蓝牙")),
-            PortKind::Pci => format!("{} (PCI)", self.name),
-            PortKind::Unknown => self.name.clone(),
-        }
+        self.name.clone()
     }
 
-    /// Full metadata for the hover tooltip, if any.
+    /// Full metadata for the hover tooltip, one field per line.
     pub fn detail(&self) -> Option<String> {
         match &self.kind {
             PortKind::Usb {
@@ -77,27 +53,18 @@ impl PortDesc {
                 product,
             } => {
                 let mut parts: Vec<String> = Vec::new();
-                // Prefer a human readable product name over the bare IDs, but
-                // keep the IDs because they are what you need for udev rules.
-                let mut identity = String::new();
                 if let Some(p) = product.as_ref().filter(|s| !s.trim().is_empty()) {
-                    identity.push_str(p.trim());
+                    parts.push(crate::i18n::tr1("产品: {}", p.trim()));
                 }
                 if let Some(m) = manufacturer.as_ref().filter(|s| !s.trim().is_empty()) {
-                    if identity.is_empty() {
-                        identity.push_str(m.trim());
-                    } else if !identity.contains(m.trim()) {
-                        identity = format!("{} {identity}", m.trim());
-                    }
+                    parts.push(crate::i18n::tr1("厂商: {}", m.trim()));
                 }
-                if !identity.is_empty() {
-                    parts.push(identity);
-                }
-                parts.push(format!("{vid:04x}:{pid:04x}"));
+                let ids = format!("{vid:04x}:{pid:04x}");
+                parts.push(crate::i18n::tr1("PID/VID: {}", ids));
                 if let Some(sn) = serial.as_ref().filter(|s| !s.trim().is_empty()) {
-                    parts.push(format!("SN:{}", sn.trim()));
+                    parts.push(crate::i18n::tr1("SN: {}", sn.trim()));
                 }
-                Some(parts.join(" "))
+                Some(parts.join("\n"))
             }
             PortKind::Bluetooth => Some(crate::i18n::tr("蓝牙").to_owned()),
             PortKind::Pci => Some("PCI".to_owned()),
@@ -323,12 +290,33 @@ mod tests {
         let detail = desc.detail().unwrap();
         assert!(detail.contains("CH340"), "{detail}");
         assert!(detail.contains("1a86:7523"), "{detail}");
-        assert!(detail.contains("SN:A1B2"), "{detail}");
+        assert!(detail.contains("SN: A1B2"), "{detail}");
         assert!(desc.display().starts_with("/dev/ttyUSB0"));
     }
 
     #[test]
-    fn usb_port_label_stays_compact() {
+    fn windows_port_item_label_uses_raw_name() {
+        let desc = PortDesc {
+            name: "COM3".to_owned(),
+            kind: PortKind::Usb {
+                vid: 0x0403,
+                pid: 0x6001,
+                serial: Some("FTDI-123456".to_owned()),
+                manufacturer: Some("FTDI".to_owned()),
+                product: Some("FT232R USB UART".to_owned()),
+            },
+        };
+
+        assert_eq!(desc.display(), "COM3");
+        let tooltip = desc.detail().unwrap();
+        assert!(tooltip.contains("0403:6001"), "{tooltip}");
+        assert!(tooltip.contains("SN: FTDI-123456"), "{tooltip}");
+    }
+
+    #[test]
+    fn usb_port_item_uses_name_and_multiline_details() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::EnUs);
         let desc = PortDesc {
             name: "/dev/ttyUSB0".to_owned(),
             kind: PortKind::Usb {
@@ -340,10 +328,18 @@ mod tests {
             },
         };
 
-        assert_eq!(desc.display(), "/dev/ttyUSB0 (FT232R USB UART)");
+        assert_eq!(desc.display(), "/dev/ttyUSB0");
         let tooltip = desc.detail().unwrap();
-        assert!(tooltip.contains("0403:6001"), "{tooltip}");
-        assert!(tooltip.contains("SN:FTDI-123456"), "{tooltip}");
+        assert_eq!(
+            tooltip.lines().collect::<Vec<_>>(),
+            vec![
+                "Product: FT232R USB UART",
+                "Manufacturer: FTDI",
+                "PID/VID: 0403:6001",
+                "SN: FTDI-123456",
+            ],
+            "{tooltip}"
+        );
     }
 
     #[test]

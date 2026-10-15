@@ -7,12 +7,12 @@
 //! the window.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use serialport::{ClearBuffer, SerialPort};
 
 use super::config::{OpenPlan, SerialConfig};

@@ -9,9 +9,9 @@
 use eframe::egui::{self, Context, RichText, Ui};
 use std::path::PathBuf;
 
-use crate::app::{draw_log, Level, SideTab, XcomApp};
+use crate::app::{Level, SideTab, XcomApp, draw_log};
 use crate::encoding::EncodingId;
-use crate::i18n::{self, tr, Lang};
+use crate::i18n::{self, Lang, tr};
 use crate::logstore::{HexStyle, ViewMode};
 use crate::protocol::{ChecksumKind, TaskKind};
 use crate::serial::config::{CUSTOM_BAUD_RANGE, STANDARD_BAUDS};
@@ -38,6 +38,7 @@ pub(crate) mod probe {
         static EDITOR_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static SERIAL_CONTENT_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static OPEN_BUTTON_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static REFRESH_BUTTON_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static SEND_TOOLBAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
         static MULTI_HEADER_RECTS: RefCell<Vec<egui::Rect>> = const { RefCell::new(Vec::new()) };
@@ -106,6 +107,19 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn open_button_rect() -> egui::Rect {
         OPEN_BUTTON_RECT.with(|c| c.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_refresh_button_rect(rect: egui::Rect) {
+        REFRESH_BUTTON_RECT.with(|c| c.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_refresh_button_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn refresh_button_rect() -> egui::Rect {
+        REFRESH_BUTTON_RECT.with(|c| c.get())
     }
 
     #[cfg(test)]
@@ -506,7 +520,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label(tr("串口"));
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let ports = app.ports.ports().to_vec();
                         let current = app.settings.serial.port.clone();
                         let selected_text = ports
@@ -544,10 +558,9 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                                     }
                                 });
                         });
-                        if ui
-                            .add_enabled(!open, egui::Button::new(tr("刷新")))
-                            .clicked()
-                        {
+                        let refresh = ui.add_enabled(!open, egui::Button::new(tr("刷新")));
+                        probe::set_refresh_button_rect(refresh.rect);
+                        if refresh.clicked() {
                             app.ports.poll();
                             app.info(tr("已刷新串口列表"));
                         }

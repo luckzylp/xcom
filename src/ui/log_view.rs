@@ -121,11 +121,7 @@ impl LogViewState {
                 out.push('\n');
             }
         }
-        if out.is_empty() {
-            None
-        } else {
-            Some(out)
-        }
+        if out.is_empty() { None } else { Some(out) }
     }
 }
 
