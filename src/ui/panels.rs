@@ -17,6 +17,7 @@ use crate::protocol::{ChecksumKind, TaskKind};
 use crate::serial::config::{CUSTOM_BAUD_RANGE, MAX_CUSTOM_BAUDS, STANDARD_BAUDS};
 use crate::serial::{DataBitsSel, FlowSel, ParitySel, StopBitsSel};
 use crate::theme::{self, ThemeMode};
+use crate::ui::dialog;
 
 /// Where a test can read what the real panels actually laid out.
 ///
@@ -55,6 +56,12 @@ pub(crate) mod probe {
         static SEND_TOOLBAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
         static MULTI_HEADER_RECTS: RefCell<Vec<egui::Rect>> = const { RefCell::new(Vec::new()) };
+        static MULTI_ACTIVE_ROW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static MULTI_STATUS_TEXT: RefCell<String> = const { RefCell::new(String::new()) };
+        static ABOUT_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static ABOUT_HEADER_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static ABOUT_TITLE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static ABOUT_CLOSE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static TOP_BAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
     }
@@ -333,6 +340,20 @@ pub(crate) mod probe {
     #[inline(always)]
     pub(crate) fn begin_multi_headers() {}
 
+    /// Forget last frame's "being sent" markers.
+    ///
+    /// Called at the top of the panel rather than where they are drawn: the
+    /// status line is drawn above the table, so a reset inside the table would
+    /// wipe it immediately.
+    #[cfg(test)]
+    pub(crate) fn begin_multi_panel() {
+        MULTI_ACTIVE_ROW_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
+        MULTI_STATUS_TEXT.with(|text| text.borrow_mut().clear());
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn begin_multi_panel() {}
+
     #[cfg(test)]
     pub(crate) fn push_multi_header_rect(rect: egui::Rect) {
         MULTI_HEADER_RECTS.with(|rects| rects.borrow_mut().push(rect));
@@ -344,6 +365,85 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn multi_header_rects() -> Vec<egui::Rect> {
         MULTI_HEADER_RECTS.with(|rects| rects.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_multi_active_row_rect(rect: egui::Rect) {
+        MULTI_ACTIVE_ROW_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_multi_active_row_rect<R>(_rect: R) {}
+
+    /// The row the panel marked as being sent, or `Rect::NOTHING` if none.
+    #[cfg(test)]
+    pub(crate) fn multi_active_row_rect() -> egui::Rect {
+        MULTI_ACTIVE_ROW_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_multi_status_text(text: &str) {
+        MULTI_STATUS_TEXT.with(|cell| *cell.borrow_mut() = text.to_owned());
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_multi_status_text(_text: &str) {}
+
+    #[cfg(test)]
+    pub(crate) fn multi_status_text() -> String {
+        MULTI_STATUS_TEXT.with(|cell| cell.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_about_window_rect(rect: egui::Rect) {
+        ABOUT_WINDOW_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_about_window_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn about_window_rect() -> egui::Rect {
+        ABOUT_WINDOW_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_about_header_rect(rect: egui::Rect) {
+        ABOUT_HEADER_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_about_header_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn about_header_rect() -> egui::Rect {
+        ABOUT_HEADER_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_about_title_rect(rect: egui::Rect) {
+        ABOUT_TITLE_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_about_title_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn about_title_rect() -> egui::Rect {
+        ABOUT_TITLE_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_about_close_rect(rect: egui::Rect) {
+        ABOUT_CLOSE_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_about_close_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn about_close_rect() -> egui::Rect {
+        ABOUT_CLOSE_RECT.with(|cell| cell.get())
     }
 
     #[cfg(test)]
@@ -379,6 +479,18 @@ const SERIAL_COMBO_WIDTH: f32 = 140.0;
 pub(crate) const RIGHT_PANEL_DEFAULT: f32 = 287.0;
 pub(crate) const RIGHT_PANEL_MIN: f32 = 260.0;
 pub(crate) const RIGHT_PANEL_MAX: f32 = 760.0;
+
+/// Smallest width the centre column keeps when either side panel is dragged
+/// wide.
+///
+/// Without it the configuration and tool panels can be dragged past the point
+/// where the receive view is usable, which is the very thing collapsing them
+/// exists to avoid.  It makes [`LEFT_PANEL_MAX`] and [`RIGHT_PANEL_MAX`] *soft*
+/// maxima: they apply only when the window can spare the room.
+pub(crate) const CENTER_MIN: f32 = 320.0;
+
+/// Slack allowed for the separator lines egui draws between the panels.
+const SEPARATOR_SLACK: f32 = 4.0;
 
 /// Height of the send area.
 pub(crate) const SEND_AREA_DEFAULT: f32 = 196.0;
@@ -433,8 +545,8 @@ impl SplitterGrowth {
 /// Which setting a splitter writes back to.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SplitterTarget {
-    LeftWidth,
-    RightWidth,
+    ConfigWidth,
+    ToolWidth,
     SendHeight,
 }
 
@@ -449,11 +561,14 @@ pub(crate) struct PendingSplitter {
     pub growth: SplitterGrowth,
     pub boundary: f32,
     pub cross: egui::Rangef,
-    /// The panel's size before this frame, used as the drag origin.
+    /// The panel's size before this frame, used as the drag origin.  Zero when
+    /// the panel is collapsed, so one drag rule covers both directions.
     pub current_size: f32,
     pub min: f32,
     pub max: f32,
     pub target: SplitterTarget,
+    /// Whether the panel is currently collapsed to its edge.
+    pub collapsed: bool,
 }
 
 /// A draggable splitter, drawn and tracked by the app.
@@ -471,13 +586,25 @@ pub(crate) struct PendingSplitter {
 /// straight back into the settings.
 pub(crate) fn apply_splitters(app: &mut XcomApp, ui: &mut Ui) {
     for spec in std::mem::take(&mut app.pending_splitters) {
+        // A collapsed panel has no line to aim at, so its edge strip has to be
+        // easier to hit than the separator between two visible panels.
         const GRAB: f32 = 6.0;
-        let rect = spec.growth.band(spec.boundary, spec.cross, GRAB);
+        const COLLAPSED_GRAB: f32 = 16.0;
+        let grab = if spec.collapsed { COLLAPSED_GRAB } else { GRAB };
+        let rect = spec.growth.band(spec.boundary, spec.cross, grab);
         let response = ui.interact(
             rect,
             egui::Id::new(("splitter", spec.id)),
             egui::Sense::click_and_drag(),
         );
+        let response = if spec.collapsed {
+            response.on_hover_text(collapsed_hint(spec.target))
+        } else {
+            response
+        };
+        if spec.collapsed {
+            paint_collapsed_strip(ui, &spec, &response);
+        }
         if response.hovered() || response.dragged() {
             ui.ctx().set_cursor_icon(spec.growth.cursor());
         }
@@ -487,7 +614,11 @@ pub(crate) fn apply_splitters(app: &mut XcomApp, ui: &mut Ui) {
         // resizes, so an absolute reading is recomputed differently on every
         // frame of the gesture -- the panel overshoots and then creeps back.
         let state_id = egui::Id::new(("splitter-drag", spec.id));
-        let current = spec.current_size;
+        let current = if spec.collapsed {
+            0.0
+        } else {
+            spec.current_size
+        };
 
         // Record the origin when the button goes down, not when egui decides a
         // drag has begun: the threshold means those are different frames, and
@@ -499,17 +630,44 @@ pub(crate) fn apply_splitters(app: &mut XcomApp, ui: &mut Ui) {
             ui.data_mut(|data| data.insert_temp(state_id, (current, pointer)));
         }
 
+        // A click on a collapsed strip is the discoverable way back: the drag
+        // that closed the panel is not one the user can retrace by eye.
+        if spec.collapsed && response.clicked() {
+            set_panel_open(&mut app.settings, spec.target, true);
+            app.mark_settings_dirty();
+        }
+
         if response.dragged() {
             let origin = ui.data(|data| data.get_temp::<(f32, egui::Pos2)>(state_id));
             if let (Some((start_size, start_pointer)), Some(pointer)) =
                 (origin, response.interact_pointer_pos())
             {
-                let size = (start_size + spec.growth.growth_delta(pointer, start_pointer))
-                    .clamp(spec.min, spec.max);
+                // The raw size is what decides a collapse: clamping it to the
+                // panel's minimum first would make a collapse unreachable,
+                // since it can never come out below that minimum.
+                let size = start_size + spec.growth.growth_delta(pointer, start_pointer);
                 match spec.target {
-                    SplitterTarget::LeftWidth => app.settings.left_panel_width = size,
-                    SplitterTarget::RightWidth => app.settings.right_panel_width = size,
-                    SplitterTarget::SendHeight => app.settings.send_area_height = size,
+                    SplitterTarget::SendHeight => {
+                        app.settings.send_area_height = size.clamp(spec.min, spec.max)
+                    }
+                    target => {
+                        // Below a third of the panel's own minimum, the drag
+                        // stops pretending: it collapses to the window edge
+                        // instead of leaving an unusable sliver.  The
+                        // threshold is a fixed distance, and the same one on
+                        // both sides, so the gesture reads the same either way.
+                        let collapsed = size < spec.min / COLLAPSE_FRACTION;
+                        set_panel_open(&mut app.settings, target, !collapsed);
+                        if !collapsed {
+                            // The stored width is the one to restore to, so
+                            // collapsing must not overwrite it.
+                            set_panel_width(
+                                &mut app.settings,
+                                target,
+                                size.clamp(spec.min, spec.max),
+                            );
+                        }
+                    }
                 }
                 app.mark_settings_dirty();
             }
@@ -519,6 +677,94 @@ pub(crate) fn apply_splitters(app: &mut XcomApp, ui: &mut Ui) {
             ui.data_mut(|data| data.remove::<(f32, egui::Pos2)>(state_id));
         }
     }
+}
+
+/// Below this fraction of a panel's minimum width, a drag collapses it.
+const COLLAPSE_FRACTION: f32 = 3.0;
+
+/// Width of the strip drawn along the edge of a collapsed panel.
+const COLLAPSED_STRIP: f32 = 3.0;
+
+/// Show or collapse the panel a splitter controls.
+///
+/// Visibility *is* the collapsed state: the checkbox in the top bar and the
+/// drag are two ways to set the same thing, so they can never disagree.
+fn set_panel_open(settings: &mut crate::settings::Settings, target: SplitterTarget, open: bool) {
+    match target {
+        SplitterTarget::ConfigWidth => settings.show_config_panel = open,
+        SplitterTarget::ToolWidth => settings.show_tool_panel = open,
+        SplitterTarget::SendHeight => {}
+    }
+}
+
+/// Remember the width a panel should be restored to.
+fn set_panel_width(settings: &mut crate::settings::Settings, target: SplitterTarget, width: f32) {
+    match target {
+        SplitterTarget::ConfigWidth => settings.left_panel_width = width,
+        SplitterTarget::ToolWidth => settings.right_panel_width = width,
+        SplitterTarget::SendHeight => settings.send_area_height = width,
+    }
+}
+
+/// Hover text for the strip of a collapsed panel.
+fn collapsed_hint(target: SplitterTarget) -> &'static str {
+    match target {
+        SplitterTarget::ConfigWidth => tr("展开配置面板"),
+        SplitterTarget::ToolWidth => tr("展开工具面板"),
+        SplitterTarget::SendHeight => "",
+    }
+}
+
+/// Draw the edge strip of a collapsed panel: a hairline that is always there,
+/// and a chevron once the pointer reaches it.
+fn paint_collapsed_strip(ui: &Ui, spec: &PendingSplitter, response: &egui::Response) {
+    let (rect, chevron_center, points_right) = match spec.growth {
+        SplitterGrowth::Rightward => (
+            egui::Rect::from_x_y_ranges(
+                spec.boundary..=(spec.boundary + COLLAPSED_STRIP),
+                spec.cross,
+            ),
+            egui::pos2(spec.boundary + 12.0, spec.cross.center()),
+            true,
+        ),
+        SplitterGrowth::Leftward => (
+            egui::Rect::from_x_y_ranges(
+                (spec.boundary - COLLAPSED_STRIP)..=spec.boundary,
+                spec.cross,
+            ),
+            egui::pos2(spec.boundary - 12.0, spec.cross.center()),
+            false,
+        ),
+        // The send area cannot collapse, so it has no strip.
+        SplitterGrowth::Upward => return,
+    };
+
+    let visuals = ui.visuals();
+    let active = response.hovered() || response.dragged();
+    let strip = if active {
+        visuals.selection.bg_fill
+    } else {
+        visuals.widgets.noninteractive.bg_stroke.color
+    };
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::ZERO, strip);
+
+    if active {
+        // Painted rather than written: the UI falls back to a CJK face for
+        // symbols, and a face without the glyph renders tofu.
+        paint_chevron(ui, chevron_center, points_right, visuals.selection.bg_fill);
+    }
+}
+
+/// Paint a small `›` / `‹` out of two line segments.
+fn paint_chevron(ui: &Ui, center: egui::Pos2, points_right: bool, color: egui::Color32) {
+    let tip = if points_right { 3.0 } else { -3.0 };
+    let half = 4.5;
+    let stroke = egui::Stroke::new(1.8, color);
+    let elbow = egui::pos2(center.x + tip, center.y);
+    let painter = ui.painter();
+    painter.line_segment([egui::pos2(center.x - tip, center.y - half), elbow], stroke);
+    painter.line_segment([elbow, egui::pos2(center.x - tip, center.y + half)], stroke);
 }
 
 /// Colour used for a status message of the given severity.
@@ -657,8 +903,22 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
             probe::push_top_bar_rect("lang_combo", lang_combo.response.rect);
 
             ui.separator();
-            let side_panel = ui.checkbox(&mut app.show_side_panel, tr("显示工具面板"));
-            probe::push_top_bar_rect("side_panel", side_panel.rect);
+            let mut show_config = app.settings.show_config_panel;
+            let config_panel = ui.checkbox(&mut show_config, tr("显示配置面板"));
+            probe::push_top_bar_rect("config_panel", config_panel.rect);
+            if config_panel.changed() {
+                app.settings.show_config_panel = show_config;
+                app.mark_settings_dirty();
+            }
+
+            ui.separator();
+            let mut show_tool = app.settings.show_tool_panel;
+            let tool_panel = ui.checkbox(&mut show_tool, tr("显示工具面板"));
+            probe::push_top_bar_rect("tool_panel", tool_panel.rect);
+            if tool_panel.changed() {
+                app.settings.show_tool_panel = show_tool;
+                app.mark_settings_dirty();
+            }
 
             ui.separator();
             let mut log_colors = app.settings.log_colors;
@@ -708,7 +968,25 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
-    let width = app.settings.left_panel_width;
+    // Measured before the panel is added: this is the whole width the three
+    // columns have to share, which is what caps the panel.
+    let available = ui.available_rect_before_wrap();
+    let max = left_panel_max(app, available.width());
+
+    if !app.settings.show_config_panel {
+        probe::set_left_content_width(0.0);
+        app.pending_splitters.push(collapsed_splitter(
+            "config_panel",
+            SplitterGrowth::Rightward,
+            SplitterTarget::ConfigWidth,
+            available,
+            LEFT_PANEL_MIN,
+            max,
+        ));
+        return;
+    }
+
+    let width = app.settings.left_panel_width.clamp(LEFT_PANEL_MIN, max);
     let panel = egui::Panel::left("config_panel")
         .resizable(false)
         .exact_size(width)
@@ -737,11 +1015,57 @@ pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
         growth: SplitterGrowth::Rightward,
         boundary: outer.right(),
         cross: outer.y_range(),
-        current_size: app.settings.left_panel_width,
+        current_size: width,
         min: LEFT_PANEL_MIN,
-        max: LEFT_PANEL_MAX,
-        target: SplitterTarget::LeftWidth,
+        max,
+        target: SplitterTarget::ConfigWidth,
+        collapsed: false,
     });
+}
+
+/// The widest the configuration panel may be dragged to.
+///
+/// The centre column keeps [`CENTER_MIN`], so this maximum shrinks as the tool
+/// panel grows and as the window narrows.  The floor at the panel's own minimum
+/// keeps the clamp well-formed on a window too narrow to honour either — there
+/// the centre simply gives way, which is unavoidable rather than a choice.
+fn left_panel_max(app: &XcomApp, available: f32) -> f32 {
+    let tool = if app.settings.show_tool_panel {
+        app.settings.right_panel_width
+    } else {
+        0.0
+    };
+    (available - CENTER_MIN - tool - SEPARATOR_SLACK).max(LEFT_PANEL_MIN)
+}
+
+/// The splitter of a panel that is collapsed: a strip along the window edge,
+/// with no panel behind it.
+///
+/// The splitter is registered even then, because a collapsed panel has to stay
+/// draggable — otherwise the only way back would be the top bar.
+fn collapsed_splitter(
+    id: &'static str,
+    growth: SplitterGrowth,
+    target: SplitterTarget,
+    area: egui::Rect,
+    min: f32,
+    max: f32,
+) -> PendingSplitter {
+    let boundary = match growth {
+        SplitterGrowth::Rightward => area.left(),
+        _ => area.right(),
+    };
+    PendingSplitter {
+        id,
+        growth,
+        boundary,
+        cross: area.y_range(),
+        current_size: 0.0,
+        min,
+        max,
+        target,
+        collapsed: true,
+    }
 }
 
 /// Paint the "custom baud rate" icon: a tune / sliders glyph.
@@ -1052,24 +1376,14 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
             ui.set_min_width(268.0);
 
             // ── compact header ──────────────────────────────────────────
-            let header = ui.horizontal(|ui| {
-                let icon_side = ui.spacing().interact_size.y.min(18.0);
-                let (icon_rect, _) =
-                    ui.allocate_exact_size(egui::vec2(icon_side, icon_side), egui::Sense::hover());
-                paint_tune_icon(ui, icon_rect, ui.visuals().text_color());
-                let title = ui.label(RichText::new(tr("自定义波特率")).strong());
-                probe::set_custom_baud_title_rect(title.rect);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let close = ui
-                        .add_sized([22.0, 18.0], egui::Button::new("×").frame(false))
-                        .on_hover_text(tr("关闭"));
-                    probe::set_custom_baud_close_rect(close.rect);
-                    if close.clicked() {
-                        close_requested = true;
-                    }
-                });
-            });
-            probe::set_custom_baud_header_rect(header.response.rect);
+            let paint_icon = |ui: &Ui, rect, color| paint_tune_icon(ui, rect, color);
+            let header = dialog::header(ui, tr("自定义波特率"), Some(&paint_icon));
+            probe::set_custom_baud_header_rect(header.rect);
+            probe::set_custom_baud_title_rect(header.title_rect);
+            probe::set_custom_baud_close_rect(header.close_rect);
+            if header.close_clicked {
+                close_requested = true;
+            }
             ui.separator();
 
             // ── add a rate ──────────────────────────────────────────────
@@ -1470,6 +1784,9 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
             min: SEND_AREA_MIN,
             max: SEND_AREA_MAX,
             target: SplitterTarget::SendHeight,
+            // The send area shrinks to its minimum rather than collapsing:
+            // there is nothing to fold it into.
+            collapsed: false,
         });
 
         log_toolbar(app, ui);
@@ -1797,8 +2114,25 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
 // Right: multi-send and protocol pages
 // ---------------------------------------------------------------------------
 
-pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
-    let width = app.settings.right_panel_width;
+pub(crate) fn tool_panel(app: &mut XcomApp, ui: &mut Ui) {
+    // Whatever the configuration panel left behind: the tool panel is laid out
+    // second, so this is the space that is actually still free.
+    let available = ui.available_rect_before_wrap();
+    let max = (available.width() - CENTER_MIN - SEPARATOR_SLACK).max(RIGHT_PANEL_MIN);
+
+    if !app.settings.show_tool_panel {
+        app.pending_splitters.push(collapsed_splitter(
+            "tool_panel",
+            SplitterGrowth::Leftward,
+            SplitterTarget::ToolWidth,
+            available,
+            RIGHT_PANEL_MIN,
+            max,
+        ));
+        return;
+    }
+
+    let width = app.settings.right_panel_width.clamp(RIGHT_PANEL_MIN, max);
     let panel = egui::Panel::right("tool_panel")
         .resizable(false)
         .exact_size(width)
@@ -1830,10 +2164,11 @@ pub(crate) fn side_panel(app: &mut XcomApp, ui: &mut Ui) {
         growth: SplitterGrowth::Leftward,
         boundary: outer.left(),
         cross: outer.y_range(),
-        current_size: app.settings.right_panel_width,
+        current_size: width,
         min: RIGHT_PANEL_MIN,
-        max: RIGHT_PANEL_MAX,
-        target: SplitterTarget::RightWidth,
+        max,
+        target: SplitterTarget::ToolWidth,
+        collapsed: false,
     });
 }
 
@@ -1851,7 +2186,23 @@ fn multi_column_widths(available: f32, spacing: f32) -> (f32, f32) {
     (flexible * 0.62, flexible * 0.38)
 }
 
+/// Colour of the "currently sending" marker in the multi-send table.
+///
+/// The theme's selection colour, which is the one colour egui defines for both
+/// the dark and the light theme that already means "this is the one you are on".
+fn active_entry_color(ui: &Ui) -> egui::Color32 {
+    ui.visuals().selection.bg_fill
+}
+
+/// A translucent wash of [`active_entry_color`], for a whole row's background.
+fn active_entry_wash(ui: &Ui) -> egui::Color32 {
+    let colour = active_entry_color(ui);
+    egui::Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 60)
+}
+
 fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
+    probe::begin_multi_panel();
+
     // ---- paging -----------------------------------------------------------
     ui.horizontal_wrapped(|ui| {
         if ui.button(tr("首页")).clicked() {
@@ -1926,7 +2277,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
             if loop_enabled {
                 app.start_multi_run(page, true, std::time::Instant::now());
             } else {
-                app.stop_multi_run(tr("已停止循环发送"));
+                app.stop_multi_run(Level::Info, tr("已停止循环发送"));
             }
             app.mark_settings_dirty();
         }
@@ -1944,6 +2295,21 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                 app.settings.multi.loop_period_ms = period;
                 app.mark_settings_dirty();
             }
+        }
+
+        // Which entry the run is on, next to the controls that started it.
+        // Deliberately not part of the table: it stays visible while the table
+        // is scrolled, and while the user has paged away from the run.
+        if let Some(sent) = app.multi_run_sent() {
+            ui.separator();
+            let text = crate::i18n::tr3(
+                "正在发送 #{} ({} / {})",
+                sent.index,
+                sent.ordinal,
+                sent.round_len,
+            );
+            probe::set_multi_status_text(&text);
+            ui.label(RichText::new(text).strong().color(active_entry_color(ui)));
         }
     });
 
@@ -2014,6 +2380,13 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
 
     // ---- entries ----------------------------------------------------------
     let page = app.settings.multi.page;
+    // Which row to mark.  A run is tied to the page it started on, so a
+    // highlight on any other page's row would point at a different entry
+    // entirely.
+    let active_index = match app.multi_run_page() {
+        Some(running) if running == page => app.multi_run_sent().map(|sent| sent.index),
+        _ => None,
+    };
     let mut send_request: Option<usize> = None;
     let mut dirty = false;
 
@@ -2086,17 +2459,38 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                 let Some(entry) = app.settings.multi.entry_mut(page, index) else {
                     continue;
                 };
+                let active = active_index == Some(index);
                 let stripe = index % 2 == 1;
+                let mut row_rect = egui::Rect::NOTHING;
                 ui.horizontal(|ui| {
+                    let row = egui::Rect::from_min_size(
+                        ui.cursor().min,
+                        egui::vec2(ui.available_width(), row_height),
+                    );
+                    row_rect = row;
                     if stripe {
-                        let row = egui::Rect::from_min_size(
-                            ui.cursor().min,
-                            egui::vec2(ui.available_width(), row_height),
-                        );
                         ui.painter().rect_filled(
                             row,
                             egui::CornerRadius::ZERO,
                             ui.visuals().faint_bg_color,
+                        );
+                    }
+                    if active {
+                        // Painted over the zebra stripe, so the marker reads the
+                        // same on both: a wash for the row, and a solid bar on
+                        // its leading edge.
+                        ui.painter().rect_filled(
+                            row,
+                            egui::CornerRadius::ZERO,
+                            active_entry_wash(ui),
+                        );
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(
+                                row.min,
+                                egui::pos2(row.min.x + 3.0, row.max.y),
+                            ),
+                            egui::CornerRadius::ZERO,
+                            active_entry_color(ui),
                         );
                     }
                     let mut row_changed = false;
@@ -2156,6 +2550,9 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         dirty = true;
                     }
                 });
+                if active {
+                    probe::set_multi_active_row_rect(row_rect);
+                }
             }
         });
 
@@ -2490,11 +2887,27 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
         return;
     }
     let mut open = true;
-    egui::Window::new(tr("关于 XCOM"))
+    let mut close_requested = false;
+    // The title bar is egui's own by default, and it hard-codes its close
+    // button on the right with no way to mirror it.  Drawing the header here is
+    // what lets the button follow the desktop's layout; with no title bar of
+    // its own, egui keeps the window draggable from anywhere.
+    let window = egui::Window::new(tr("关于 XCOM"))
+        .id(egui::Id::new("about_dialog"))
+        .title_bar(false)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
+            let header = dialog::header(ui, tr("关于 XCOM"), None);
+            probe::set_about_header_rect(header.rect);
+            probe::set_about_title_rect(header.title_rect);
+            probe::set_about_close_rect(header.close_rect);
+            if header.close_clicked {
+                close_requested = true;
+            }
+            ui.separator();
+
             ui.label(RichText::new(tr("XCOM 串口调试助手")).strong().size(16.0));
             ui.label(crate::i18n::tr1("版本 {}", env!("CARGO_PKG_VERSION")));
             ui.separator();
@@ -2519,7 +2932,10 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
                     .color(ui.visuals().weak_text_color()),
             );
         });
-    if !open {
+    if let Some(window) = window {
+        probe::set_about_window_rect(window.response.rect);
+    }
+    if !open || close_requested {
         app.show_about = false;
     }
 }

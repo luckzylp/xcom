@@ -173,8 +173,16 @@ pub struct Settings {
     /// Width of the serial-settings panel, in points.  Owned by the app rather
     /// than by egui's panel state: see `ui::panels::splitter`.
     pub left_panel_width: f32,
+    /// Whether the configuration panel is shown.
+    ///
+    /// Collapsing it by dragging its splitter to the window edge is the same
+    /// state, not a separate one: `left_panel_width` is kept as the width to
+    /// restore when it is expanded again.
+    pub show_config_panel: bool,
     /// Width of the multi-send / protocol panel.
     pub right_panel_width: f32,
+    /// Whether the tool panel is shown; see `show_config_panel`.
+    pub show_tool_panel: bool,
     /// Height of the send area below the log.
     pub send_area_height: f32,
     /// Window size, restored on startup.
@@ -204,7 +212,9 @@ impl Default for Settings {
             max_rows: 200_000,
             max_raw: 32 * 1024 * 1024,
             left_panel_width: crate::ui::panels::LEFT_PANEL_DEFAULT,
+            show_config_panel: true,
             right_panel_width: crate::ui::panels::RIGHT_PANEL_DEFAULT,
+            show_tool_panel: true,
             send_area_height: crate::ui::panels::SEND_AREA_DEFAULT,
             window_size: None,
         }
@@ -526,6 +536,33 @@ mod tests {
         assert_eq!(loaded.theme, ThemeMode::Light);
         assert_eq!(loaded.send.buffer, "hello");
         assert_eq!(loaded.protocol.address, 0x42);
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn a_collapsed_panel_survives_a_restart() {
+        let temp = std::env::temp_dir().join(format!("xcom-panels-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        let path = temp.join("settings.json");
+
+        let settings = Settings {
+            show_config_panel: false,
+            left_panel_width: 331.0,
+            ..Default::default()
+        };
+        settings.save_to(&path).expect("save should succeed");
+
+        let loaded = Settings::load_from(&path);
+        assert!(
+            !loaded.show_config_panel,
+            "the collapsed panel must stay collapsed"
+        );
+        assert!(loaded.show_tool_panel, "and the other panel is untouched");
+        assert_eq!(
+            loaded.left_panel_width, 331.0,
+            "with the width it is to be restored to"
+        );
 
         let _ = std::fs::remove_dir_all(&temp);
     }

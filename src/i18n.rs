@@ -246,7 +246,10 @@ static EN: &[(&str, &str)] = &[
     // -- top bar ------------------------------------------------------------
     ("主题",                 "Theme"),
     ("语言",                 "Language"),
+    ("显示配置面板",          "Show configuration panel"),
     ("显示工具面板",          "Show tool panel"),
+    ("展开配置面板",          "Expand configuration panel"),
+    ("展开工具面板",          "Expand tool panel"),
     ("自定义接收区配色",       "Custom receive colours"),
     ("字色",                 "Text"),
     ("底色",                 "Background"),
@@ -515,6 +518,7 @@ static EN: &[(&str, &str)] = &[
     ("发送已勾选", "Send checked"),
     ("按顺序发送本页所有已勾选且非空的条目",
      "Send every checked, non-empty entry on this page, in order"),
+    ("正在发送 #{} ({} / {})", "Sending #{} ({} / {})"),
     ("当前页没有已勾选的发送条目", "No checked entries on this page"),
     ("已发送 {} 条已勾选条目", "Sent {} checked entries"),
 

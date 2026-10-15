@@ -83,12 +83,30 @@ pub(crate) struct MultiRun {
     page: usize,
     queue: Vec<usize>,
     position: usize,
+    /// The entry sent most recently; see [`SentEntry`].
+    last_sent: Option<SentEntry>,
     /// When the next entry may go out.
     next_at: Instant,
     /// Whether to start another round after this one.
     looping: bool,
     /// Delay between rounds, from the settings.
     round_gap: Duration,
+}
+
+/// The entry a running multi-send sent most recently.
+///
+/// Recorded at send time rather than derived from the queue position: the run
+/// advances `position` as part of sending, so by the time the panel is drawn it
+/// already points at the entry that is *next*, and the panel has to mark the
+/// one that just went out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SentEntry {
+    /// 条目编号 — the `#` the panel shows, i.e. the row's index on its page.
+    pub index: usize,
+    /// Which entry of the round this was, counting from one.
+    pub ordinal: usize,
+    /// How many entries the round has.
+    pub round_len: usize,
 }
 
 /// The application.
@@ -133,7 +151,6 @@ pub struct XcomApp {
     pub(crate) protocol_progress: Option<(usize, usize)>,
 
     pub(crate) side_tab: SideTab,
-    pub(crate) show_side_panel: bool,
     pub(crate) show_about: bool,
 
     /// Handshake line states, sampled by a background thread.
@@ -220,7 +237,6 @@ impl XcomApp {
             protocol_log: Vec::new(),
             protocol_progress: None,
             side_tab: SideTab::Multi,
-            show_side_panel: true,
             show_about: false,
             signals: Signals::default(),
             applied_theme: None,
@@ -698,7 +714,7 @@ impl XcomApp {
     }
 
     fn protocol_panel_visible(&self) -> bool {
-        self.show_side_panel && self.side_tab == SideTab::Protocol
+        self.settings.show_tool_panel && self.side_tab == SideTab::Protocol
     }
 
     /// Release buffered bytes after unpausing.
@@ -906,6 +922,7 @@ impl XcomApp {
             page,
             queue,
             position: 0,
+            last_sent: None,
             next_at: now,
             looping,
             round_gap: Duration::from_millis(self.settings.multi.loop_period_ms.max(1)),
@@ -913,14 +930,32 @@ impl XcomApp {
     }
 
     /// Abandon any sequence in progress.
-    pub(crate) fn stop_multi_run(&mut self, reason: &str) {
+    ///
+    /// The loop switch is a run state rather than a preference, so stopping the
+    /// run clears it too — otherwise the box stays ticked after the port is
+    /// closed and reads as "still looping" with nothing running.
+    pub(crate) fn stop_multi_run(&mut self, level: Level, reason: &str) {
         if self.multi_run.take().is_some() {
-            self.info(reason.to_owned());
+            self.settings.multi.loop_enabled = false;
+            self.message(level, reason.to_owned());
         }
     }
 
     pub(crate) fn multi_run_active(&self) -> bool {
         self.multi_run.is_some()
+    }
+
+    /// The page the running multi-send is working through, if any.
+    ///
+    /// The panel marks a row only on this page: paging away does not stop the
+    /// run, and a highlight drawn on some other page's row would be a lie.
+    pub(crate) fn multi_run_page(&self) -> Option<usize> {
+        self.multi_run.as_ref().map(|run| run.page)
+    }
+
+    /// The entry the running multi-send sent most recently, if any.
+    pub(crate) fn multi_run_sent(&self) -> Option<SentEntry> {
+        self.multi_run.as_ref().and_then(|run| run.last_sent)
     }
 
     /// Advance the running sequence.  Sends at most one entry per call.
@@ -929,8 +964,7 @@ impl XcomApp {
             return;
         };
         if !self.link.is_open() {
-            self.multi_run = None;
-            self.warn(tr("串口已关闭，多条发送已停止"));
+            self.stop_multi_run(Level::Warning, tr("串口已关闭，多条发送已停止"));
             return;
         }
         if now < run.next_at {
@@ -946,7 +980,7 @@ impl XcomApp {
         let looping = run.looping;
         let round_gap = run.round_gap;
 
-        self.send_multi_entry(page, index, true);
+        let sent = self.send_multi_entry(page, index, true);
         let delay = Duration::from_millis(self.settings.multi.delay_after(page, index));
 
         let mut stop_looping = false;
@@ -960,6 +994,13 @@ impl XcomApp {
         }
 
         if let Some(run) = self.multi_run.as_mut() {
+            if sent {
+                run.last_sent = Some(SentEntry {
+                    index,
+                    ordinal: run.position + 1,
+                    round_len: queue_len,
+                });
+            }
             if end_of_round {
                 run.position = 0;
                 run.next_at = now + if looping { round_gap } else { Duration::ZERO };
@@ -1117,9 +1158,7 @@ impl XcomApp {
         panels::top_bar(self, ui);
         panels::status_bar(self, ui);
         panels::left_panel(self, ui);
-        if self.show_side_panel {
-            panels::side_panel(self, ui);
-        }
+        panels::tool_panel(self, ui);
         panels::center_panel(self, ui);
         panels::apply_splitters(self, ui);
         panels::about_window(self, ctx);
@@ -1234,9 +1273,7 @@ mod layout_tests {
             panels::top_bar(app, ui);
             panels::status_bar(app, ui);
             panels::left_panel(app, ui);
-            if app.show_side_panel {
-                panels::side_panel(app, ui);
-            }
+            panels::tool_panel(app, ui);
             slot.set(ui.available_rect_before_wrap());
             panels::center_panel(app, ui);
             // Mirrors `draw`: the splitters are registered after every panel.
@@ -1532,6 +1569,64 @@ mod layout_tests {
         );
     }
 
+    /// Both dialogs put their close button where the desktop puts it.
+    ///
+    /// egui's own title bar hard-codes the button on the right, so each dialog
+    /// draws its own header; this is the test that they agree — with the
+    /// desktop *and* with each other.
+    #[test]
+    fn every_dialog_close_button_follows_the_desktop_layout() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.show_about = true;
+
+        full_frame(&ctx, &mut app, input());
+        let manage = panels::probe::custom_baud_button_rect();
+        click(&ctx, &mut app, manage.center());
+        render(&mut app, &ctx, "dialogs");
+
+        let on_the_left = crate::ui::dialog::close_on_left();
+        for (name, window, header, title, close) in [
+            (
+                "custom baud",
+                panels::probe::custom_baud_window_rect(),
+                panels::probe::custom_baud_header_rect(),
+                panels::probe::custom_baud_title_rect(),
+                panels::probe::custom_baud_close_rect(),
+            ),
+            (
+                "about",
+                panels::probe::about_window_rect(),
+                panels::probe::about_header_rect(),
+                panels::probe::about_title_rect(),
+                panels::probe::about_close_rect(),
+            ),
+        ] {
+            assert!(window.width() > 0.0, "{name}: the dialog was not laid out");
+            assert!(header.height() > 0.0, "{name}: no header was drawn");
+            assert!(
+                close.width() > 0.0,
+                "{name}: the close button was not laid out"
+            );
+            // Title and close button share the header row, so moving the button
+            // moved nothing else out of the bar.
+            assert!(
+                header.contains_rect(title) && header.contains_rect(close),
+                "{name}: the header must hold both the title {title:?} and the \
+                 close button {close:?}, but is {header:?}"
+            );
+            assert_eq!(
+                close.center().x < window.center().x,
+                on_the_left,
+                "{name}: the close button is on the wrong side \
+                 (the desktop puts it on the {}), close {close:?} window {window:?}",
+                if on_the_left { "left" } else { "right" },
+            );
+        }
+    }
+
     #[test]
     fn software_version_is_v0_4_1() {
         assert_eq!(env!("CARGO_PKG_VERSION"), "0.4.1");
@@ -1659,7 +1754,8 @@ mod layout_tests {
             "theme_combo",
             "lang_label",
             "lang_combo",
-            "side_panel",
+            "config_panel",
+            "tool_panel",
             "log_colors",
             "reset",
         ] {
@@ -1679,7 +1775,7 @@ mod layout_tests {
     fn send_toolbar_wraps_its_actions_to_a_left_aligned_row() {
         let ctx = egui::Context::default();
         let mut app = seeded();
-        app.show_side_panel = true;
+        app.settings.show_tool_panel = true;
         app.settings.send.append_newline = false;
 
         for _ in 0..2 {
@@ -1812,7 +1908,7 @@ mod layout_tests {
     fn send_toolbar_does_not_overlap_at_minimum_window_width() {
         let ctx = egui::Context::default();
         let mut app = seeded();
-        app.show_side_panel = true;
+        app.settings.show_tool_panel = true;
         app.settings.send.append_newline = false;
 
         for _ in 0..2 {
@@ -1918,7 +2014,7 @@ mod layout_tests {
     fn dragging_the_settings_separator_widens_the_panel() {
         let ctx = egui::Context::default();
         let mut app = XcomApp::headless(crate::settings::Settings::default());
-        app.show_side_panel = false;
+        app.settings.show_tool_panel = false;
 
         let before_rect = full_frame(&ctx, &mut app, input());
         let before_content = panels::probe::left_content_width();
@@ -1973,7 +2069,7 @@ mod layout_tests {
         // the receive area never grew.
         let ctx = egui::Context::default();
         let mut app = XcomApp::headless(crate::settings::Settings::default());
-        app.show_side_panel = false;
+        app.settings.show_tool_panel = false;
 
         let before = full_frame(&ctx, &mut app, input());
         let grab = egui::pos2(before.min.x, before.center().y);
@@ -2104,28 +2200,131 @@ mod layout_tests {
     }
 
     #[test]
-    fn the_tool_panel_splitter_stays_within_its_range() {
+    fn the_tool_panel_stops_at_the_centre_columns_floor() {
+        // The panel maxima are *soft*: the receive view keeps CENTER_MIN, so a
+        // drag far past the maximum stops early instead of squeezing it away.
         let ctx = egui::Context::default();
         let mut app = XcomApp::headless(crate::settings::Settings::default());
         let rect = full_frame(&ctx, &mut app, input());
 
-        // Drag far past the maximum, then far past the minimum.
+        // Drag left, much further than the panel can possibly grow.
         drag(
             &ctx,
             &mut app,
             egui::pos2(rect.max.x, rect.center().y),
-            egui::pos2(rect.min.x, rect.center().y),
+            egui::pos2(0.0, rect.center().y),
         );
-        assert_eq!(app.settings.right_panel_width, panels::RIGHT_PANEL_MAX);
+        assert!(
+            app.settings.right_panel_width <= panels::RIGHT_PANEL_MAX,
+            "the hard maximum still applies, got {}",
+            app.settings.right_panel_width
+        );
+
+        let centre = full_frame(&ctx, &mut app, input());
+        assert!(
+            centre.width() >= panels::CENTER_MIN - 8.0,
+            "the centre column was squeezed to {:.1}px, below its {}px floor",
+            centre.width(),
+            panels::CENTER_MIN
+        );
+    }
+
+    /// Drag a panel's splitter far past the window edge and check it folded
+    /// away -- and that the width to come back to was kept.
+    #[test]
+    fn dragging_a_panel_to_the_window_edge_collapses_it() {
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+
+        let before = full_frame(&ctx, &mut app, input());
+        let grab = egui::pos2(before.min.x, before.center().y);
+        drag(&ctx, &mut app, grab, egui::pos2(grab.x - 600.0, grab.y));
+        assert!(
+            !app.settings.show_config_panel,
+            "dragging the configuration panel off the edge did not collapse it"
+        );
+        assert_eq!(
+            app.settings.left_panel_width,
+            panels::LEFT_PANEL_DEFAULT,
+            "collapsing must keep the width to restore"
+        );
+        let after = full_frame(&ctx, &mut app, input());
+        assert!(
+            after.min.x <= 1.0,
+            "the receive view did not take the freed space: starts at {:.1}",
+            after.min.x
+        );
+
+        // Same gesture, mirrored, for the tool panel.
+        let before = full_frame(&ctx, &mut app, input());
+        let grab = egui::pos2(before.max.x, before.center().y);
+        drag(&ctx, &mut app, grab, egui::pos2(grab.x + 600.0, grab.y));
+        assert!(
+            !app.settings.show_tool_panel,
+            "dragging the tool panel off the edge did not collapse it"
+        );
+        assert_eq!(
+            app.settings.right_panel_width,
+            panels::RIGHT_PANEL_DEFAULT,
+            "collapsing must keep the width to restore"
+        );
+        assert_eq!(
+            full_frame(&ctx, &mut app, input()).max.x,
+            1280.0,
+            "the receive view did not reach the window's right edge"
+        );
+    }
+
+    #[test]
+    fn clicking_a_collapsed_edge_strip_reopens_the_panel() {
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_config_panel = false;
+        app.settings.show_tool_panel = false;
+
+        let rect = full_frame(&ctx, &mut app, input());
+
+        // The strip is wide enough to hit but does not eat the receive view.
+        click(&ctx, &mut app, egui::pos2(6.0, rect.center().y));
+        assert!(
+            app.settings.show_config_panel,
+            "clicking the configuration panel's strip did not reopen it"
+        );
+        assert!(
+            !app.settings.show_tool_panel,
+            "the other panel must be left alone"
+        );
+
+        let rect = full_frame(&ctx, &mut app, input());
+        click(&ctx, &mut app, egui::pos2(1274.0, rect.center().y));
+        assert!(
+            app.settings.show_tool_panel,
+            "clicking the tool panel's strip did not reopen it"
+        );
+    }
+
+    #[test]
+    fn a_collapsed_panel_can_be_dragged_back_out() {
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_config_panel = false;
 
         let rect = full_frame(&ctx, &mut app, input());
         drag(
             &ctx,
             &mut app,
-            egui::pos2(rect.max.x, rect.center().y),
-            egui::pos2(rect.max.x + 4000.0, rect.center().y),
+            egui::pos2(0.0, rect.center().y),
+            egui::pos2(400.0, rect.center().y),
         );
-        assert_eq!(app.settings.right_panel_width, panels::RIGHT_PANEL_MIN);
+        assert!(
+            app.settings.show_config_panel,
+            "dragging away from the edge did not reopen the panel"
+        );
+        assert!(
+            app.settings.left_panel_width > panels::LEFT_PANEL_MIN,
+            "the drag did not set a new width: {}",
+            app.settings.left_panel_width
+        );
     }
 
     /// A pseudo-terminal pair, so the timer can be tested against a real port.
@@ -2472,7 +2671,7 @@ mod layout_tests {
     fn renders_with_the_side_panel_hidden() {
         let ctx = egui::Context::default();
         let mut app = seeded();
-        app.show_side_panel = false;
+        app.settings.show_tool_panel = false;
         render(&mut app, &ctx, "side panel hidden");
     }
 
@@ -2622,6 +2821,138 @@ mod layout_tests {
         assert!(app.multi_run_active());
         app.pump_multi(&ctx, Instant::now());
         assert!(!app.multi_run_active(), "closed port stops the sequence");
+    }
+
+    /// A closed port is also what the user sees after choosing 关闭串口: the
+    /// run stops, and with it the loop switch and the panel's marker.  All
+    /// three are one state, so none of them can be left claiming otherwise.
+    #[test]
+    fn a_closed_port_clears_the_loop_switch_and_the_marker() {
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        arm(&mut app, &[("A", 0), ("B", 0)]);
+        app.settings.multi.loop_enabled = true;
+        app.start_multi_run(0, true, Instant::now());
+        assert!(app.multi_run_active());
+
+        app.pump_multi(&ctx, Instant::now());
+
+        assert!(!app.multi_run_active(), "the run stopped");
+        assert!(
+            !app.settings.multi.loop_enabled,
+            "the loop switch must not stay ticked"
+        );
+        assert!(
+            app.multi_run_sent().is_none(),
+            "no entry may stay marked as being sent"
+        );
+        assert_eq!(
+            app.latest_message().map(|m| m.level),
+            Some(Level::Warning),
+            "and the stop is reported"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_multi_send_panel_marks_the_entry_the_run_is_on() {
+        let Some(pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.serial.port = pty.slave_path.clone();
+        if let Err(e) = app.link.open(&app.settings.serial) {
+            eprintln!("skipping: cannot open serial port: {e}");
+            return;
+        }
+        arm(&mut app, &[("A", 0), ("B", 0), ("C", 0)]);
+        full_frame(&ctx, &mut app, input());
+        assert_eq!(
+            panels::probe::multi_active_row_rect(),
+            egui::Rect::NOTHING,
+            "nothing is marked before a run starts"
+        );
+
+        let start = Instant::now();
+        app.start_multi_run(0, false, start);
+        app.pump_multi(&ctx, start);
+        full_frame(&ctx, &mut app, input());
+        let first_row = panels::probe::multi_active_row_rect();
+        let first_text = panels::probe::multi_status_text();
+        assert_ne!(first_row, egui::Rect::NOTHING, "the row was not marked");
+        assert!(
+            first_text.contains("#0") && first_text.contains("1 / 3"),
+            "the status line must name the entry and its place in the round, got {first_text:?}"
+        );
+
+        app.pump_multi(&ctx, start);
+        full_frame(&ctx, &mut app, input());
+        let second_row = panels::probe::multi_active_row_rect();
+        let second_text = panels::probe::multi_status_text();
+        assert!(
+            second_text.contains("#1") && second_text.contains("2 / 3"),
+            "the status line follows the run, got {second_text:?}"
+        );
+        assert!(
+            second_row.min.y > first_row.min.y,
+            "the marker must follow the row: {first_row:?} then {second_row:?}"
+        );
+
+        // The last entry ends the run, and the marker goes with it.
+        app.pump_multi(&ctx, start);
+        assert!(!app.multi_run_active());
+        full_frame(&ctx, &mut app, input());
+        assert_eq!(
+            panels::probe::multi_active_row_rect(),
+            egui::Rect::NOTHING,
+            "the marker must not outlive the run"
+        );
+        assert!(
+            panels::probe::multi_status_text().is_empty(),
+            "nor must the status line"
+        );
+    }
+
+    /// A run is tied to its page, so the marker only ever appears there.
+    #[test]
+    #[cfg(unix)]
+    fn the_marker_stays_on_the_runs_own_page() {
+        let Some(pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.serial.port = pty.slave_path.clone();
+        if let Err(e) = app.link.open(&app.settings.serial) {
+            eprintln!("skipping: cannot open serial port: {e}");
+            return;
+        }
+        arm(&mut app, &[("A", 1000), ("B", 1000)]);
+        app.settings.multi.page = 0;
+
+        let start = Instant::now();
+        app.start_multi_run(0, false, start);
+        app.pump_multi(&ctx, start);
+        full_frame(&ctx, &mut app, input());
+        assert_ne!(panels::probe::multi_active_row_rect(), egui::Rect::NOTHING);
+
+        // Paging away does not stop the run, but the mark does not follow the
+        // user onto a page the run is not working through.
+        app.settings.multi.page = 1;
+        full_frame(&ctx, &mut app, input());
+        assert_eq!(
+            panels::probe::multi_active_row_rect(),
+            egui::Rect::NOTHING,
+            "another page's row must not be marked"
+        );
+        assert!(
+            panels::probe::multi_status_text().contains('1'),
+            "the status line is about the run, not the page"
+        );
+        assert!(app.multi_run_active(), "paging must not stop the run");
     }
 
     #[test]

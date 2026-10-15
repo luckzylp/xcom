@@ -52,6 +52,11 @@ pub struct MultiSend {
     /// Currently displayed page.
     pub page: usize,
     /// Loop through all enabled entries on a timer.
+    ///
+    /// This is a *run* state, not a preference, so it is deliberately not
+    /// persisted: a ticked box that outlives a restart — or a port close —
+    /// reads as "still looping" while nothing is running.
+    #[serde(skip)]
     pub loop_enabled: bool,
     pub loop_period_ms: u64,
     /// How many full passes the loop makes.  `None` means loop forever.
@@ -316,6 +321,32 @@ mod tests {
         let count = loaded.import_json(&json).unwrap();
         assert_eq!(count, PAGES * ENTRIES_PER_PAGE);
         assert_eq!(loaded.pages[0][3], m.pages[0][3]);
+    }
+
+    /// The loop switch is a run state, so it is neither written nor read back.
+    ///
+    /// Persisting it meant a ticked box survived a restart and a port close,
+    /// where it reads as "still looping" with nothing running.
+    #[test]
+    fn the_loop_switch_is_not_persisted() {
+        let m = MultiSend {
+            loop_enabled: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            !json.contains("loop_enabled"),
+            "the run state must not be written: {json}"
+        );
+
+        let back: MultiSend = serde_json::from_str(&json).unwrap();
+        assert!(!back.loop_enabled);
+
+        // A file written before this change still carries the field; it must
+        // not be able to resurrect a stale tick either.
+        let legacy = json.replace("\"pages\"", "\"loop_enabled\":true,\"pages\"");
+        let back: MultiSend = serde_json::from_str(&legacy).unwrap();
+        assert!(!back.loop_enabled, "an old file must not restore a tick");
     }
 
     #[test]

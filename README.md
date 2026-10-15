@@ -77,6 +77,8 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off in Display settings. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.
 - **Adjustable receive area line spacing**; auto-wrap width follows window resize and the selected font.
+- **Collapsible side panels**: drag the configuration panel's splitter all the way left (or the tool panel's all the way right) and it snaps shut, handing the width to the receive area. A hairline stays at the edge, with a chevron on hover to open it again; the top bar's "Show configuration panel / Show tool panel" switches are the same state. The centre column keeps a 320px floor, so each panel's maximum is a *soft* one that only applies when the window can spare the room.
+- **The multi-send panel marks the entry being sent**: during "send checked" or looping, the entry in flight is highlighted with a leading colour bar, and the run controls show `Sending #3 (3 / 7)` using the same page-local number as the table's `#` column. The mark clears when the run ends, is stopped, the port closes, or the app restarts. "Loop sending" is a run state rather than a saved preference, so it never survives into a state where it claims to be looping but isn't.
 - Configuration file persistence; restores last serial and display settings after restart.
 
 ---
@@ -125,6 +127,7 @@ On Linux + Wayland, the app draws its own client-side frame:
 
 - eframe depends on winit with `default-features = false`, which **silently disables** winit's `wayland-csd-adwaita`. GNOME's Mutter doesn't implement the `xdg-decoration` protocol, so by default winit falls back to a bare-bones frame: square corners, window buttons on the right, ignoring the desktop's `button-layout` setting.
   This project's `Cargo.toml` explicitly re-enables that feature, so `sctk-adwaita` draws a standard Adwaita frame and reads `org.gnome.desktop.wm.preferences button-layout` via XDG Desktop Portal, so the minimize/maximize/close positions match the desktop setting (left on GNOME by default).
+- The dialogs the app draws itself ("Custom baud rates", "About XCOM") are not system windows, and egui's built-in title bar hard-codes its close button on the right. Both therefore draw their own title bar and read the same desktop `button-layout` setting (via `gsettings`, probed once per process), putting the close button on the left when the desktop does and on the right otherwise; if the setting cannot be read, it stays on the right. See `docs/adr/0001-dialogs-own-their-chrome.md`.
 - The window's bottom rounded corners are drawn by the app: `src/ui/window.rs` overlays a rounded-corner background across the entire window and sets `clear_color`'s alpha to 0. On compositors that support alpha, the corners are transparent (rounded); on those that don't, corners use the panel background (merely square, never black).
 - Windows 11 / macOS use native system frames and rounded corners, unaffected by the above logic.
 
@@ -287,7 +290,7 @@ The file is readable JSON and can be edited directly. Fields use `#[serde(defaul
 ## Development
 
 ```bash
-cargo test              # 224 tests
+cargo test              # 237 tests
 cargo clippy --all-targets
 cargo fmt
 ```
@@ -305,6 +308,9 @@ Test coverage:
 - **Config backward compatibility**: asserting that old config files missing new fields still load (otherwise all settings would silently reset);
 - **UI layer no untranslated text**: scanning `src/ui/`, any Chinese literal not wrapped in `tr()` causes the test to fail;
 - **Splitter drag**: simulating real pointer event sequences, asserting all three splitters can be dragged both ways, content changes accordingly, overflow is clamped, and sizes persist;
+- **Panel collapse**: driving the same real pointer sequences to assert a panel dragged off the window edge folds away while keeping the width to restore, that the edge strip reopens it by click and by drag, that the top bar switch agrees, and that the centre column keeps its minimum width;
+- **Dialog title bars**: asserting both app-drawn dialogs put the close button where the desktop's `button-layout` says, plus parser unit tests (close on the left only when the left group names it; a value with no colon counts as unset and stays right);
+- **Multi-send marker**: asserting the mark lands on the right row, that the status line names the entry and its place in the round, that paging does not carry the mark onto another page, and that ending the run or closing the port clears both the mark and the loop switch — including that `loop_enabled` is never written to, nor read back from, the config file;
 - **Real serial send/receive**: opening a port with PTY, driving timed send and asserting the peer receives repeated payloads, and that send echo indeed enters the receive area without polluting the receive stream;
 - **Config backward compatibility**: asserting that old configs missing new fields still load.
 
@@ -323,7 +329,8 @@ src/
   fonts.rs         CJK font discovery
   serial/          Serial config, port enumeration (hot-plug), link and read/write threads
   protocol/        Checksum, frame format, transfer state machine
-  ui/              log_view (virtualized selectable log), panels (various panels)
+  ui/              log_view (virtualized selectable log), panels (various panels),
+                   dialog (title bars for the app's own dialogs), window (window background)
 ```
 
 ## License
