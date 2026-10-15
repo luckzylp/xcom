@@ -45,6 +45,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Echo sent content | ✅ | Sent content shown in a different color in the receive area; toggle in the receive toolbar |
 | RTS / DTR control | ✅ | Switchable in real time while port is open |
 | Timestamps (frame-delimited by CR/LF) | ✅ | Shows "receiving" preview in status bar when a frame is incomplete |
+| Direction markers on every row | ✅ | Coloured `->` for received data, `<-` for sent data; toggle in Display settings |
 | Save receive window as any format file | ✅ | Save as text or raw binary |
 | Clear receive (also resets Tx/Rx counters) | ✅ | |
 | Single send: any characters / hex / auto-split bytes | ✅ | `0102`, `01 02`, `0x01,0x02`, `01-02` all accepted |
@@ -73,6 +74,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Chinese/English UI toggle**: switchable from the top bar at any time; follows system `LANG` on first launch; choice is persisted.
 - **Receive area text selection**: drag-select with mouse, Ctrl+C copy, Ctrl+A select all (based on glyph metrics, CJK full-width characters select correctly).
 - **Virtualized log view**: Only visible lines are rendered, staying smooth during long high-speed reception.
+- **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off in Display settings. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.
 - **Adjustable receive area line spacing**; auto-wrap width follows window resize and the selected font.
 - Configuration file persistence; restores last serial and display settings after restart.
@@ -293,7 +295,7 @@ cargo fmt
 Test coverage:
 
 - Hex parsing/formatting, four checksum algorithms (including standard test vectors and real captured frames);
-- Log store line splitting, CRLF across packets, auto-wrap (including CJK double-width), timestamp frame-delimiting, cache trimming;
+- Log store line splitting, CRLF across packets, auto-wrap (including CJK double-width), timestamp frame-delimiting, direction markers (including re-rendering when switched off and wrap continuations carrying none), cache trimming;
 - Encoding auto-detection (UTF-8 / GBK Chinese streams) and cross-packet multi-byte decoding;
 - Protocol state machine: response, retransmission, file chunking and ordering;
 - **Real PTY loopback**: opening a device, sending/receiving bytes, write counters, re-opening, handshake lines — covering reader/writer threads and event channels;

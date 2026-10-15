@@ -529,6 +529,64 @@ pub fn install(ctx: &egui::Context, settings: &FontSettings) -> FontStatus {
 mod tests {
     use super::*;
 
+    /// The receive view's direction markers must be real, one-column glyphs.
+    ///
+    /// This is the guard for the whole marker feature: a codepoint missing from
+    /// the user's font paints as `?` (which is what happened with the Unicode
+    /// arrows, hence the ASCII ones), and a double-width glyph -- as `→` is in
+    /// CJK faces -- pushes the row past the width the log store wrapped it to.
+    #[test]
+    fn receive_markers_rasterise_as_single_column_glyphs() {
+        if find_cjk_font().is_none() {
+            eprintln!("skipping: no CJK font installed");
+            return;
+        }
+        let ctx = egui::Context::default();
+        install(&ctx, &FontSettings::default());
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| ());
+        output.textures_delta.clear();
+        let font = receive_font_id(14.0);
+        let column = ctx.fonts_mut(|f| f.glyph_width(&font, 'M'));
+        assert!(column > 0.0, "the receive font has no metrics");
+
+        for marker in [crate::logstore::MARK_RECEIVED, crate::logstore::MARK_SENT] {
+            let arrow: String = marker.trim_end().to_owned();
+            let columns = arrow.chars().count() as f32;
+            ctx.fonts_mut(|fonts| {
+                let galley =
+                    fonts.layout_no_wrap(arrow.clone(), font.clone(), egui::Color32::WHITE);
+                let glyphs: Vec<&egui::epaint::text::Glyph> = galley
+                    .rows
+                    .iter()
+                    .flat_map(|row| row.glyphs.iter())
+                    .collect();
+                for (ch, glyph) in arrow.chars().zip(glyphs) {
+                    assert!(
+                        !glyph.uv_rect.is_nothing(),
+                        "{ch} (U+{:04X}) is not in the font stack",
+                        ch as u32
+                    );
+                }
+                // A rasterised glyph also means tessellated triangles: this is
+                // what would be missing if the marker painted as `?`.
+                let vertices: usize = galley
+                    .rows
+                    .iter()
+                    .map(|row| row.visuals.mesh.vertices.len())
+                    .sum();
+                assert!(
+                    vertices > 0,
+                    "{arrow:?} produced no glyph meshes -- it would paint as nothing"
+                );
+                let width = galley.rect.width() / column;
+                assert!(
+                    (width - columns).abs() < 0.05,
+                    "{arrow:?} is {width:.2} columns wide, expected {columns:.0}"
+                );
+            });
+        }
+    }
+
     #[test]
     fn preferred_families_are_non_empty_and_unique() {
         let mut seen = std::collections::HashSet::new();

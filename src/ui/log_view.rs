@@ -7,8 +7,10 @@
 
 use std::sync::Arc;
 
-use eframe::egui::text::CCursor;
-use eframe::egui::{self, Color32, FontId, Galley, Pos2, Rect, ScrollArea, Sense, Ui, Vec2};
+use eframe::egui::text::{CCursor, LayoutJob};
+use eframe::egui::{
+    self, Color32, FontId, Galley, Pos2, Rect, ScrollArea, Sense, TextFormat, Ui, Vec2,
+};
 
 use crate::logstore::{LogStore, RowKind};
 use crate::theme::LogPalette;
@@ -213,13 +215,21 @@ pub fn show(
             let text = store.row(index).to_owned();
             // Echoed transmissions are tinted so they are not mistaken for
             // data from the device.
-            let color = match store.row_kind(index) {
+            let kind = store.row_kind(index);
+            let color = match kind {
                 RowKind::Received => palette.foreground,
                 RowKind::Sent => palette.sent,
             };
-            let galley = ui
-                .ctx()
-                .fonts_mut(|f| f.layout_no_wrap(text, font.clone(), color));
+            let galley = ui.ctx().fonts_mut(|f| {
+                f.layout_job(row_job(
+                    &text,
+                    store.row_prefix(index),
+                    kind,
+                    &font,
+                    color,
+                    palette,
+                ))
+            });
             let origin = Pos2::new(rect.left(), rect.top() + index as f32 * row_height);
             let row_rect = Rect::from_min_size(
                 origin,
@@ -305,6 +315,57 @@ pub fn show(
 
     let _ = result;
     output
+}
+
+/// Lay out one row: the direction marker, the timestamp and the data, each in
+/// its own colour.
+///
+/// The job's text is exactly the row's text, so caret columns and the copied
+/// selection still line up with what the store holds.
+fn row_job(
+    text: &str,
+    prefix: (usize, usize),
+    kind: RowKind,
+    font: &FontId,
+    color: Color32,
+    palette: LogPalette,
+) -> LayoutJob {
+    let (mark_len, stamp_len) = prefix;
+    let mark_len = clamp_to_boundary(text, mark_len);
+    let stamp_end = clamp_to_boundary(text, mark_len + stamp_len);
+    let marker_color = match kind {
+        RowKind::Received => palette.received_marker,
+        RowKind::Sent => palette.sent_marker,
+    };
+
+    let mut job = LayoutJob::default();
+    let mut push = |text: &str, color: Color32| {
+        if !text.is_empty() {
+            job.append(
+                text,
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color,
+                    ..Default::default()
+                },
+            );
+        }
+    };
+    push(&text[..mark_len], marker_color);
+    push(&text[mark_len..stamp_end], palette.timestamp);
+    push(&text[stamp_end..], color);
+    job
+}
+
+/// Clamp a byte length to a character boundary, so a row whose prefix metadata
+/// disagrees with its text can never panic the painter.
+fn clamp_to_boundary(text: &str, len: usize) -> usize {
+    let mut len = len.min(text.len());
+    while !text.is_char_boundary(len) {
+        len -= 1;
+    }
+    len
 }
 
 /// Paint the highlight rectangles for one row.
@@ -398,14 +459,28 @@ fn caret_in_row(visible: &[VisibleRow], index: usize, pos: Pos2) -> Option<Caret
 mod tests {
     use super::*;
     use crate::encoding::EncodingId;
+    use crate::logstore::{DisplayOptions, MARK_RECEIVED, MARK_SENT};
+    use crate::theme::DARK_LOG;
     use encoding_rs::UTF_8;
 
     fn store_with(lines: &[&str]) -> LogStore {
+        // Selection arithmetic is what these tests exercise, so the direction
+        // markers are switched off to keep the expected columns literal.
         let mut store = LogStore::new(UTF_8);
+        store.set_options(DisplayOptions {
+            markers: false,
+            ..Default::default()
+        });
         for line in lines {
             store.append(format!("{line}\r\n").as_bytes(), 0);
         }
         store
+    }
+
+    /// A section's byte range as plain `usize`s.
+    fn byte_range(job: &LayoutJob, section: usize) -> std::ops::Range<usize> {
+        let range = &job.sections[section].byte_range;
+        range.start.0..range.end.0
     }
 
     #[test]
@@ -504,6 +579,10 @@ mod tests {
     #[test]
     fn selection_survives_scrollback_trimming() {
         let mut store = LogStore::new(UTF_8);
+        store.set_options(DisplayOptions {
+            markers: false,
+            ..Default::default()
+        });
         store.set_limits(1024, 64 * 1024);
         for i in 0..3000 {
             store.append(format!("line{i}\r\n").as_bytes(), 0);
@@ -558,5 +637,105 @@ mod tests {
         let store = store_with(&["ab", "abcdef", "abc"]);
         assert_eq!(store.max_columns(), 6);
         let _ = EncodingId::Utf8;
+    }
+
+    #[test]
+    fn selection_can_include_the_direction_marker() {
+        let mut store = LogStore::new(UTF_8);
+        store.append(b"hello\r\n", 0);
+        store.append_sent(b"world", 0);
+        let mut state = LogViewState::default();
+        state.select_all(&store);
+        // The marker is part of the row, so it is part of the selection and of
+        // what Ctrl+C puts on the clipboard.
+        assert_eq!(
+            state.selected_text(&store).unwrap(),
+            format!("{MARK_RECEIVED}hello\n{MARK_SENT}world")
+        );
+    }
+
+    #[test]
+    fn row_job_splits_marker_timestamp_and_data() {
+        let font = FontId::monospace(12.0);
+        let stamp = "[12:00:00.000] ";
+        let text = format!("{MARK_RECEIVED}{stamp}hi");
+        let job = row_job(
+            &text,
+            (MARK_RECEIVED.len(), stamp.len()),
+            RowKind::Received,
+            &font,
+            DARK_LOG.foreground,
+            DARK_LOG,
+        );
+        // The galley text must stay identical to the row, or caret columns
+        // would drift away from the stored text.
+        assert_eq!(job.text, text);
+        let sections: Vec<(&str, Color32)> = job
+            .sections
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (&job.text[byte_range(&job, i)], s.format.color))
+            .collect();
+        assert_eq!(
+            sections,
+            vec![
+                (MARK_RECEIVED, DARK_LOG.received_marker),
+                (stamp, DARK_LOG.timestamp),
+                ("hi", DARK_LOG.foreground),
+            ]
+        );
+    }
+
+    #[test]
+    fn row_job_shows_a_sent_marker_in_its_own_colour() {
+        let font = FontId::monospace(12.0);
+        let text = format!("{MARK_SENT}out");
+        let job = row_job(
+            &text,
+            (MARK_SENT.len(), 0),
+            RowKind::Sent,
+            &font,
+            DARK_LOG.sent,
+            DARK_LOG,
+        );
+        let section = |i: usize| &job.text[byte_range(&job, i)];
+        assert_eq!(job.sections[0].format.color, DARK_LOG.sent_marker);
+        assert_eq!(section(0), MARK_SENT);
+        assert_eq!(section(1), "out");
+        assert_eq!(job.sections[1].format.color, DARK_LOG.sent);
+    }
+
+    #[test]
+    fn row_job_without_a_prefix_is_a_single_section() {
+        let font = FontId::monospace(12.0);
+        let job = row_job(
+            "plain",
+            (0, 0),
+            RowKind::Received,
+            &font,
+            DARK_LOG.foreground,
+            DARK_LOG,
+        );
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(byte_range(&job, 0), 0..5);
+        assert_eq!(job.sections[0].format.color, DARK_LOG.foreground);
+    }
+
+    #[test]
+    fn row_job_tolerates_prefix_metadata_past_the_text() {
+        let font = FontId::monospace(12.0);
+        // A pathological mismatch must not panic: the offsets clamp back to a
+        // character boundary instead of slicing a character in half.
+        let job = row_job(
+            "中",
+            (9, 9),
+            RowKind::Received,
+            &font,
+            DARK_LOG.foreground,
+            DARK_LOG,
+        );
+        assert_eq!(job.text, "中");
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(byte_range(&job, 0), 0..3);
     }
 }

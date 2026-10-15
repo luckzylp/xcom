@@ -1146,6 +1146,16 @@ fn display_section(app: &mut XcomApp, ui: &mut Ui) {
                 }
             }
 
+            let mut markers = display.markers;
+            if ui
+                .checkbox(&mut markers, tr("方向标记"))
+                .on_hover_text(tr("接收的数据以 -> 开头，发送的数据以 <- 开头"))
+                .changed()
+            {
+                display.markers = markers;
+                changed = true;
+            }
+
             let mut timestamp = display.timestamp;
             if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
                 display.timestamp = timestamp;

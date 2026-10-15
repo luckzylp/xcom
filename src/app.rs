@@ -1981,7 +1981,7 @@ mod layout_tests {
         app.settings.echo_sent = true;
         app.send_once();
         assert_eq!(app.log.row_count(), 1, "the send is echoed");
-        assert_eq!(app.log.row(0), "AT");
+        assert_eq!(app.log.row(0), format!("{}AT", crate::logstore::MARK_SENT));
         assert_eq!(app.log.row_kind(0), crate::logstore::RowKind::Sent);
         // Echoing must not pollute the received stream.
         assert!(app.log.raw().is_empty());
@@ -2119,6 +2119,82 @@ mod layout_tests {
             app.log.set_options(app.settings.display);
             render(&mut app, &ctx, name);
         }
+    }
+
+    /// Every text shape a frame painted, as `(text, section colours)`.
+    fn painted_text(output: &egui::FullOutput) -> Vec<(String, Vec<egui::Color32>)> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.job.text.clone(),
+                    text.galley
+                        .job
+                        .sections
+                        .iter()
+                        .map(|s| s.format.color)
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_receive_view_paints_coloured_direction_markers() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.echo_sent = true;
+        app.log.append_sent(b"AT+RST", 0);
+        let palette = crate::theme::log_palette(&ctx, app.settings.theme, app.settings.log_colors);
+        crate::fonts::install_default_families(&ctx);
+
+        // Two passes: the first lays the panels out, the second paints with
+        // settled geometry, and it is that output we inspect.
+        let mut painted = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
+            output.textures_delta.clear();
+            painted = painted_text(&output);
+        }
+
+        let colours = |row: &str| {
+            painted
+                .iter()
+                .find(|(text, _)| text == row)
+                .map(|(_, colours)| colours.clone())
+                .unwrap_or_else(|| panic!("row {row:?} was not painted"))
+        };
+        // The marker and the data it introduces are separate sections, so the
+        // arrow keeps its own colour; the plain row is a single section.
+        assert_eq!(
+            colours(&format!("{}AT+GMR", crate::logstore::MARK_RECEIVED)),
+            vec![palette.received_marker, palette.foreground]
+        );
+        assert_eq!(
+            colours(&format!("{}AT+RST", crate::logstore::MARK_SENT)),
+            vec![palette.sent_marker, palette.sent]
+        );
+
+        // Switching the markers off must reach the painted output, not just the
+        // store: this is the option the user toggles in Display settings.
+        app.settings.display.markers = false;
+        app.log.set_options(app.settings.display);
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
+            output.textures_delta.clear();
+            painted = painted_text(&output);
+        }
+        assert!(
+            !painted
+                .iter()
+                .any(|(text, _)| text.starts_with(crate::logstore::MARK_RECEIVED)
+                    || text.starts_with(crate::logstore::MARK_SENT)),
+            "a marker was still painted: {:?}",
+            painted.iter().map(|(t, _)| t).collect::<Vec<_>>()
+        );
+        assert!(painted.iter().any(|(text, _)| text == "AT+GMR"));
     }
 
     #[test]

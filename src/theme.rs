@@ -47,6 +47,10 @@ pub struct LogPalette {
     pub foreground: Color32,
     /// Colour of the `[HH:MM:SS.mmm]` prefix.
     pub timestamp: Color32,
+    /// Arrow in front of data received from the device.
+    pub received_marker: Color32,
+    /// Arrow in front of data we transmitted.
+    pub sent_marker: Color32,
     /// Selection highlight.
     pub selection: Color32,
     /// Text of the selection.
@@ -60,6 +64,10 @@ pub const DARK_LOG: LogPalette = LogPalette {
     background: Color32::from_rgb(0x00, 0x00, 0x00),
     foreground: Color32::from_rgb(0x00, 0xFF, 0x00),
     timestamp: Color32::from_rgb(0x6A, 0xA8, 0x6A),
+    // Cyan for incoming, gold for outgoing: the arrows are recognisable at a
+    // glance without reading the line, even at a small font size.
+    received_marker: Color32::from_rgb(0x40, 0xC8, 0xFF),
+    sent_marker: Color32::from_rgb(0xFF, 0xD1, 0x66),
     selection: Color32::from_rgb(0x1E, 0x4D, 0x2E),
     selection_text: Color32::from_rgb(0xEA, 0xFF, 0xEA),
     // Amber reads clearly against the green of received data.
@@ -71,6 +79,10 @@ pub const LIGHT_LOG: LogPalette = LogPalette {
     background: Color32::from_rgb(0xFF, 0xFF, 0xFF),
     foreground: Color32::from_rgb(0x00, 0x00, 0x00),
     timestamp: Color32::from_rgb(0x80, 0x80, 0x80),
+    received_marker: Color32::from_rgb(0x00, 0x72, 0xAE),
+    // A deeper shade than the echoed row text, so the arrow reads as a marker
+    // rather than as part of the data.
+    sent_marker: Color32::from_rgb(0x8B, 0x42, 0x00),
     selection: Color32::from_rgb(0xCC, 0xE4, 0xFF),
     selection_text: Color32::from_rgb(0x00, 0x00, 0x00),
     sent: Color32::from_rgb(0xB2, 0x5E, 0x00),
@@ -116,7 +128,10 @@ impl LogColorOverride {
             // Timestamps stay distinguishable without clashing.
             timestamp: blend(background, foreground, 0.65),
             // A custom foreground/background pair says nothing about which hue
-            // suits echoed rows, so the theme's choice is kept.
+            // suits echoed rows, so the theme's choice is kept -- for the row
+            // itself and for the arrow in front of it.
+            received_marker: base.received_marker,
+            sent_marker: base.sent_marker,
             sent: base.sent,
         }
     }
@@ -260,6 +275,19 @@ mod tests {
     fn light_log_is_white_on_black() {
         assert_eq!(LIGHT_LOG.background, Color32::WHITE);
         assert_eq!(LIGHT_LOG.foreground, Color32::BLACK);
+    }
+
+    #[test]
+    fn markers_are_distinct_from_the_data_they_precede() {
+        for palette in [DARK_LOG, LIGHT_LOG] {
+            // Received and sent arrows must not be confusable with each other
+            // or with the text they introduce.
+            assert_ne!(palette.received_marker, palette.sent_marker);
+            assert_ne!(palette.received_marker, palette.foreground);
+            assert_ne!(palette.sent_marker, palette.sent);
+            assert_ne!(palette.received_marker, palette.background);
+            assert_ne!(palette.sent_marker, palette.background);
+        }
     }
 
     #[test]

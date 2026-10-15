@@ -36,6 +36,30 @@ pub enum RowKind {
 struct LogRow {
     text: String,
     kind: RowKind,
+    /// Bytes at the start of `text` that are the direction marker.
+    mark_len: usize,
+    /// Bytes following the marker that are the timestamp.
+    stamp_len: usize,
+}
+
+/// Marker placed in front of data received from the device.
+///
+/// Plain ASCII on purpose: the glyphs have to exist in whatever font the user
+/// picked (and in the CJK fallback), or the marker shows up as `?`.  Unicode
+/// arrows are a coin flip -- `⟶` is missing from some CJK faces and the plain
+/// `→` renders two columns wide in most of them, which would break alignment.
+pub const MARK_RECEIVED: &str = "-> ";
+/// Marker placed in front of data we transmitted.
+pub const MARK_SENT: &str = "<- ";
+
+/// The marker and timestamp put in front of the first row of a line.
+#[derive(Default)]
+struct RowPrefix {
+    text: String,
+    /// Bytes of `text` taken by the direction marker; `0` when markers are off.
+    mark_len: usize,
+    /// Bytes of `text` taken by the timestamp; `0` when it is off.
+    stamp_len: usize,
 }
 
 /// How received bytes are presented.
@@ -68,6 +92,8 @@ pub struct DisplayOptions {
     pub upper_hex: bool,
     /// Prefix each frame with its arrival time, framed on CR/LF.
     pub timestamp: bool,
+    /// Prefix each row with an arrow showing which way the data went.
+    pub markers: bool,
     /// Soft-wrap long lines instead of scrolling horizontally.
     pub wrap: bool,
 }
@@ -80,6 +106,7 @@ impl Default for DisplayOptions {
             hex_bytes_per_row: 16,
             upper_hex: true,
             timestamp: false,
+            markers: true,
             wrap: false,
         }
     }
@@ -126,6 +153,8 @@ pub struct LogStore {
     cur_line: String,
     /// `cur_line` broken into display rows.
     cur_rows: Vec<String>,
+    /// Bytes at the start of `cur_rows[0]` taken by the direction marker.
+    cur_mark_len: usize,
     /// Streaming decoder for the live line, tolerant of split sequences.
     tail_decoder: StreamDecoder,
     /// Index into `raw` of the next byte not yet consumed into rows.
@@ -153,6 +182,7 @@ impl LogStore {
             max_columns: 0,
             cur_line: String::new(),
             cur_rows: Vec::new(),
+            cur_mark_len: 0,
             tail_decoder: StreamDecoder::new(encoding),
             cursor: 0,
             dump_row_start: 0,
@@ -174,6 +204,7 @@ impl LogStore {
             || opts.hex_bytes_per_row != self.opts.hex_bytes_per_row
             || opts.upper_hex != self.opts.upper_hex
             || opts.timestamp != self.opts.timestamp
+            || opts.markers != self.opts.markers
             || opts.wrap != self.opts.wrap;
         self.opts = opts;
         if layout_changed {
@@ -268,10 +299,8 @@ impl LogStore {
             ViewMode::Text => decode(bytes, self.encoding),
             ViewMode::Hex => to_hex_string(bytes, self.opts.upper_hex),
         };
-        let prefix = self.opts.timestamp.then(|| format_timestamp(now_ms));
-        for row in wrap_text(&body, prefix.as_deref(), self.effective_cols()) {
-            self.push_row_kind(row, RowKind::Sent);
-        }
+        let stamp = self.opts.timestamp.then_some(now_ms);
+        self.push_line(&body, RowKind::Sent, stamp);
     }
 
     /// Drop everything.
@@ -284,6 +313,7 @@ impl LogStore {
         self.max_columns = 0;
         self.cur_line.clear();
         self.cur_rows.clear();
+        self.cur_mark_len = 0;
         self.tail_decoder = StreamDecoder::new(self.encoding);
         self.cursor = 0;
         self.dump_row_start = 0;
@@ -315,6 +345,25 @@ impl LogStore {
         self.rows
             .get(index)
             .map_or(RowKind::Received, |row| row.kind)
+    }
+
+    /// The leading marker and timestamp of row `index`, as byte lengths.
+    ///
+    /// Both sit at the start of the row and are drawn in their own colours, so
+    /// the view needs to know where each ends.  A row without a prefix reports
+    /// zeros.
+    pub fn row_prefix(&self, index: usize) -> (usize, usize) {
+        let committed = self.rows.len();
+        if let Some(row) = self.rows.get(index) {
+            return (row.mark_len, row.stamp_len);
+        }
+        // The live line is always received data.  It carries no timestamp yet:
+        // that is attached when a terminator frames it.
+        if index == committed {
+            (self.cur_mark_len, 0)
+        } else {
+            (0, 0)
+        }
     }
 
     /// A stable identifier for a row, unaffected by trimming.
@@ -377,6 +426,7 @@ impl LogStore {
         self.max_columns = 0;
         self.cur_line.clear();
         self.cur_rows.clear();
+        self.cur_mark_len = 0;
         self.cursor = 0;
         self.dump_row_start = 0;
         self.dump_filled = 0;
@@ -440,7 +490,8 @@ impl LogStore {
                     break;
                 }
                 self.dump_row_start = self.cursor;
-                self.push_row(String::new());
+                let prefix = self.prefix_for(RowKind::Received, None);
+                self.push_row_kind(prefix.text, RowKind::Received, prefix.mark_len, 0);
             }
             let remaining = self.raw.len() - self.cursor;
             if remaining == 0 {
@@ -454,7 +505,9 @@ impl LogStore {
             let offset = self.raw_base + self.dump_row_start as u64;
             let text = render_dump_row(bytes, per_row, offset, self.opts.upper_hex);
             if let Some(last) = self.rows.back_mut() {
-                last.text = text;
+                // A partial row is re-rendered in place, keeping its prefix.
+                last.text.truncate(last.mark_len);
+                last.text.push_str(&text);
             }
             if self.dump_filled >= per_row {
                 self.dump_filled = 0;
@@ -498,9 +551,40 @@ impl LogStore {
     /// Turn the live line into one or more committed rows.
     fn commit_line(&mut self, stamp: Option<i64>) {
         let text = std::mem::take(&mut self.cur_line);
-        let prefix = stamp.map(format_timestamp);
-        for row in wrap_text(&text, prefix.as_deref(), self.effective_cols()) {
-            self.push_row(row);
+        self.push_line(&text, RowKind::Received, stamp);
+    }
+
+    /// Wrap `text` and append it, prefixing the first row with the direction
+    /// marker and, when enabled, the frame's arrival time.
+    fn push_line(&mut self, text: &str, kind: RowKind, stamp: Option<i64>) {
+        let prefix = self.prefix_for(kind, stamp);
+        for (i, row) in wrap_text(text, Some(&prefix.text), self.effective_cols())
+            .into_iter()
+            .enumerate()
+        {
+            // Only the first row carries the prefix; continuation rows indent
+            // to the left margin.
+            let (mark, stamp) = if i == 0 {
+                (prefix.mark_len, prefix.stamp_len)
+            } else {
+                (0, 0)
+            };
+            self.push_row_kind(row, kind, mark, stamp);
+        }
+    }
+
+    /// Build the marker and timestamp for a row of the given kind.
+    fn prefix_for(&self, kind: RowKind, stamp: Option<i64>) -> RowPrefix {
+        let marker = match (self.opts.markers, kind) {
+            (true, RowKind::Received) => MARK_RECEIVED,
+            (true, RowKind::Sent) => MARK_SENT,
+            (false, _) => "",
+        };
+        let timestamp = stamp.map(format_timestamp).unwrap_or_default();
+        RowPrefix {
+            text: format!("{marker}{timestamp}"),
+            mark_len: marker.len(),
+            stamp_len: timestamp.len(),
         }
     }
 
@@ -520,9 +604,14 @@ impl LogStore {
     fn refresh_cur_rows(&mut self) {
         if self.cur_line.is_empty() {
             self.cur_rows.clear();
+            self.cur_mark_len = 0;
             return;
         }
-        self.cur_rows = wrap_text(&self.cur_line, None, self.effective_cols());
+        // The live line shows the marker but no timestamp: an arrival time is
+        // attached when a terminator frames it.
+        let prefix = self.prefix_for(RowKind::Received, None);
+        self.cur_rows = wrap_text(&self.cur_line, Some(&prefix.text), self.effective_cols());
+        self.cur_mark_len = prefix.mark_len;
         let widest = self
             .cur_rows
             .iter()
@@ -532,13 +621,14 @@ impl LogStore {
         self.max_columns = self.max_columns.max(widest);
     }
 
-    fn push_row(&mut self, row: String) {
-        self.push_row_kind(row, RowKind::Received);
-    }
-
-    fn push_row_kind(&mut self, row: String, kind: RowKind) {
+    fn push_row_kind(&mut self, row: String, kind: RowKind, mark_len: usize, stamp_len: usize) {
         self.max_columns = self.max_columns.max(display_width(&row));
-        self.rows.push_back(LogRow { text: row, kind });
+        self.rows.push_back(LogRow {
+            text: row,
+            kind,
+            mark_len,
+            stamp_len,
+        });
         self.trim_rows();
     }
 
@@ -744,15 +834,37 @@ mod tests {
         LogStore::new(UTF_8)
     }
 
+    /// A store with the direction markers turned off, for tests about the
+    /// framing and layout arithmetic itself.
+    fn plain() -> LogStore {
+        let mut store = store();
+        store.set_options(DisplayOptions {
+            markers: false,
+            ..Default::default()
+        });
+        store
+    }
+
     fn rows(store: &LogStore) -> Vec<String> {
         (0..store.row_count())
             .map(|i| store.row(i).to_owned())
             .collect()
     }
 
+    /// Row bodies with the received marker prepended to each.
+    fn marked(bodies: &[&str]) -> Vec<String> {
+        bodies
+            .iter()
+            .map(|body| format!("{MARK_RECEIVED}{body}"))
+            .collect()
+    }
+
     #[test]
     fn splits_lines_on_crlf() {
         let mut s = store();
+        s.append(b"one\r\ntwo\r\nthree", 0);
+        assert_eq!(rows(&s), marked(&["one", "two", "three"]));
+        let mut s = plain();
         s.append(b"one\r\ntwo\r\nthree", 0);
         assert_eq!(rows(&s), vec!["one", "two", "three"]);
     }
@@ -761,16 +873,16 @@ mod tests {
     fn lone_cr_and_lone_lf_both_terminate() {
         let mut s = store();
         s.append(b"a\rb\nc", 0);
-        assert_eq!(rows(&s), vec!["a", "b", "c"]);
+        assert_eq!(rows(&s), marked(&["a", "b", "c"]));
     }
 
     #[test]
     fn crlf_split_across_chunks_is_one_terminator() {
         let mut s = store();
         s.append(b"hello\r", 0);
-        assert_eq!(rows(&s), vec!["hello"]);
+        assert_eq!(rows(&s), marked(&["hello"]));
         s.append(b"\nworld", 0);
-        assert_eq!(rows(&s), vec!["hello", "world"]);
+        assert_eq!(rows(&s), marked(&["hello", "world"]));
     }
 
     #[test]
@@ -793,7 +905,7 @@ mod tests {
         });
         s.append(&[0x01, 0xab, 0xff], 0);
         assert_eq!(s.pending_line(), "01 AB FF");
-        assert_eq!(rows(&s), vec!["01 AB FF"]);
+        assert_eq!(rows(&s), marked(&["01 AB FF"]));
     }
 
     #[test]
@@ -820,7 +932,8 @@ mod tests {
         // One committed frame plus the live (unterminated) line.
         assert_eq!(s.row_count(), 2);
         assert!(s.row(0).ends_with("01 02"), "{}", s.row(0));
-        assert_eq!(s.row(1), "03 04");
+        // The live line is received data, so it carries the marker too.
+        assert_eq!(s.row(1), format!("{MARK_RECEIVED}03 04"));
         assert_eq!(s.pending_line(), "03 04");
     }
 
@@ -836,10 +949,21 @@ mod tests {
         let data: Vec<u8> = (0u8..20).collect();
         s.append(&data, 0);
         assert_eq!(s.row_count(), 2);
-        assert!(s.row(0).starts_with("00000000  00 01"), "{}", s.row(0));
-        assert!(s.row(1).starts_with("00000010  "), "{}", s.row(1));
+        // Dump rows are received data, so the marker shifts the offset column.
+        assert!(
+            s.row(0)
+                .starts_with(&format!("{MARK_RECEIVED}00000000  00 01")),
+            "{}",
+            s.row(0)
+        );
+        assert!(
+            s.row(1).starts_with(&format!("{MARK_RECEIVED}00000010  ")),
+            "{}",
+            s.row(1)
+        );
         // A partial row must still render its ASCII gutter.
         assert!(s.row(1).ends_with("|....|"), "{}", s.row(1));
+        assert_eq!(s.row_prefix(0), (MARK_RECEIVED.len(), 0));
     }
 
     #[test]
@@ -862,16 +986,34 @@ mod tests {
 
     #[test]
     fn toggling_hex_re_renders_history() {
-        let mut s = store();
+        let mut s = plain();
         s.append(b"AB", 0);
         assert_eq!(rows(&s), vec!["AB"]);
         s.set_options(DisplayOptions {
             mode: ViewMode::Hex,
+            markers: false,
             ..Default::default()
         });
         assert_eq!(rows(&s), vec!["41 42"]);
-        s.set_options(DisplayOptions::default());
+        s.set_options(DisplayOptions {
+            markers: false,
+            ..Default::default()
+        });
         assert_eq!(rows(&s), vec!["AB"]);
+    }
+
+    #[test]
+    fn toggling_markers_re_renders_history() {
+        let mut s = store();
+        s.append(b"AB\r\n", 0);
+        assert_eq!(rows(&s), marked(&["AB"]));
+        s.set_options(DisplayOptions {
+            markers: false,
+            ..Default::default()
+        });
+        assert_eq!(rows(&s), vec!["AB"]);
+        s.set_options(DisplayOptions::default());
+        assert_eq!(rows(&s), marked(&["AB"]));
     }
 
     #[test]
@@ -880,7 +1022,7 @@ mod tests {
         let (bytes, _, _) = GBK.encode("你好\r\n");
         s.append(&bytes, 0);
         s.set_encoding(GBK);
-        assert_eq!(rows(&s), vec!["你好"]);
+        assert_eq!(rows(&s), marked(&["你好"]));
     }
 
     #[test]
@@ -893,14 +1035,73 @@ mod tests {
         s.append(b"frame1\r\n", 0);
         assert_eq!(s.row_count(), 1);
         let row = s.row(0);
-        assert!(row.starts_with('['), "{row}");
+        // Marker first, then the timestamp, then the data.
+        assert!(row.starts_with(&format!("{MARK_RECEIVED}[")), "{row}");
         assert!(row.ends_with("frame1"), "{row}");
+        assert_eq!(
+            s.row_prefix(0),
+            (MARK_RECEIVED.len(), "[16:00:00.000] ".len())
+        );
+    }
+
+    #[test]
+    fn the_live_line_carries_the_marker_but_no_timestamp() {
+        let mut s = store();
+        s.set_options(DisplayOptions {
+            timestamp: true,
+            ..Default::default()
+        });
+        s.append(b"partial", 0);
+        assert_eq!(rows(&s), marked(&["partial"]));
+        assert_eq!(s.row_prefix(0), (MARK_RECEIVED.len(), 0));
+    }
+
+    #[test]
+    fn markers_can_be_turned_off() {
+        let mut s = plain();
+        s.append(b"in\r\n", 0);
+        s.append_sent(b"out", 0);
+        assert_eq!(rows(&s), vec!["in", "out"]);
+        assert_eq!(s.row_prefix(0), (0, 0));
+        assert_eq!(s.row_prefix(1), (0, 0));
+    }
+
+    #[test]
+    fn markers_distinguish_received_from_sent() {
+        let mut s = store();
+        s.append(b"in\r\n", 0);
+        s.append_sent(b"out", 0);
+        assert_eq!(
+            rows(&s),
+            vec![format!("{MARK_RECEIVED}in"), format!("{MARK_SENT}out")]
+        );
+        assert_eq!(s.row_prefix(0).0, MARK_RECEIVED.len());
+        assert_eq!(s.row_prefix(1).0, MARK_SENT.len());
+    }
+
+    #[test]
+    fn wrapped_continuation_rows_carry_no_prefix() {
+        let mut s = store();
+        s.set_options(DisplayOptions {
+            wrap: true,
+            ..Default::default()
+        });
+        s.set_width_columns(5);
+        s.append(b"abcdefghij\r\n", 0);
+        // The arrow and its space take three of the five columns.
+        let mut expected = marked(&["ab"]);
+        expected.extend(["cdefg".to_owned(), "hij".to_owned()]);
+        assert_eq!(rows(&s), expected);
+        assert_eq!(s.row_prefix(0).0, MARK_RECEIVED.len());
+        assert_eq!(s.row_prefix(1), (0, 0));
+        assert_eq!(s.row_prefix(2), (0, 0));
     }
 
     #[test]
     fn wrapping_respects_columns() {
-        let mut s = store();
+        let mut s = plain();
         s.set_options(DisplayOptions {
+            markers: false,
             wrap: true,
             ..Default::default()
         });
@@ -944,7 +1145,7 @@ mod tests {
 
         let kinds: Vec<RowKind> = (0..s.row_count()).map(|i| s.row_kind(i)).collect();
         assert_eq!(kinds, vec![RowKind::Received, RowKind::Sent]);
-        assert_eq!(s.row(1), "out");
+        assert_eq!(s.row(1), format!("{MARK_SENT}out"));
         // The received stream is untouched, so saving or re-rendering is safe.
         assert_eq!(s.raw(), b"in\r\n");
     }
@@ -957,7 +1158,7 @@ mod tests {
             ..Default::default()
         });
         s.append_sent(&[0x01, 0xAB], 0);
-        assert_eq!(s.row(0), "01 AB");
+        assert_eq!(s.row(0), format!("{MARK_SENT}01 AB"));
         assert_eq!(s.row_kind(0), RowKind::Sent);
     }
 
