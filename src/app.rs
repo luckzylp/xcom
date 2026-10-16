@@ -1034,11 +1034,7 @@ impl XcomApp {
     }
 
     /// Encode and send one multi-send entry by its global index.
-    pub(crate) fn send_multi_entry(
-        &mut self,
-        index: usize,
-        from_loop: bool,
-    ) -> MultiSendOutcome {
+    pub(crate) fn send_multi_entry(&mut self, index: usize, from_loop: bool) -> MultiSendOutcome {
         let Some(entry) = self.settings.multi.entry(index) else {
             return MultiSendOutcome::Skipped;
         };

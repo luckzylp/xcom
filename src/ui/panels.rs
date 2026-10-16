@@ -2697,8 +2697,8 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     // the count tracks the available height both ways — it grows when there is
     // room for more rows and shrinks when the window or splitter is pulled in.
     let cached_page_size = ui.ctx().data(|data| data.get_temp::<usize>(page_size_id));
-    let page_size = cached_page_size
-        .unwrap_or_else(|| multi_page_size(table_height, row_height, ROW_GAP));
+    let page_size =
+        cached_page_size.unwrap_or_else(|| multi_page_size(table_height, row_height, ROW_GAP));
     app.settings.multi.page_size = page_size;
     app.settings.multi.clamp_page();
     let page = app.settings.multi.page;
@@ -3558,5 +3558,4 @@ mod column_tests {
         assert_eq!(multi_page_size(24.0 + 40.0 * 28.0, 24.0, 4.0), 40);
         assert_eq!(multi_page_size(24.0 + 100.0 * 28.0, 24.0, 4.0), 100);
     }
-
 }
