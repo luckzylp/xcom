@@ -541,6 +541,21 @@ mod tests {
             eprintln!("skipping: no CJK font installed");
             return;
         }
+        // The receive font only rasterises the two-character markers as two
+        // monospace cells when it is backed by a true monospace face. Where
+        // no monospace is installed, `install` deliberately falls back to a
+        // proportional CJK face (the alternative -- a Latin monospace with a
+        // CJK fallback -- splits the baseline between scripts on Windows and
+        // macOS), so the 2-column invariant does not hold there and the
+        // guard cannot run. ASCII markers there come out *narrower* than two
+        // cells, never wider, so the overflow the guard exists for is still
+        // absent.
+        if find_mono_font().is_none() {
+            eprintln!(
+                "skipping: no monospace font installed (the receive font falls back to a proportional CJK face)"
+            );
+            return;
+        }
         let ctx = egui::Context::default();
         install(&ctx, &FontSettings::default());
         let mut output = ctx.run_ui(egui::RawInput::default(), |_| ());
