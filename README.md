@@ -19,7 +19,7 @@ The UI contains **no advertisements** and additionally supports **automatic char
 │ [Open Port]   │                                          │                   │
 │ Display       ├──────────────────────────────────────────┤  Loop Send Keypad │
 │ Hex Timestamp │ Send Area                                 │                   │
-│ Encoding     │  [Hex Send] [Newline] [Timed 1000ms]       │                   │
+│ Encoding     │  [Hex Send] [Newline] [Timed interval] [Timed] │                   │
 │              │  [Send File] [History▾] [Send Ctrl+Enter]   │                   │
 ├──────────────┴──────────────────────────────────────────┴───────────────────┤
 │ ● /dev/ttyUSB0 [115200-8N1] Enc Auto·UTF-8 Tx:0 Rx:0 CTS● DSR○ DCD○ Time     │
@@ -50,15 +50,15 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Clear receive (also resets Tx/Rx counters) | ✅ | |
 | Single send: any characters / hex / auto-split bytes | ✅ | `0102`, `01 02`, `0x01,0x02`, `01-02` all accepted |
 | Send newline | ✅ | CR / LF can be individually checked |
-| Timed send + custom interval | ✅ | |
+| Timed send + custom interval | ✅ | Interval is set before ticking, then locked; closing the port cancels it |
 | Send any format file, abort anytime, progress bar | ✅ | Chunked send, can be cancelled |
 | Ctrl+Enter shortcut to send | ✅ | |
 | Clear sent (also resets Tx/Rx counters) | ✅ | |
 | Status bar: Tx/Rx byte counts, CTS/DSR/DCD, system time | ✅ | Also shows RI indicator |
-| Multi-send: 4 pages, 10 entries each | ✅ | Entries have note, enable, HEX, newline toggles |
+| Multi-send: fixed pool of 100 slots | ✅ | Page size follows the tool panel height and the page count is derived; entry numbers are global and continuous across pages; entries have note, enable, HEX, newline toggles |
 | Multi-send: first/prev/next/last page | ✅ | |
 | Multi-send: link to numeric keypad 0–9 | ✅ | |
-| Multi-send: auto loop send | ✅ | Sends only checked entries; supports **infinite loop** or **specified loop count** |
+| Multi-send: auto loop send | ✅ | Sends only checked entries; supports **infinite loop** or **specified loop count**; a round is paced entirely by each entry's own delay, with no separate round gap |
 | Multi-send: send all checked entries at once | ✅ | "Send Checked" button, each sent once in order |
 | Multi-send: import/export entries | ✅ | JSON format, easy to edit and version-control |
 | Protocol transfer (Modbus RTU variant, Send-Ack) | ✅ | See [Protocol Transfer](#protocol-transfer) |
@@ -78,7 +78,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.
 - **Adjustable receive area line spacing**; auto-wrap width follows window resize and the selected font.
 - **Collapsible side panels**: drag the configuration panel's splitter all the way left (or the tool panel's all the way right) and it snaps shut, handing the width to the receive area. A hairline stays at the edge, with a chevron on hover to open it again; the top bar's "Show configuration panel / Show tool panel" switches are the same state. The centre column keeps a 320px floor, so each panel's maximum is a *soft* one that only applies when the window can spare the room.
-- **The multi-send panel marks the entry being sent**: during "send checked" or looping, the entry in flight is highlighted with a leading colour bar, and the run controls show `Sending #3 (3 / 7)` using the same page-local number as the table's `#` column. The mark clears when the run ends, is stopped, the port closes, or the app restarts. "Loop sending" is a run state rather than a saved preference, so it never survives into a state where it claims to be looping but isn't.
+- **The multi-send panel marks the entry being sent**: during "send checked" or looping, the entry in flight is highlighted with a leading colour bar, and the send status bar below the table shows `Sending #3 (3 / 7)` using the same global number as the table's `#` column (the run spans the whole pool, not just the current page, and the mark appears only on the page currently showing that entry). The mark clears when the run ends, is stopped, the port closes, or the app restarts. "Loop sending" is a run state rather than a saved preference, so it never survives into a state where it claims to be looping but isn't.
 - Configuration file persistence; restores last serial and display settings after restart.
 
 ---
@@ -304,13 +304,14 @@ Test coverage:
 - **Real PTY loopback**: opening a device, sending/receiving bytes, write counters, re-opening, handshake lines — covering reader/writer threads and event channels;
 - **Headless UI layout**: using `Context::run_ui` to render a full frame, covering empty logs, both themes, all display modes, bilingual, narrow-window combinations, and asserting primitives are actually produced;
 - **Multi-send column widths**: asserting column widths grow as the panel widens and their sum never exceeds the panel width;
-- **Loop count**: asserting that a configured N-count stops after N rounds, infinite loops don't stop, and no checked entries causes a stop;
+- **Loop count**: asserting that a configured N-count stops after N rounds, infinite loops don't stop, no checked entries causes a stop, and a round is paced by the last entry's own delay;
 - **Config backward compatibility**: asserting that old config files missing new fields still load (otherwise all settings would silently reset);
 - **UI layer no untranslated text**: scanning `src/ui/`, any Chinese literal not wrapped in `tr()` causes the test to fail;
 - **Splitter drag**: simulating real pointer event sequences, asserting all three splitters can be dragged both ways, content changes accordingly, overflow is clamped, and sizes persist;
 - **Panel collapse**: driving the same real pointer sequences to assert a panel dragged off the window edge folds away while keeping the width to restore, that the edge strip reopens it by click and by drag, that the top bar switch agrees, and that the centre column keeps its minimum width;
 - **Dialog title bars**: asserting both app-drawn dialogs put the close button where the desktop's `button-layout` says, plus parser unit tests (close on the left only when the left group names it; a value with no colon counts as unset and stays right);
-- **Multi-send marker**: asserting the mark lands on the right row, that the status line names the entry and its place in the round, that paging does not carry the mark onto another page, and that ending the run or closing the port clears both the mark and the loop switch — including that `loop_enabled` is never written to, nor read back from, the config file;
+- **Entry pool and pagination**: asserting the fixed pool of 100 global slots, that the page size derives the page count and the current page is clamped, that sparse storage is padded back to the full pool on load, and that the legacy page format still imports;
+- **Multi-send marker**: asserting the mark lands on the right row, that the status line names the entry and its place in the round, that the mark appears only on the page showing the entry, and that ending the run or closing the port clears both the mark and the loop switch — including that `loop_enabled` and the page number are never written to, nor read back from, the config file;
 - **Real serial send/receive**: opening a port with PTY, driving timed send and asserting the peer receives repeated payloads, and that send echo indeed enters the receive area without polluting the receive stream;
 - **Config backward compatibility**: asserting that old configs missing new fields still load.
 
@@ -323,7 +324,7 @@ src/
   logstore.rs      Receive log: byte stream → display lines (incremental, bounded, re-renderable)
   encoding.rs      Encoding table, auto-detector, streaming decoder
   hex.rs           Lenient hex parsing and formatting
-  multi.rs         Multi-send entries and pages, import/export
+  multi.rs         Multi-send entry pool, pagination and import/export
   settings.rs      Config persistence
   theme.rs         Dark/light themes and receive area colors
   fonts.rs         CJK font discovery

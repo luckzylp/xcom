@@ -349,6 +349,7 @@ static EN: &[(&str, &str)] = &[
     ("16进制发送", "Hex send"),
     ("发送新行", "Append newline"),
     ("定时发送", "Timed send"),
+    ("定时间隔", "Timed interval"),
     ("清除发送", "Clear send"),
     ("已清除发送区与收发计数", "Send area and byte counters cleared"),
     ("发送文件", "Send file"),
@@ -514,18 +515,22 @@ static EN: &[(&str, &str)] = &[
     ("不限次数", "no limit"),
     ("已完成 {} / {} 次", "{} / {} passes done"),
     ("循环发送已完成 {} 次", "Loop sending finished after {} passes"),
+    ("循环", "Loop"),
+    ("未循环", "Idle"),
+    ("循环中", "Looping"),
+    ("当前条目", "Entry"),
+    ("空闲", "Idle"),
 
     ("发送已勾选", "Send checked"),
-    ("按顺序发送本页所有已勾选且非空的条目",
-     "Send every checked, non-empty entry on this page, in order"),
+    ("按顺序发送整个发送池里所有已勾选且非空的条目",
+     "Send every checked, non-empty entry in the pool, in order"),
     ("正在发送 #{} ({} / {})", "Sending #{} ({} / {})"),
-    ("当前页没有已勾选的发送条目", "No checked entries on this page"),
+    ("没有已勾选的发送条目", "No checked entries"),
     ("已发送 {} 条已勾选条目", "Sent {} checked entries"),
 
     ("串口已关闭，多条发送已停止", "Port closed; multi-send stopped"),
 
     ("延迟", "Delay"),
-    ("轮次间隔", "Round gap"),
 
     ("已停止循环发送", "Loop sending stopped"),
 

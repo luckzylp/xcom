@@ -1,6 +1,6 @@
 [package]
 name = "xcom"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.90.0"
 description = "ATK-XCOM 风格串口调试助手 — 跨平台串口工具 (Rust + egui)"

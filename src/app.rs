@@ -75,12 +75,10 @@ pub(crate) struct ProtocolLogLine {
 
 /// A multi-send sequence in progress.
 ///
-/// Entries are sent one at a time with each entry's own delay applied after it,
-/// and a completed round waits `round_gap_ms` before the next one.  Pacing the
-/// sequence rather than firing everything at once is what makes per-entry
-/// delays and the round gap possible.
+/// Entries are sent one at a time, with each entry's own delay applied after
+/// it — including the last entry of a round, before the next round begins.
+/// Pacing the sequence this way is what lets a device answer between entries.
 pub(crate) struct MultiRun {
-    page: usize,
     queue: Vec<usize>,
     position: usize,
     /// The entry sent most recently; see [`SentEntry`].
@@ -89,8 +87,6 @@ pub(crate) struct MultiRun {
     next_at: Instant,
     /// Whether to start another round after this one.
     looping: bool,
-    /// Delay between rounds, from the settings.
-    round_gap: Duration,
 }
 
 /// The entry a running multi-send sent most recently.
@@ -460,6 +456,9 @@ impl XcomApp {
         self.link.close();
         self.open_port_enumerated = false;
         self.signals = Signals::default();
+        // 定时发送 is a run state, so closing the port stops it and unticks the
+        // box; the interval is left as configured for the next run.
+        self.settings.send.timed = false;
         if was_open {
             self.info(tr("串口已关闭"));
         }
@@ -906,26 +905,24 @@ impl XcomApp {
         }
     }
 
-    /// Start sending the checked entries of `page`, in order.
+    /// Start sending every checked entry in the pool, in order.
     ///
-    /// `looping` repeats the sequence, waiting the configured round gap after
-    /// each complete pass.
-    pub(crate) fn start_multi_run(&mut self, page: usize, looping: bool, now: Instant) {
-        let queue = self.settings.multi.enabled_indices(page);
+    /// `looping` repeats the sequence until stopped or the configured pass
+    /// limit is reached; each entry's own delay paces it.
+    pub(crate) fn start_multi_run(&mut self, looping: bool, now: Instant) {
+        let queue = self.settings.multi.enabled_indices();
         if queue.is_empty() {
-            self.warn(tr("当前页没有已勾选的发送条目"));
+            self.warn(tr("没有已勾选的发送条目"));
             self.settings.multi.loop_enabled = false;
             return;
         }
         self.multi_cycles = 0;
         self.multi_run = Some(MultiRun {
-            page,
             queue,
             position: 0,
             last_sent: None,
             next_at: now,
             looping,
-            round_gap: Duration::from_millis(self.settings.multi.loop_period_ms.max(1)),
         });
     }
 
@@ -943,14 +940,6 @@ impl XcomApp {
 
     pub(crate) fn multi_run_active(&self) -> bool {
         self.multi_run.is_some()
-    }
-
-    /// The page the running multi-send is working through, if any.
-    ///
-    /// The panel marks a row only on this page: paging away does not stop the
-    /// run, and a highlight drawn on some other page's row would be a lie.
-    pub(crate) fn multi_run_page(&self) -> Option<usize> {
-        self.multi_run.as_ref().map(|run| run.page)
     }
 
     /// The entry the running multi-send sent most recently, if any.
@@ -973,15 +962,13 @@ impl XcomApp {
         }
 
         // Copy out what the send needs, then let go of the borrow.
-        let page = run.page;
         let index = run.queue[run.position];
         let end_of_round = run.position + 1 == run.queue.len();
         let queue_len = run.queue.len();
         let looping = run.looping;
-        let round_gap = run.round_gap;
 
-        let sent = self.send_multi_entry(page, index, true);
-        let delay = Duration::from_millis(self.settings.multi.delay_after(page, index));
+        let sent = self.send_multi_entry(index, true);
+        let delay = Duration::from_millis(self.settings.multi.delay_after(index));
 
         let mut stop_looping = false;
         if end_of_round && looping {
@@ -1001,13 +988,10 @@ impl XcomApp {
                     round_len: queue_len,
                 });
             }
-            if end_of_round {
-                run.position = 0;
-                run.next_at = now + if looping { round_gap } else { Duration::ZERO };
-            } else {
-                run.position += 1;
-                run.next_at = now + delay;
-            }
+            // A round wraps after its last entry, but the last entry's own
+            // delay still applies — there is no separate round gap.
+            run.position = if end_of_round { 0 } else { run.position + 1 };
+            run.next_at = now + delay;
         }
 
         if stop_looping {
@@ -1026,9 +1010,9 @@ impl XcomApp {
         ctx.request_repaint_after(Duration::from_millis(5));
     }
 
-    /// Encode and send one multi-send entry.  Returns whether it was queued.
-    pub(crate) fn send_multi_entry(&mut self, page: usize, index: usize, from_loop: bool) -> bool {
-        let Some(entry) = self.settings.multi.entry(page, index) else {
+    /// Encode and send one multi-send entry by its global index.
+    pub(crate) fn send_multi_entry(&mut self, index: usize, from_loop: bool) -> bool {
+        let Some(entry) = self.settings.multi.entry(index) else {
             return false;
         };
         if !entry.is_sendable() {
@@ -1359,6 +1343,9 @@ mod layout_tests {
             combo.max.x <= content.max.x + 0.25,
             "port combo is clipped by serial content: {combo:?} outside {content:?}"
         );
+        // Leave the global language as the rest of the suite expects it: a
+        // leaked EnUs changes wrapped-string widths in unrelated layout tests.
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
     }
 
     #[test]
@@ -1628,8 +1615,8 @@ mod layout_tests {
     }
 
     #[test]
-    fn software_version_is_v0_4_1() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.4.1");
+    fn software_version_is_v0_6_0() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.6.0");
     }
 
     #[test]
@@ -1732,6 +1719,11 @@ mod layout_tests {
     /// setting, so it is also the tightest way to drive the bug.
     #[test]
     fn top_bar_controls_share_one_vertical_centre() {
+        // Pin the language for the duration: longer English labels wrap the
+        // bar, and a concurrent language change would move the very centres
+        // this asserts on.
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
         let ctx = egui::Context::default();
         let mut app = seeded();
         app.settings.fonts.ui_size = 20.0;
@@ -2095,61 +2087,61 @@ mod layout_tests {
     }
 
     #[test]
-    fn tool_panel_splitter_boundary_consistent_in_all_languages() {
-        let _guard = crate::i18n::test_lock();
-        let mut right_edges = Vec::new();
-        for language in [crate::i18n::Lang::ZhCn, crate::i18n::Lang::EnUs] {
-            crate::i18n::set_lang(language);
-            let ctx = egui::Context::default();
-            let mut app = XcomApp::headless(crate::settings::Settings::default());
-            app.side_tab = SideTab::Multi;
-            let center = full_frame(&ctx, &mut app, input());
-            right_edges.push((language, center.max.x));
-        }
-        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
-        let zh_edge = right_edges[0].1;
-        let en_edge = right_edges[1].1;
-        assert_eq!(
-            zh_edge, en_edge,
-            "Splitter boundary must be identical across languages: ZhCn={zh_edge}, EnUs={en_edge}"
-        );
-    }
-
-    #[test]
-    fn shrinking_the_tool_panel_persists_in_every_language() {
-        // Reported: in English the tool panel snapped back when shrunk; in
-        // Chinese it did not, which points at something width-dependent in the
-        // translated strings.
-        //
-        // We drag by 25 px — small enough to stay above RIGHT_PANEL_MIN
-        // (DEFAULT 287 − 25 = 262 > MIN 260) so the panel actually moves
-        // and the result is not clamped away.  The key assertion is that
-        // the moved position is *retained* across several frames, i.e. the
-        // panel did not snap back.
+    fn tool_panel_is_never_narrower_than_its_table() {
+        // The panel's minimum follows the table's headers, which are wider in
+        // English than in Chinese, so the boundary *is* language-dependent:
+        // "Content" needs more room than "内容".  What must hold in both is that
+        // the panel is wide enough for the table it holds.
         let _guard = crate::i18n::test_lock();
         for language in [crate::i18n::Lang::ZhCn, crate::i18n::Lang::EnUs] {
             crate::i18n::set_lang(language);
             let ctx = egui::Context::default();
             let mut app = XcomApp::headless(crate::settings::Settings::default());
             app.side_tab = SideTab::Multi;
-
-            let before = full_frame(&ctx, &mut app, input());
-            // The right panel's left edge; shrinking it moves this right.
-            let grab = egui::pos2(before.max.x, before.center().y);
-            drag(&ctx, &mut app, grab, egui::pos2(grab.x + 25.0, grab.y));
-
-            let mut after = full_frame(&ctx, &mut app, input());
-            for _ in 0..5 {
-                after = full_frame(&ctx, &mut app, input());
-            }
+            full_frame(&ctx, &mut app, input());
+            let (viewport, content, scrollbars) = panels::probe::multi_table();
             assert!(
-                after.max.x > before.max.x + 15.0,
-                "{language:?}: the tool panel snapped back: {} -> {}",
-                before.max.x,
-                after.max.x
+                !scrollbars[0] && !scrollbars[1],
+                "{language:?}: egui laid out a scrollbar (horizontal={}, vertical={})",
+                scrollbars[0],
+                scrollbars[1]
+            );
+            assert!(
+                content.x <= viewport.width() + 0.5,
+                "{language:?}: the table ({:.1}) is wider than its panel ({:.1})",
+                content.x,
+                viewport.width()
             );
         }
         crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+    }
+
+    #[test]
+    fn shrinking_the_tool_panel_persists() {
+        // The panel's minimum follows the table's headers.  In Chinese there is
+        // room to shrink below the default and have it persist; in English the
+        // default already *is* the minimum, so the panel can only widen.
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.side_tab = SideTab::Multi;
+
+        let before = full_frame(&ctx, &mut app, input());
+        // The right panel's left edge; shrinking it moves this right.
+        let grab = egui::pos2(before.max.x, before.center().y);
+        drag(&ctx, &mut app, grab, egui::pos2(grab.x + 15.0, grab.y));
+
+        let mut after = full_frame(&ctx, &mut app, input());
+        for _ in 0..5 {
+            after = full_frame(&ctx, &mut app, input());
+        }
+        assert!(
+            after.max.x > before.max.x + 10.0,
+            "the tool panel snapped back: {} -> {}",
+            before.max.x,
+            after.max.x
+        );
     }
 
     #[test]
@@ -2466,6 +2458,16 @@ mod layout_tests {
     }
 
     #[test]
+    fn closing_the_port_untickets_timed_send() {
+        // 定时发送 is a run state, so it cannot outlive the port; the interval
+        // is left as configured for the next run.
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.send.timed = true;
+        app.close_port();
+        assert!(!app.settings.send.timed);
+    }
+
+    #[test]
     fn settings_that_need_a_control_have_one_in_the_ui() {
         // The echo feature shipped with the setting wired through the store and
         // the send path but *no* control anywhere, so the user could neither
@@ -2684,19 +2686,19 @@ mod layout_tests {
     }
 
     #[test]
-    fn renders_one_multi_send_entry_per_page() {
+    fn renders_the_multi_send_pages() {
         let ctx = egui::Context::default();
         let mut app = seeded();
-        for page in 0..crate::multi::PAGES {
-            app.settings.multi.page = page;
-            for index in 0..crate::multi::ENTRIES_PER_PAGE {
-                if let Some(entry) = app.settings.multi.entry_mut(page, index) {
-                    entry.text = format!("CMD{index}");
-                    entry.note = "备注".to_owned();
-                    entry.enabled = index % 2 == 0;
-                    entry.hex = index % 3 == 0;
-                }
+        for index in 0..crate::multi::TOTAL_ENTRIES {
+            if let Some(entry) = app.settings.multi.entry_mut(index) {
+                entry.text = format!("CMD{index}");
+                entry.note = "备注".to_owned();
+                entry.enabled = index % 2 == 0;
+                entry.hex = index % 3 == 0;
             }
+        }
+        for page in 0..app.settings.multi.page_count() {
+            app.settings.multi.page = page;
             render(&mut app, &ctx, "multi page");
         }
     }
@@ -2794,7 +2796,7 @@ mod layout_tests {
     /// Put `entries` (text, delay_ms) on page 0, all checked.
     fn arm(app: &mut XcomApp, entries: &[(&str, u64)]) {
         for (index, (text, delay)) in entries.iter().enumerate() {
-            let entry = app.settings.multi.entry_mut(0, index).expect("entry");
+            let entry = app.settings.multi.entry_mut(index).expect("entry");
             entry.text = (*text).to_owned();
             entry.enabled = true;
             entry.newline = false;
@@ -2806,7 +2808,7 @@ mod layout_tests {
     fn sending_checked_entries_with_nothing_checked_warns_and_does_not_start() {
         let mut app = XcomApp::headless(crate::settings::Settings::default());
         app.messages.clear();
-        app.start_multi_run(0, false, Instant::now());
+        app.start_multi_run(false, Instant::now());
         assert!(!app.multi_run_active(), "nothing to send");
         assert_eq!(app.messages.len(), 1);
         assert_eq!(app.messages[0].level, Level::Warning);
@@ -2817,7 +2819,7 @@ mod layout_tests {
         let ctx = egui::Context::default();
         let mut app = XcomApp::headless(crate::settings::Settings::default());
         arm(&mut app, &[("A", 0), ("B", 0)]);
-        app.start_multi_run(0, false, Instant::now());
+        app.start_multi_run(false, Instant::now());
         assert!(app.multi_run_active());
         app.pump_multi(&ctx, Instant::now());
         assert!(!app.multi_run_active(), "closed port stops the sequence");
@@ -2832,7 +2834,7 @@ mod layout_tests {
         let mut app = XcomApp::headless(crate::settings::Settings::default());
         arm(&mut app, &[("A", 0), ("B", 0)]);
         app.settings.multi.loop_enabled = true;
-        app.start_multi_run(0, true, Instant::now());
+        app.start_multi_run(true, Instant::now());
         assert!(app.multi_run_active());
 
         app.pump_multi(&ctx, Instant::now());
@@ -2876,7 +2878,7 @@ mod layout_tests {
         );
 
         let start = Instant::now();
-        app.start_multi_run(0, false, start);
+        app.start_multi_run(false, start);
         app.pump_multi(&ctx, start);
         full_frame(&ctx, &mut app, input());
         let first_row = panels::probe::multi_active_row_rect();
@@ -2915,10 +2917,11 @@ mod layout_tests {
         );
     }
 
-    /// A run is tied to its page, so the marker only ever appears there.
+    /// A run spans the whole pool, but the marker only appears on the page
+    /// that currently shows the entry in flight.
     #[test]
     #[cfg(unix)]
-    fn the_marker_stays_on_the_runs_own_page() {
+    fn the_marker_follows_the_entry_onto_whatever_page_shows_it() {
         let Some(pty) = TestPty::open() else {
             eprintln!("skipping: openpty unavailable");
             return;
@@ -2934,13 +2937,13 @@ mod layout_tests {
         app.settings.multi.page = 0;
 
         let start = Instant::now();
-        app.start_multi_run(0, false, start);
+        app.start_multi_run(false, start);
         app.pump_multi(&ctx, start);
         full_frame(&ctx, &mut app, input());
         assert_ne!(panels::probe::multi_active_row_rect(), egui::Rect::NOTHING);
 
-        // Paging away does not stop the run, but the mark does not follow the
-        // user onto a page the run is not working through.
+        // Paging away does not stop the run, and the mark stays with the entry
+        // rather than the page.
         app.settings.multi.page = 1;
         full_frame(&ctx, &mut app, input());
         assert_eq!(
@@ -2972,7 +2975,7 @@ mod layout_tests {
         arm(&mut app, &[("A", 60), ("B", 0)]);
 
         let start = Instant::now();
-        app.start_multi_run(0, false, start);
+        app.start_multi_run(false, start);
 
         app.pump_multi(&ctx, start);
         // Well inside A's delay, so B must not have gone out yet.
@@ -2988,7 +2991,7 @@ mod layout_tests {
 
     #[test]
     #[cfg(unix)]
-    fn looping_waits_the_round_gap_and_stops_at_the_configured_count() {
+    fn looping_waits_the_last_entry_delay_and_stops_at_the_configured_count() {
         let Some(mut pty) = TestPty::open() else {
             eprintln!("skipping: openpty unavailable");
             return;
@@ -3000,20 +3003,21 @@ mod layout_tests {
             eprintln!("skipping: cannot open serial port: {e}");
             return;
         }
-        arm(&mut app, &[("A", 0)]);
+        // The delay lives on the entry, including across the round boundary:
+        // there is no separate round gap any more.
+        arm(&mut app, &[("A", 50)]);
         app.settings.multi.loop_count = Some(2);
-        app.settings.multi.loop_period_ms = 50;
         app.settings.multi.loop_enabled = true;
 
         let start = Instant::now();
-        app.start_multi_run(0, true, start);
+        app.start_multi_run(true, start);
 
         // Round 1.
         app.pump_multi(&ctx, start);
-        // Inside the round gap: nothing more yet.
+        // Inside the entry's delay: nothing more yet.
         app.pump_multi(&ctx, start + Duration::from_millis(20));
         let first = pty.read_available(Duration::from_millis(80));
-        assert_eq!(String::from_utf8_lossy(&first), "A", "gap not respected");
+        assert_eq!(String::from_utf8_lossy(&first), "A", "delay not respected");
         assert!(app.multi_run_active(), "still looping");
 
         // Round 2, then the limit stops it.
@@ -3034,11 +3038,11 @@ mod layout_tests {
             .into_iter()
             .enumerate()
         {
-            let entry = app.settings.multi.entry_mut(0, index).expect("entry");
+            let entry = app.settings.multi.entry_mut(index).expect("entry");
             entry.text = text.to_owned();
             entry.enabled = enabled;
         }
-        assert_eq!(app.settings.multi.enabled_indices(0), vec![0, 3]);
+        assert_eq!(app.settings.multi.enabled_indices(), vec![0, 3]);
     }
 
     #[test]
@@ -3091,5 +3095,233 @@ mod layout_tests {
             "an explicit choice is cleared"
         );
         assert_eq!(app.auto.total(), 0, "auto-detect starts over from scratch");
+    }
+
+    /// Lay out the real panels at a given window size.
+    fn frame_at(ctx: &egui::Context, app: &mut XcomApp, size: (f32, f32)) {
+        for _ in 0..2 {
+            let mut raw = input();
+            raw.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(size.0, size.1),
+            ));
+            full_frame(ctx, app, raw);
+        }
+    }
+
+    /// A loop under way, in the state `pump_multi` would have left it.
+    ///
+    /// Built by hand rather than driven through a port: these are layout tests,
+    /// and it is the run in flight that the panel has to lay out around.
+    fn looping(app: &mut XcomApp) {
+        app.settings.multi.loop_enabled = true;
+        app.settings.multi.loop_count = Some(10);
+        app.multi_cycles = 3;
+        app.multi_run = Some(MultiRun {
+            queue: vec![0, 1, 2],
+            position: 1,
+            last_sent: Some(SentEntry {
+                index: 12,
+                ordinal: 3,
+                round_len: 10,
+            }),
+            next_at: Instant::now(),
+            looping: true,
+        });
+    }
+
+    /// The multi-send table fits its panel: every column of the row and every
+    /// entry on the page, with no scroll bar to reach them.
+    ///
+    /// The row is eight columns wide, and a row that overflows the panel grows a
+    /// horizontal scroll bar.  That bar takes the send buttons and the delay
+    /// fields out of reach, and with a solid scroll style it also eats a row's
+    /// height off the bottom of the table, so the last entry needs scrolling to.
+    #[test]
+    fn the_multi_send_table_fits_without_scrolling() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        for (w, h) in [
+            (880.0, 540.0),
+            (1200.0, 780.0),
+            (1280.0, 840.0),
+            (1920.0, 1080.0),
+            (2560.0, 1440.0),
+        ] {
+            for running in [false, true] {
+                let ctx = egui::Context::default();
+                let mut app = seeded();
+                app.side_tab = SideTab::Multi;
+                // Match the user's actual persisted panel width and font size.
+                app.settings.right_panel_width = 498.08594;
+                app.settings.fonts.ui_size = 13.0;
+                if running {
+                    looping(&mut app);
+                }
+                frame_at(&ctx, &mut app, (w, h));
+
+                let (viewport, content, scrollbars) = panels::probe::multi_table();
+                assert!(
+                    !scrollbars[0] && !scrollbars[1],
+                    "{w}x{h} (looping: {running}): egui laid out a scrollbar \
+                     (horizontal={}, vertical={})",
+                    scrollbars[0],
+                    scrollbars[1]
+                );
+                assert!(
+                    viewport.height() > 0.0,
+                    "{w}x{h}: the table was not laid out"
+                );
+                assert!(
+                    content.x <= viewport.width() + 0.5,
+                    "{w}x{h} (looping: {running}): the table is {:.1} wide where it has \
+                     {:.1}, so its columns need a horizontal scroll bar",
+                    content.x,
+                    viewport.width()
+                );
+                assert!(
+                    content.y <= viewport.height() + 0.5,
+                    "{w}x{h} (looping: {running}): the table is {:.1} tall where it has \
+                     {:.1}, so the last entry needs scrolling into view",
+                    content.y,
+                    viewport.height()
+                );
+                let last_row = panels::probe::multi_last_row_rect();
+                assert!(
+                    last_row.min.y >= viewport.min.y - 0.5
+                        && last_row.max.y <= viewport.max.y + 0.5,
+                    "{w}x{h} (looping: {running}): last row is outside the visible \
+                     table viewport: row={last_row:?}, viewport={viewport:?}"
+                );
+            }
+        }
+    }
+
+    /// The entries a page holds are the ones that fit: one more row would not.
+    ///
+    /// Asking for more is what leaves the last entry half out of the table;
+    /// asking for fewer wastes a row.
+    #[test]
+    fn the_page_holds_every_entry_that_fits() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        for (w, h) in [(1200.0, 780.0), (1280.0, 840.0), (1920.0, 1080.0)] {
+            let ctx = egui::Context::default();
+            let mut app = seeded();
+            app.side_tab = SideTab::Multi;
+            frame_at(&ctx, &mut app, (w, h));
+
+            let (viewport, content, scrollbars) = panels::probe::multi_table();
+            assert!(
+                !scrollbars[0] && !scrollbars[1],
+                "{w}x{h}: egui laid out a scrollbar (horizontal={}, vertical={})",
+                scrollbars[0],
+                scrollbars[1]
+            );
+            let row_height = 20.0_f32.max(
+                ctx.fonts_mut(|fonts| {
+                    fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
+                }) + 4.0,
+            );
+            let pitch = row_height + 4.0;
+            assert!(
+                viewport.height() - content.y < pitch,
+                "{w}x{h}: {:.1} of the table is left empty below the last entry, \
+                 which is room for another row",
+                viewport.height() - content.y
+            );
+        }
+    }
+
+    /// The multi-send table fits with the wider English headers too.
+    #[test]
+    fn the_multi_send_table_fits_in_english() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::EnUs);
+        let (w, h) = (1920.0, 1080.0);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.side_tab = SideTab::Multi;
+        frame_at(&ctx, &mut app, (w, h));
+
+        let (viewport, content, scrollbars) = panels::probe::multi_table();
+        assert!(
+            !scrollbars[0] && !scrollbars[1],
+            "{w}x{h}: egui laid out a scrollbar (horizontal={}, vertical={})",
+            scrollbars[0],
+            scrollbars[1]
+        );
+        assert!(
+            content.x <= viewport.width() + 0.5,
+            "{w}x{h}: the English headers need a horizontal scroll bar: \
+             {:.1} in {:.1}",
+            content.x,
+            viewport.width()
+        );
+    }
+
+    /// The send status bar keeps its place under the table, whatever the run.
+    ///
+    /// Laid out as one wrapping row it was three rows tall while looping, and a
+    /// panel that had reserved one clipped the rest: the loop state and the
+    /// entry in flight ended up behind the window's status bar.  Two rows of a
+    /// fixed height, so the table's height — and the page boundary with it —
+    /// does not move when a run starts or stops.
+    #[test]
+    fn the_send_status_bar_keeps_its_place() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let mut heights = Vec::new();
+        for (w, h) in [(880.0, 540.0), (1280.0, 840.0), (1920.0, 1080.0)] {
+            for running in [false, true] {
+                let ctx = egui::Context::default();
+                let mut app = seeded();
+                app.side_tab = SideTab::Multi;
+                if running {
+                    looping(&mut app);
+                }
+                frame_at(&ctx, &mut app, (w, h));
+
+                let bar = panels::probe::multi_send_status_rect();
+                let panel = panels::probe::tool_panel_rect();
+                let window_bar = panels::probe::bottom_status_rect();
+                assert!(
+                    bar.height() > 0.0,
+                    "{w}x{h}: the status bar was not laid out"
+                );
+                assert!(
+                    bar.max.y <= panel.max.y + 0.5,
+                    "{w}x{h} (looping: {running}): the status bar ends at {:.1}, below \
+                     the panel's {:.1}, so its last line is cut off",
+                    bar.max.y,
+                    panel.max.y
+                );
+                assert!(
+                    panel.max.y - bar.max.y <= 1.0,
+                    "{w}x{h} (looping: {running}): the status bar stops {:.1} short of \
+                     the panel's bottom",
+                    panel.max.y - bar.max.y
+                );
+                assert!(
+                    bar.max.y <= window_bar.min.y,
+                    "{w}x{h} (looping: {running}): the window's status bar covers the \
+                     send status bar ({:.1} vs {:.1})",
+                    bar.max.y,
+                    window_bar.min.y
+                );
+                if running {
+                    assert!(
+                        !panels::probe::multi_status_text().is_empty(),
+                        "{w}x{h}: a run in flight must be named in the bar"
+                    );
+                }
+                heights.push(bar.height());
+            }
+        }
+        let first = heights[0];
+        assert!(
+            heights.iter().all(|height| (height - first).abs() < 0.5),
+            "the bar changes height with the run, which moves the table: {heights:?}"
+        );
     }
 }

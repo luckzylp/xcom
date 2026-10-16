@@ -81,6 +81,11 @@ pub struct SendSettings {
     /// Emit LF as part of the newline.
     pub newline_lf: bool,
     /// 定时发送.
+    ///
+    /// A *run* state, not a preference: it is not persisted, and closing the
+    /// port clears it, so every session starts by configuring the interval
+    /// before ticking the box.
+    #[serde(skip)]
     pub timed: bool,
     /// 定时发送周期 (ms).
     pub period_ms: u64,
@@ -360,7 +365,7 @@ mod tests {
             settings.fonts.receive_size,
             Settings::default().fonts.receive_size
         );
-        assert_eq!(settings.multi.pages.len(), crate::multi::PAGES);
+        assert_eq!(settings.multi.entries.len(), crate::multi::TOTAL_ENTRIES);
     }
 
     #[test]
@@ -408,6 +413,21 @@ mod tests {
     }
 
     #[test]
+    fn the_timed_send_switch_is_not_persisted() {
+        // It is a run state like the loop switch: a tick that outlived a
+        // restart would start sending before the interval could be set.
+        let mut settings = Settings::default();
+        settings.send.timed = true;
+        let text = serde_json::to_string(&settings).unwrap();
+        assert!(
+            !text.contains("\"timed\""),
+            "the run state must not be written: {text}"
+        );
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert!(!back.send.timed);
+    }
+
+    #[test]
     fn a_settings_file_missing_newer_fields_still_loads() {
         // Every nested config struct must tolerate fields it does not contain.
         // If one rejects the document, `load_from` falls back to *all* defaults
@@ -426,7 +446,6 @@ mod tests {
         assert_eq!(settings.theme, ThemeMode::Light);
         assert_eq!(settings.serial.port, "/dev/ttyUSB0");
         assert_eq!(settings.serial.baud, 9600);
-        assert_eq!(settings.multi.loop_period_ms, 250);
         assert_eq!(settings.protocol.address, 66);
 
         // Fields absent from the document take their defaults.
@@ -437,7 +456,7 @@ mod tests {
             crate::protocol::ProtocolConfig::default().max_retries
         );
         assert_eq!(settings.display.hex_bytes_per_row, 16);
-        assert_eq!(settings.multi.pages.len(), crate::multi::PAGES);
+        assert_eq!(settings.multi.entries.len(), crate::multi::TOTAL_ENTRIES);
     }
 
     #[test]

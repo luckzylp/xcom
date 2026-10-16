@@ -165,6 +165,36 @@ pub fn is_dark(ctx: &egui::Context, mode: ThemeMode) -> bool {
     }
 }
 
+/// The colours of the multi-send "currently sending" marker.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ActiveEntryColors {
+    /// The bar down the leading edge of the row in flight.
+    pub bar: Color32,
+    /// The wash over the whole of that row.
+    pub wash: Color32,
+}
+
+/// Colours for the entry a multi-send run is on.
+///
+/// Deliberately not [`egui::Visuals::selection`]'s fill, which is what the
+/// marker used to take: that colour is dimmed to 45% for the dark theme
+/// because it is a *text selection* wash, and against the dark panel it left
+/// the marker barely visible.  These two are picked for contrast against the
+/// panel in each theme instead.
+pub fn active_entry_colors(ctx: &egui::Context, mode: ThemeMode) -> ActiveEntryColors {
+    if is_dark(ctx, mode) {
+        ActiveEntryColors {
+            bar: Color32::from_rgb(0x4D, 0xA6, 0xFF),
+            wash: Color32::from_rgba_unmultiplied(0x4D, 0xA6, 0xFF, 72),
+        }
+    } else {
+        ActiveEntryColors {
+            bar: Color32::from_rgb(0x1B, 0x62, 0xB0),
+            wash: Color32::from_rgba_unmultiplied(0x1B, 0x62, 0xB0, 56),
+        }
+    }
+}
+
 /// The log palette in effect.
 pub fn log_palette(ctx: &egui::Context, mode: ThemeMode, over: LogColorOverride) -> LogPalette {
     let base = if is_dark(ctx, mode) {
@@ -330,6 +360,51 @@ mod tests {
         for mode in ThemeMode::ALL {
             assert!(seen.insert(mode.label()));
             assert!(!mode.icon().is_empty());
+        }
+    }
+
+    /// WCAG relative luminance.
+    fn luminance(colour: Color32) -> f32 {
+        let channel = |value: u8| {
+            let value = value as f32 / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(colour.r()) + 0.7152 * channel(colour.g()) + 0.0722 * channel(colour.b())
+    }
+
+    /// WCAG contrast ratio, brighter over darker.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn the_sending_marker_stands_out_against_the_panel() {
+        // Reported: against the dark panel the marker was barely visible.  It
+        // had been borrowing `Visuals::selection.bg_fill`, which this theme
+        // dims to 45% for text selection.
+        let ctx = egui::Context::default();
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            let colours = active_entry_colors(&ctx, mode);
+            let panel = panel_background(is_dark(&ctx, mode));
+            let ratio = contrast(colours.bar, panel);
+            assert!(
+                ratio >= 4.5,
+                "{mode:?}: the marker bar only has a {ratio:.2}:1 contrast \
+                 against {panel:?}, so it will not stand out"
+            );
+            assert!(
+                colours.wash.a() > 0,
+                "{mode:?}: the row wash must actually tint the row"
+            );
+            assert_ne!(
+                colours.bar, colours.wash,
+                "{mode:?}: the bar and the wash are different jobs"
+            );
         }
     }
 }
