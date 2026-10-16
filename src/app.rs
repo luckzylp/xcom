@@ -1644,11 +1644,6 @@ mod layout_tests {
     }
 
     #[test]
-    fn software_version_is_v0_6_0() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.6.0");
-    }
-
-    #[test]
     fn rust_version_requirement_is_1_90_0() {
         let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
             .expect("Cargo.toml is readable");

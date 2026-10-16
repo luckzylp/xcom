@@ -346,7 +346,7 @@ python3 packaging/make-icons.py
 ## 开发
 
 ```bash
-cargo test              # 237 个测试
+cargo test              # 255 个测试
 cargo clippy --all-targets
 cargo fmt
 ```
