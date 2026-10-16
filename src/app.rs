@@ -73,6 +73,17 @@ pub(crate) struct ProtocolLogLine {
     pub stamp: String,
 }
 
+/// What [`XcomApp::send_multi_entry`] did with one entry.
+///
+/// `Refused` is the back-pressure case — the writer queue is full — and the
+/// run retries the entry rather than skipping it. `Skipped` covers entries
+/// that can never go out (empty or unencodable), which the run moves past.
+pub(crate) enum MultiSendOutcome {
+    Sent,
+    Skipped,
+    Refused,
+}
+
 /// A multi-send sequence in progress.
 ///
 /// Entries are sent one at a time, with each entry's own delay applied after
@@ -967,11 +978,17 @@ impl XcomApp {
         let queue_len = run.queue.len();
         let looping = run.looping;
 
-        let sent = self.send_multi_entry(index, true);
+        let outcome = self.send_multi_entry(index, true);
         let delay = Duration::from_millis(self.settings.multi.delay_after(index));
 
+        // `Refused` (the writer queue is saturated) holds the position so the
+        // entry is retried once the writer drains, instead of being skipped.
+        // `Sent` and `Skipped` both advance: a round is complete once we move
+        // past its last entry, whether or not that entry went out.
+        let advanced = !matches!(outcome, MultiSendOutcome::Refused);
+
         let mut stop_looping = false;
-        if end_of_round && looping {
+        if advanced && end_of_round && looping {
             self.multi_cycles += 1;
             stop_looping = self
                 .settings
@@ -981,17 +998,23 @@ impl XcomApp {
         }
 
         if let Some(run) = self.multi_run.as_mut() {
-            if sent {
+            if matches!(outcome, MultiSendOutcome::Sent) {
                 run.last_sent = Some(SentEntry {
                     index,
                     ordinal: run.position + 1,
                     round_len: queue_len,
                 });
             }
-            // A round wraps after its last entry, but the last entry's own
-            // delay still applies — there is no separate round gap.
-            run.position = if end_of_round { 0 } else { run.position + 1 };
-            run.next_at = now + delay;
+            if advanced {
+                // A round wraps after its last entry, but the last entry's own
+                // delay still applies — there is no separate round gap.
+                run.position = if end_of_round { 0 } else { run.position + 1 };
+                run.next_at = now + delay;
+            } else {
+                // Queue saturated: nudge the next attempt just far enough
+                // ahead that the run does not spin at the UI frame rate.
+                run.next_at = now + Duration::from_millis(5);
+            }
         }
 
         if stop_looping {
@@ -1002,7 +1025,7 @@ impl XcomApp {
             self.mark_settings_dirty();
             let message = crate::i18n::tr1("循环发送已完成 {} 次", limit);
             self.ok(message);
-        } else if end_of_round && !looping {
+        } else if advanced && end_of_round && !looping {
             self.multi_run = None;
             let message = crate::i18n::tr1("已发送 {} 条已勾选条目", queue_len);
             self.ok(message);
@@ -1011,25 +1034,35 @@ impl XcomApp {
     }
 
     /// Encode and send one multi-send entry by its global index.
-    pub(crate) fn send_multi_entry(&mut self, index: usize, from_loop: bool) -> bool {
+    pub(crate) fn send_multi_entry(
+        &mut self,
+        index: usize,
+        from_loop: bool,
+    ) -> MultiSendOutcome {
         let Some(entry) = self.settings.multi.entry(index) else {
-            return false;
+            return MultiSendOutcome::Skipped;
         };
         if !entry.is_sendable() {
             if !from_loop {
                 self.warn(crate::i18n::tr1("条目 {} 为空", index));
             }
-            return false;
+            return MultiSendOutcome::Skipped;
         }
         let encoded = match self.settings.multi.encode_entry(entry) {
             Ok(bytes) => bytes,
             Err(err) => {
                 self.error(crate::i18n::tr2("条目 {} 编码失败: {}", index, err));
-                return false;
+                return MultiSendOutcome::Skipped;
             }
         };
         let label = index.to_string();
-        self.send_multi_entry_bytes(encoded, &crate::i18n::tr1("发送条目 {}", label))
+        if self.send_multi_entry_bytes(encoded, &crate::i18n::tr1("发送条目 {}", label)) {
+            MultiSendOutcome::Sent
+        } else {
+            // The writer queue is full or the link dropped mid-send: the
+            // caller treats this as back-pressure and retries the entry.
+            MultiSendOutcome::Refused
+        }
     }
 
     /// Queue an already-encoded multi-send payload, reporting whether it went.

@@ -2479,27 +2479,19 @@ fn multi_column_widths(viewport: f32, gap: f32, headers: [f32; 8]) -> ([f32; 8],
     (widths, overflows)
 }
 
-/// Maximum number of entries in one page.
-///
-/// The multi-send panel has a fixed set of controls above and a pinned status
-/// area below the table. On the supported Linux layout, allowing more than 22
-/// entries makes the ScrollArea content taller than the visible viewport and
-/// introduces a vertical scrollbar even when the window is maximized. Keep the
-/// page size bounded at 22; smaller viewports still scroll, but the page window
-/// remains stable.
-const MULTI_MAX_PAGE_SIZE: usize = 22;
-
-/// Number of entries that fit below the table header without clipping a row.
-/// The table has one header row, then `count` entry rows, with `row_gap` between
-/// each pair of rows. Keep this arithmetic shared by production code and tests.
+/// Number of entries the table *looks* like it can hold from its allotted
+/// height, before egui has laid it out. Used only as the seed on the first
+/// frame (or right after a resize); the real count is then read back from the
+/// `ScrollArea` viewport and corrects this in one frame (see `multi_panel`).
+/// The table has one header row, then `count` entry rows, with `row_gap`
+/// between each pair of rows. Shared by production code and tests.
 fn multi_page_size(table_height: f32, row_height: f32, row_gap: f32) -> usize {
     if !table_height.is_finite() || !row_height.is_finite() || !row_gap.is_finite() {
         return 1;
     }
     let row_height = row_height.max(1.0);
     let pitch = row_height + row_gap.max(0.0);
-    (((table_height.max(row_height) - row_height) / pitch).floor() as usize)
-        .clamp(1, MULTI_MAX_PAGE_SIZE)
+    (((table_height.max(row_height) - row_height) / pitch).floor() as usize).max(1)
 }
 
 fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
@@ -2699,18 +2691,12 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         table_height = (table_height - ui.spacing().scroll.allocated_width()).max(row_height);
     }
 
-    let page_size_id = egui::Id::new("xcom_multi_max_page_size");
-    let is_maximized = ui
-        .ctx()
-        .input(|input| input.viewport().maximized.unwrap_or(false));
-    // Retain the largest page count measured from a real ScrollArea viewport.
-    // This avoids relying solely on platform-specific maximized-state reporting:
-    // if the window is expanded, the larger real viewport can increase the page;
-    // if it is reduced, the established page count remains unchanged.
-    let cached_page_size = ui
-        .ctx()
-        .data(|data| data.get_temp::<usize>(page_size_id))
-        .map(|size| size.clamp(1, MULTI_MAX_PAGE_SIZE));
+    let page_size_id = egui::Id::new("xcom_multi_page_size");
+    // Last frame's page size, measured from the real `ScrollArea` viewport.
+    // The panel re-measures every frame and writes the corrected value back, so
+    // the count tracks the available height both ways — it grows when there is
+    // room for more rows and shrinks when the window or splitter is pulled in.
+    let cached_page_size = ui.ctx().data(|data| data.get_temp::<usize>(page_size_id));
     let page_size = cached_page_size
         .unwrap_or_else(|| multi_page_size(table_height, row_height, ROW_GAP));
     app.settings.multi.page_size = page_size;
@@ -2844,15 +2830,21 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
             });
 
     // `inner_rect` is the real viewport after egui has applied clipping and
-    // scrollbar layout. Measure against it so the page ends at the last row that
-    // actually fits. On the first frame, this corrects the pre-layout estimate;
-    // later, keep the largest measured page size when the window is reduced.
-    let measured_page_size =
-        multi_page_size(table.inner_rect.height(), row_height, ROW_GAP);
-    let next_page_size = match cached_page_size {
-        None => measured_page_size,
-        Some(_) if is_maximized => measured_page_size,
-        Some(previous) => previous.max(measured_page_size),
+    // scrollbar layout, and `content_size` is what the rows actually took up.
+    // Together they let the page size track the available height exactly,
+    // without a hardcoded cap or a platform-specific "maximized" flag: if the
+    // rows overflowed the viewport, drop as many as spilled; if room for more
+    // remains, claim every whole row that fits. Both directions converge in a
+    // single frame, so the page neither scrolls unnecessarily nor wastes a row.
+    let pitch = row_height + ROW_GAP;
+    let viewport_h = table.inner_rect.height();
+    let content_h = table.content_size.y;
+    let next_page_size = if content_h > viewport_h + 0.5 {
+        let spilled = ((content_h - viewport_h) / pitch).ceil() as usize;
+        page_size.saturating_sub(spilled.max(1)).max(1)
+    } else {
+        let room = (viewport_h - content_h).max(0.0);
+        page_size + ((room / pitch).floor() as usize)
     };
     ui.ctx()
         .data_mut(|data| data.insert_temp(page_size_id, next_page_size));
@@ -3559,8 +3551,12 @@ mod column_tests {
     }
 
     #[test]
-    fn page_size_is_capped_at_22_even_if_the_estimated_viewport_is_too_large() {
-        assert_eq!(multi_page_size(24.0 + 40.0 * 28.0, 24.0, 4.0), 22);
+    fn page_size_follows_the_viewport_with_no_hard_cap() {
+        // No fixed ceiling: a viewport tall enough for forty rows reports
+        // forty, so a tall window never wastes vertical space. A window tall
+        // enough for the whole pool reports all one hundred at once.
+        assert_eq!(multi_page_size(24.0 + 40.0 * 28.0, 24.0, 4.0), 40);
+        assert_eq!(multi_page_size(24.0 + 100.0 * 28.0, 24.0, 4.0), 100);
     }
 
 }
