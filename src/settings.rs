@@ -17,6 +17,14 @@ use crate::protocol::ProtocolConfig;
 use crate::serial::SerialConfig;
 use crate::theme::{LogColorOverride, ThemeMode};
 
+/// Range of the receive view's extra row spacing, in points.
+///
+/// The old ceiling of 10 was barely noticeable at typical font sizes,
+/// especially where the platform scales the UI.  The slider and the settings
+/// clamp both use these bounds so they cannot drift apart.
+pub const LINE_SPACING_MIN: f32 = 0.0;
+pub const LINE_SPACING_MAX: f32 = 40.0;
+
 fn default_receive_font_size() -> f32 {
     13.0
 }
@@ -190,6 +198,12 @@ pub struct Settings {
     pub show_tool_panel: bool,
     /// Height of the send area below the log.
     pub send_area_height: f32,
+    /// Whether the send area is shown.
+    ///
+    /// Collapsing it by dragging its splitter to the bottom edge is the same
+    /// state, not a separate one: `send_area_height` is kept as the height to
+    /// restore when it is expanded again.
+    pub show_send_area: bool,
     /// Window size, restored on startup.
     pub window_size: Option<[f32; 2]>,
 }
@@ -219,8 +233,9 @@ impl Default for Settings {
             left_panel_width: crate::ui::panels::LEFT_PANEL_DEFAULT,
             show_config_panel: true,
             right_panel_width: crate::ui::panels::RIGHT_PANEL_DEFAULT,
-            show_tool_panel: true,
+            show_tool_panel: false,
             send_area_height: crate::ui::panels::SEND_AREA_DEFAULT,
+            show_send_area: true,
             window_size: None,
         }
     }
@@ -232,7 +247,7 @@ impl Settings {
         self.send.period_ms = self.send.period_ms.clamp(1, 3_600_000);
         self.fonts.normalize();
         self.log_font_size = self.fonts.receive_size;
-        self.line_spacing = self.line_spacing.clamp(0.0, 12.0);
+        self.line_spacing = self.line_spacing.clamp(LINE_SPACING_MIN, LINE_SPACING_MAX);
         self.max_rows = self.max_rows.clamp(1_000, 5_000_000);
         self.max_raw = self.max_raw.clamp(64 * 1024, 512 * 1024 * 1024);
         self.multi.normalize();
@@ -471,6 +486,7 @@ mod tests {
             },
             max_rows: 0,
             max_raw: 1,
+            line_spacing: 900.0,
             ..Default::default()
         };
         settings.send.period_ms = 0;
@@ -480,6 +496,7 @@ mod tests {
         assert_eq!(settings.fonts.send_size, 32.0);
         assert_eq!(settings.log_font_size, 32.0);
         assert_eq!(settings.send.period_ms, 1);
+        assert_eq!(settings.line_spacing, LINE_SPACING_MAX);
         assert!(settings.max_rows >= 1_000);
         assert!(settings.max_raw >= 64 * 1024);
     }
@@ -560,6 +577,14 @@ mod tests {
     }
 
     #[test]
+    fn the_tool_panel_starts_collapsed() {
+        assert!(
+            !Settings::default().show_tool_panel,
+            "the tool panel is opt-in and must not open on a fresh install"
+        );
+    }
+
+    #[test]
     fn a_collapsed_panel_survives_a_restart() {
         let temp = std::env::temp_dir().join(format!("xcom-panels-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
@@ -568,6 +593,9 @@ mod tests {
         let settings = Settings {
             show_config_panel: false,
             left_panel_width: 331.0,
+            show_tool_panel: true,
+            show_send_area: false,
+            send_area_height: 250.0,
             ..Default::default()
         };
         settings.save_to(&path).expect("save should succeed");
@@ -581,6 +609,14 @@ mod tests {
         assert_eq!(
             loaded.left_panel_width, 331.0,
             "with the width it is to be restored to"
+        );
+        assert!(
+            !loaded.show_send_area,
+            "the collapsed send area must stay collapsed"
+        );
+        assert_eq!(
+            loaded.send_area_height, 250.0,
+            "with the height it is to be restored to"
         );
 
         let _ = std::fs::remove_dir_all(&temp);

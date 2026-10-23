@@ -55,23 +55,19 @@ pub struct LogPalette {
     pub selection: Color32,
     /// Text of the selection.
     pub selection_text: Color32,
-    /// Rows echoed back from our own transmissions.
-    pub sent: Color32,
 }
 
 /// The classic XCOM terminal look.
 pub const DARK_LOG: LogPalette = LogPalette {
     background: Color32::from_rgb(0x00, 0x00, 0x00),
-    foreground: Color32::from_rgb(0x00, 0xFF, 0x00),
-    timestamp: Color32::from_rgb(0x6A, 0xA8, 0x6A),
+    foreground: Color32::from_rgb(0xE0, 0xE0, 0xE0),
+    timestamp: Color32::from_rgb(0x80, 0x80, 0x80),
     // Cyan for incoming, gold for outgoing: the arrows are recognisable at a
     // glance without reading the line, even at a small font size.
     received_marker: Color32::from_rgb(0x40, 0xC8, 0xFF),
     sent_marker: Color32::from_rgb(0xFF, 0xD1, 0x66),
     selection: Color32::from_rgb(0x1E, 0x4D, 0x2E),
     selection_text: Color32::from_rgb(0xEA, 0xFF, 0xEA),
-    // Amber reads clearly against the green of received data.
-    sent: Color32::from_rgb(0xFF, 0xB7, 0x4D),
 };
 
 /// 白底黑字.
@@ -85,7 +81,6 @@ pub const LIGHT_LOG: LogPalette = LogPalette {
     sent_marker: Color32::from_rgb(0x8B, 0x42, 0x00),
     selection: Color32::from_rgb(0xCC, 0xE4, 0xFF),
     selection_text: Color32::from_rgb(0x00, 0x00, 0x00),
-    sent: Color32::from_rgb(0xB2, 0x5E, 0x00),
 };
 
 /// User override for the log colours.
@@ -102,7 +97,7 @@ impl Default for LogColorOverride {
     fn default() -> Self {
         Self {
             enabled: false,
-            foreground: [0x00, 0xFF, 0x00],
+            foreground: [0xFF, 0xFF, 0xFF],
             background: [0x00, 0x00, 0x00],
         }
     }
@@ -128,11 +123,10 @@ impl LogColorOverride {
             // Timestamps stay distinguishable without clashing.
             timestamp: blend(background, foreground, 0.65),
             // A custom foreground/background pair says nothing about which hue
-            // suits echoed rows, so the theme's choice is kept -- for the row
-            // itself and for the arrow in front of it.
+            // suits echoed rows, so both received and echoed text use the same
+            // colour -- only the direction marker distinguishes them.
             received_marker: base.received_marker,
             sent_marker: base.sent_marker,
-            sent: base.sent,
         }
     }
 }
@@ -295,10 +289,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dark_log_is_the_classic_terminal_look() {
+    fn dark_log_is_light_on_black() {
         assert_eq!(DARK_LOG.background, Color32::BLACK);
-        assert_eq!(DARK_LOG.foreground.g(), 0xFF, "green text");
-        assert_eq!(DARK_LOG.foreground.r(), 0x00);
+        assert!(
+            luminance(DARK_LOG.foreground) > 0.5,
+            "the default dark-theme text must be light, got {:?}",
+            DARK_LOG.foreground
+        );
     }
 
     #[test]
@@ -314,7 +311,6 @@ mod tests {
             // or with the text they introduce.
             assert_ne!(palette.received_marker, palette.sent_marker);
             assert_ne!(palette.received_marker, palette.foreground);
-            assert_ne!(palette.sent_marker, palette.sent);
             assert_ne!(palette.received_marker, palette.background);
             assert_ne!(palette.sent_marker, palette.background);
         }

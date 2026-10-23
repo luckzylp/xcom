@@ -1772,6 +1772,7 @@ mod layout_tests {
             "lang_combo",
             "config_panel",
             "tool_panel",
+            "send_area",
             "log_colors",
             "reset",
         ] {
@@ -2010,6 +2011,7 @@ mod layout_tests {
     fn multi_send_headers_are_vertically_aligned() {
         let ctx = egui::Context::default();
         let mut app = seeded();
+        app.settings.show_tool_panel = true;
         app.side_tab = SideTab::Multi;
 
         full_frame(&ctx, &mut app, input());
@@ -2079,6 +2081,61 @@ mod layout_tests {
     }
 
     #[test]
+    fn dragging_the_send_area_to_the_bottom_edge_collapses_it() {
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+
+        full_frame(&ctx, &mut app, input());
+        let panel = panels::probe::send_panel_rect();
+        let grab = egui::pos2(panel.center().x, panel.top());
+        drag(&ctx, &mut app, grab, egui::pos2(grab.x, grab.y + 600.0));
+
+        assert!(
+            !app.settings.show_send_area,
+            "dragging the send area off the bottom did not collapse it"
+        );
+        assert_eq!(
+            app.settings.send_area_height,
+            panels::SEND_AREA_DEFAULT,
+            "collapsing must keep the height to restore"
+        );
+
+        // The edge strip is clickable, like the collapsed side panels.
+        let rect = full_frame(&ctx, &mut app, input());
+        click(
+            &ctx,
+            &mut app,
+            egui::pos2(rect.center().x, rect.bottom() - 1.0),
+        );
+        assert!(
+            app.settings.show_send_area,
+            "clicking the send area's strip did not reopen it"
+        );
+        assert_eq!(app.settings.send_area_height, panels::SEND_AREA_DEFAULT);
+    }
+
+    #[test]
+    fn a_collapsed_send_area_can_be_dragged_back_out() {
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_send_area = false;
+
+        let rect = full_frame(&ctx, &mut app, input());
+        let edge = egui::pos2(rect.center().x, rect.bottom());
+        drag(&ctx, &mut app, edge, egui::pos2(edge.x, edge.y - 160.0));
+
+        assert!(
+            app.settings.show_send_area,
+            "dragging up from the bottom edge did not reopen the send area"
+        );
+        assert!(
+            app.settings.send_area_height > panels::SEND_AREA_MIN,
+            "the drag did not set a new height: {}",
+            app.settings.send_area_height
+        );
+    }
+
+    #[test]
     fn shrinking_the_settings_panel_persists() {
         // Reported: dragging the left separator *left* clipped the panel's
         // content during the gesture and then snapped back on release, while
@@ -2121,6 +2178,7 @@ mod layout_tests {
             crate::i18n::set_lang(language);
             let ctx = egui::Context::default();
             let mut app = XcomApp::headless(crate::settings::Settings::default());
+            app.settings.show_tool_panel = true;
             app.side_tab = SideTab::Multi;
             full_frame(&ctx, &mut app, input());
             let (viewport, content, scrollbars) = panels::probe::multi_table();
@@ -2149,6 +2207,7 @@ mod layout_tests {
         crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
         let ctx = egui::Context::default();
         let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_tool_panel = true;
         app.side_tab = SideTab::Multi;
 
         let before = full_frame(&ctx, &mut app, input());
@@ -2175,6 +2234,7 @@ mod layout_tests {
         // panel jump to its minimum and then refuse to widen.
         let ctx = egui::Context::default();
         let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_tool_panel = true;
         app.side_tab = SideTab::Multi;
 
         let start = panels::RIGHT_PANEL_DEFAULT;
@@ -2632,7 +2692,7 @@ mod layout_tests {
         );
         assert_eq!(
             colours(&format!("{}AT+RST", crate::logstore::MARK_SENT)),
-            vec![palette.sent_marker, palette.sent]
+            vec![palette.sent_marker, palette.foreground]
         );
 
         // Switching the markers off must reach the painted output, not just the
@@ -2653,6 +2713,50 @@ mod layout_tests {
             painted.iter().map(|(t, _)| t).collect::<Vec<_>>()
         );
         assert!(painted.iter().any(|(text, _)| text == "AT+GMR"));
+    }
+
+    #[test]
+    fn custom_colours_drive_both_received_and_echoed_text() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.echo_sent = true;
+        app.settings.log_colors = crate::theme::LogColorOverride {
+            enabled: true,
+            foreground: [0x12, 0x34, 0x56],
+            background: [0x00, 0x00, 0x00],
+        };
+        app.log.append_sent(b"AT+RST", 0);
+        crate::fonts::install_default_families(&ctx);
+        let custom = egui::Color32::from_rgb(0x12, 0x34, 0x56);
+
+        let mut painted = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
+            output.textures_delta.clear();
+            painted = painted_text(&output);
+        }
+
+        let colours = |row: &str| {
+            painted
+                .iter()
+                .find(|(text, _)| text == row)
+                .map(|(_, colours)| colours.clone())
+                .unwrap_or_else(|| panic!("row {row:?} was not painted"))
+        };
+        // Both directions are text in the receive area, so the one custom
+        // foreground colour must reach both data sections.
+        assert_eq!(
+            *colours(&format!("{}AT+GMR", crate::logstore::MARK_RECEIVED))
+                .last()
+                .unwrap(),
+            custom
+        );
+        assert_eq!(
+            *colours(&format!("{}AT+RST", crate::logstore::MARK_SENT))
+                .last()
+                .unwrap(),
+            custom
+        );
     }
 
     #[test]
@@ -2782,7 +2886,10 @@ mod layout_tests {
     #[test]
     fn renders_extreme_font_and_spacing_settings() {
         let ctx = egui::Context::default();
-        for (size, spacing) in [(8.0, 0.0), (28.0, 10.0)] {
+        for (size, spacing) in [
+            (8.0, crate::settings::LINE_SPACING_MIN),
+            (28.0, crate::settings::LINE_SPACING_MAX),
+        ] {
             let mut app = seeded();
             app.settings.fonts.ui_size = 24.0;
             app.settings.fonts.receive_size = size;
@@ -2888,6 +2995,7 @@ mod layout_tests {
         };
         let ctx = egui::Context::default();
         let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_tool_panel = true;
         app.settings.serial.port = pty.slave_path.clone();
         if let Err(e) = app.link.open(&app.settings.serial) {
             eprintln!("skipping: cannot open serial port: {e}");
@@ -2952,6 +3060,7 @@ mod layout_tests {
         };
         let ctx = egui::Context::default();
         let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_tool_panel = true;
         app.settings.serial.port = pty.slave_path.clone();
         if let Err(e) = app.link.open(&app.settings.serial) {
             eprintln!("skipping: cannot open serial port: {e}");
@@ -3175,6 +3284,7 @@ mod layout_tests {
             for running in [false, true] {
                 let ctx = egui::Context::default();
                 let mut app = seeded();
+                app.settings.show_tool_panel = true;
                 app.side_tab = SideTab::Multi;
                 // Match the user's actual persisted panel width and font size.
                 app.settings.right_panel_width = 498.08594;
@@ -3265,6 +3375,7 @@ mod layout_tests {
         let (w, h) = (1920.0, 1080.0);
         let ctx = egui::Context::default();
         let mut app = seeded();
+        app.settings.show_tool_panel = true;
         app.side_tab = SideTab::Multi;
         frame_at(&ctx, &mut app, (w, h));
 
@@ -3300,6 +3411,7 @@ mod layout_tests {
             for running in [false, true] {
                 let ctx = egui::Context::default();
                 let mut app = seeded();
+                app.settings.show_tool_panel = true;
                 app.side_tab = SideTab::Multi;
                 if running {
                     looping(&mut app);

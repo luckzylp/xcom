@@ -760,28 +760,21 @@ pub(crate) fn apply_splitters(app: &mut XcomApp, ui: &mut Ui) {
                 // panel's minimum first would make a collapse unreachable,
                 // since it can never come out below that minimum.
                 let size = start_size + spec.growth.growth_delta(pointer, start_pointer);
-                match spec.target {
-                    SplitterTarget::SendHeight => {
-                        app.settings.send_area_height = size.clamp(spec.min, spec.max)
-                    }
-                    target => {
-                        // Below a third of the panel's own minimum, the drag
-                        // stops pretending: it collapses to the window edge
-                        // instead of leaving an unusable sliver.  The
-                        // threshold is a fixed distance, and the same one on
-                        // both sides, so the gesture reads the same either way.
-                        let collapsed = size < spec.min / COLLAPSE_FRACTION;
-                        set_panel_open(&mut app.settings, target, !collapsed);
-                        if !collapsed {
-                            // The stored width is the one to restore to, so
-                            // collapsing must not overwrite it.
-                            set_panel_width(
-                                &mut app.settings,
-                                target,
-                                size.clamp(spec.min, spec.max),
-                            );
-                        }
-                    }
+                // Below a third of the panel's own minimum, the drag stops
+                // pretending: it collapses to the window edge instead of
+                // leaving an unusable sliver.  The threshold is a fixed
+                // distance, and the same one on every side, so the gesture
+                // reads the same whichever panel is dragged.
+                let collapsed = size < spec.min / COLLAPSE_FRACTION;
+                set_panel_open(&mut app.settings, spec.target, !collapsed);
+                if !collapsed {
+                    // The stored size is the one to restore to, so collapsing
+                    // must not overwrite it.
+                    set_panel_width(
+                        &mut app.settings,
+                        spec.target,
+                        size.clamp(spec.min, spec.max),
+                    );
                 }
                 app.mark_settings_dirty();
             }
@@ -807,7 +800,7 @@ fn set_panel_open(settings: &mut crate::settings::Settings, target: SplitterTarg
     match target {
         SplitterTarget::ConfigWidth => settings.show_config_panel = open,
         SplitterTarget::ToolWidth => settings.show_tool_panel = open,
-        SplitterTarget::SendHeight => {}
+        SplitterTarget::SendHeight => settings.show_send_area = open,
     }
 }
 
@@ -825,21 +818,29 @@ fn collapsed_hint(target: SplitterTarget) -> &'static str {
     match target {
         SplitterTarget::ConfigWidth => tr("展开配置面板"),
         SplitterTarget::ToolWidth => tr("展开工具面板"),
-        SplitterTarget::SendHeight => "",
+        SplitterTarget::SendHeight => tr("展开发送区"),
     }
+}
+
+/// Direction a collapsed panel's chevron points, i.e. the way it expands.
+#[derive(Clone, Copy)]
+enum Chevron {
+    Left,
+    Right,
+    Up,
 }
 
 /// Draw the edge strip of a collapsed panel: a hairline that is always there,
 /// and a chevron once the pointer reaches it.
 fn paint_collapsed_strip(ui: &Ui, spec: &PendingSplitter, response: &egui::Response) {
-    let (rect, chevron_center, points_right) = match spec.growth {
+    let (rect, chevron_center, direction) = match spec.growth {
         SplitterGrowth::Rightward => (
             egui::Rect::from_x_y_ranges(
                 spec.boundary..=(spec.boundary + COLLAPSED_STRIP),
                 spec.cross,
             ),
             egui::pos2(spec.boundary + 12.0, spec.cross.center()),
-            true,
+            Chevron::Right,
         ),
         SplitterGrowth::Leftward => (
             egui::Rect::from_x_y_ranges(
@@ -847,10 +848,16 @@ fn paint_collapsed_strip(ui: &Ui, spec: &PendingSplitter, response: &egui::Respo
                 spec.cross,
             ),
             egui::pos2(spec.boundary - 12.0, spec.cross.center()),
-            false,
+            Chevron::Left,
         ),
-        // The send area cannot collapse, so it has no strip.
-        SplitterGrowth::Upward => return,
+        SplitterGrowth::Upward => (
+            egui::Rect::from_x_y_ranges(
+                spec.cross,
+                (spec.boundary - COLLAPSED_STRIP)..=spec.boundary,
+            ),
+            egui::pos2(spec.cross.center(), spec.boundary - 12.0),
+            Chevron::Up,
+        ),
     };
 
     let visuals = ui.visuals();
@@ -866,19 +873,35 @@ fn paint_collapsed_strip(ui: &Ui, spec: &PendingSplitter, response: &egui::Respo
     if active {
         // Painted rather than written: the UI falls back to a CJK face for
         // symbols, and a face without the glyph renders tofu.
-        paint_chevron(ui, chevron_center, points_right, visuals.selection.bg_fill);
+        paint_chevron(ui, chevron_center, direction, visuals.selection.bg_fill);
     }
 }
 
-/// Paint a small `›` / `‹` out of two line segments.
-fn paint_chevron(ui: &Ui, center: egui::Pos2, points_right: bool, color: egui::Color32) {
-    let tip = if points_right { 3.0 } else { -3.0 };
+/// Paint a small `›` / `‹` / `˄` out of two line segments.
+fn paint_chevron(ui: &Ui, center: egui::Pos2, direction: Chevron, color: egui::Color32) {
+    let tip = 3.0;
     let half = 4.5;
     let stroke = egui::Stroke::new(1.8, color);
-    let elbow = egui::pos2(center.x + tip, center.y);
+    let (start, elbow, end) = match direction {
+        Chevron::Right => (
+            egui::pos2(center.x - tip, center.y - half),
+            egui::pos2(center.x + tip, center.y),
+            egui::pos2(center.x - tip, center.y + half),
+        ),
+        Chevron::Left => (
+            egui::pos2(center.x + tip, center.y - half),
+            egui::pos2(center.x - tip, center.y),
+            egui::pos2(center.x + tip, center.y + half),
+        ),
+        Chevron::Up => (
+            egui::pos2(center.x - half, center.y + tip),
+            egui::pos2(center.x, center.y - tip),
+            egui::pos2(center.x + half, center.y + tip),
+        ),
+    };
     let painter = ui.painter();
-    painter.line_segment([egui::pos2(center.x - tip, center.y - half), elbow], stroke);
-    painter.line_segment([elbow, egui::pos2(center.x - tip, center.y + half)], stroke);
+    painter.line_segment([start, elbow], stroke);
+    painter.line_segment([elbow, end], stroke);
 }
 
 /// Colour used for a status message of the given severity.
@@ -1035,6 +1058,15 @@ pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
             }
 
             ui.separator();
+            let mut show_send = app.settings.show_send_area;
+            let send_area = ui.checkbox(&mut show_send, tr("显示发送区"));
+            probe::push_top_bar_rect("send_area", send_area.rect);
+            if send_area.changed() {
+                app.settings.show_send_area = show_send;
+                app.mark_settings_dirty();
+            }
+
+            ui.separator();
             let mut log_colors = app.settings.log_colors;
             let log_colors_checkbox = ui.checkbox(&mut log_colors.enabled, tr("自定义接收区配色"));
             probe::push_top_bar_rect("log_colors", log_colors_checkbox.rect);
@@ -1165,15 +1197,16 @@ fn collapsed_splitter(
     min: f32,
     max: f32,
 ) -> PendingSplitter {
-    let boundary = match growth {
-        SplitterGrowth::Rightward => area.left(),
-        _ => area.right(),
+    let (boundary, cross) = match growth {
+        SplitterGrowth::Rightward => (area.left(), area.y_range()),
+        SplitterGrowth::Leftward => (area.right(), area.y_range()),
+        SplitterGrowth::Upward => (area.bottom(), area.x_range()),
     };
     PendingSplitter {
         id,
         growth,
         boundary,
-        cross: area.y_range(),
+        cross,
         current_size: 0.0,
         min,
         max,
@@ -1668,7 +1701,13 @@ fn display_section(app: &mut XcomApp, ui: &mut Ui) {
                 ui.label(tr("行距"));
                 let mut spacing = app.settings.line_spacing;
                 if ui
-                    .add(egui::Slider::new(&mut spacing, 0.0..=10.0).fixed_decimals(0))
+                    .add(
+                        egui::Slider::new(
+                            &mut spacing,
+                            crate::settings::LINE_SPACING_MIN..=crate::settings::LINE_SPACING_MAX,
+                        )
+                        .fixed_decimals(0),
+                    )
                     .changed()
                 {
                     app.settings.line_spacing = spacing;
@@ -1883,25 +1922,38 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
     egui::CentralPanel::default().show(ui, |ui| {
         // The send area sits at the bottom of the central column, so that the
         // configuration and tool panels flank the full height of the window.
-        let height = app.settings.send_area_height;
-        let panel = egui::Panel::bottom("send_area")
-            .resizable(false)
-            .exact_size(height)
-            .show(ui, |ui| send_area(app, ui));
-        let outer = panel.response.rect;
-        app.pending_splitters.push(PendingSplitter {
-            id: "send_area",
-            growth: SplitterGrowth::Upward,
-            boundary: outer.top(),
-            cross: outer.x_range(),
-            current_size: app.settings.send_area_height,
-            min: SEND_AREA_MIN,
-            max: SEND_AREA_MAX,
-            target: SplitterTarget::SendHeight,
-            // The send area shrinks to its minimum rather than collapsing:
-            // there is nothing to fold it into.
-            collapsed: false,
-        });
+        if app.settings.show_send_area {
+            let height = app.settings.send_area_height;
+            let panel = egui::Panel::bottom("send_area")
+                .resizable(false)
+                .exact_size(height)
+                .show(ui, |ui| send_area(app, ui));
+            let outer = panel.response.rect;
+            app.pending_splitters.push(PendingSplitter {
+                id: "send_area",
+                growth: SplitterGrowth::Upward,
+                boundary: outer.top(),
+                cross: outer.x_range(),
+                current_size: app.settings.send_area_height,
+                min: SEND_AREA_MIN,
+                max: SEND_AREA_MAX,
+                target: SplitterTarget::SendHeight,
+                collapsed: false,
+            });
+        } else {
+            // Collapsed: keep a strip along the bottom edge so the area stays
+            // draggable (and clickable) back open.  The stored height is left
+            // untouched, so it is restored when the area reopens.
+            let area = ui.available_rect_before_wrap();
+            app.pending_splitters.push(collapsed_splitter(
+                "send_area",
+                SplitterGrowth::Upward,
+                SplitterTarget::SendHeight,
+                area,
+                SEND_AREA_MIN,
+                SEND_AREA_MAX,
+            ));
+        }
 
         log_toolbar(app, ui);
         ui.separator();

@@ -213,13 +213,10 @@ pub fn show(
         let mut visible: Vec<VisibleRow> = Vec::with_capacity(last.saturating_sub(first));
         for index in first..last {
             let text = store.row(index).to_owned();
-            // Echoed transmissions are tinted so they are not mistaken for
-            // data from the device.
+            // Received and echoed transmissions share one text colour; only
+            // the direction marker tells them apart.
             let kind = store.row_kind(index);
-            let color = match kind {
-                RowKind::Received => palette.foreground,
-                RowKind::Sent => palette.sent,
-            };
+            let color = palette.foreground;
             let galley = ui.ctx().fonts_mut(|f| {
                 f.layout_job(row_job(
                     &text,
@@ -695,14 +692,15 @@ mod tests {
             (MARK_SENT.len(), 0),
             RowKind::Sent,
             &font,
-            DARK_LOG.sent,
+            DARK_LOG.foreground,
             DARK_LOG,
         );
         let section = |i: usize| &job.text[byte_range(&job, i)];
         assert_eq!(job.sections[0].format.color, DARK_LOG.sent_marker);
         assert_eq!(section(0), MARK_SENT);
         assert_eq!(section(1), "out");
-        assert_eq!(job.sections[1].format.color, DARK_LOG.sent);
+        // Echoed data uses the same text colour as received data.
+        assert_eq!(job.sections[1].format.color, DARK_LOG.foreground);
     }
 
     #[test]
