@@ -159,8 +159,6 @@ pub struct XcomApp {
 
     pub(crate) side_tab: SideTab,
     pub(crate) show_about: bool,
-    /// Whether the Preferences dialog is open.
-    pub(crate) show_preferences: bool,
     /// Whether the Display settings dialog is open.
     pub(crate) show_display_settings: bool,
 
@@ -249,7 +247,6 @@ impl XcomApp {
             protocol_progress: None,
             side_tab: SideTab::Multi,
             show_about: false,
-            show_preferences: false,
             show_display_settings: false,
             signals: Signals::default(),
             applied_theme: None,
@@ -1102,10 +1099,6 @@ impl XcomApp {
             self.ports.poll();
             self.info(tr("已刷新串口列表"));
         }
-        let preferences = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Comma));
-        if preferences {
-            self.show_preferences = true;
-        }
         // Save / Save As, matching the shortcuts shown in the File menu.
         let save =
             ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S));
@@ -1205,7 +1198,6 @@ impl XcomApp {
         panels::center_panel(self, ui);
         panels::apply_splitters(self, ui);
         panels::display_settings_window(self, ctx);
-        panels::preferences_window(self, ctx);
         panels::about_window(self, ctx);
 
         self.maybe_save_settings(ctx);
@@ -1219,13 +1211,6 @@ pub(crate) fn draw_log(
     ui: &mut egui::Ui,
     palette: crate::theme::LogPalette,
 ) -> log_view::LogViewOutput {
-    let options = LogViewOptions {
-        auto_scroll: app.settings.auto_scroll,
-        font: crate::fonts::receive_font_id(app.settings.fonts.receive_size),
-        line_spacing: app.settings.line_spacing,
-        paused: app.show_paused,
-    };
-
     // Tell the store how many columns fit, so text wrapping matches the panel.
     let font = crate::fonts::receive_font_id(app.settings.fonts.receive_size);
     let char_width = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'M'));
@@ -1233,6 +1218,16 @@ pub(crate) fn draw_log(
         let cols = (ui.available_width() / char_width).floor().max(8.0) as usize;
         app.update_wrap_width(cols, ui.ctx());
     }
+
+    let options = LogViewOptions {
+        auto_scroll: app.settings.auto_scroll,
+        font,
+        line_spacing: app.settings.line_spacing,
+        paused: app.show_paused,
+        display: app.settings.display,
+        echo_sent: app.settings.echo_sent,
+        highlights: &app.settings.highlights,
+    };
     // `show` needs &LogStore and &mut LogViewState from the same struct.
     let XcomApp { log, log_view, .. } = app;
     log_view::show(ui, log, palette, log_view, &options)
@@ -1867,6 +1862,65 @@ mod layout_tests {
                 "{name} is on a different line from 历史: {:?} vs {history:?}",
                 rect.center()
             );
+        }
+    }
+
+    /// The action group never overlaps the options at any window width.
+    ///
+    /// The row used to decide from a fixed width guess; just above that guess
+    /// the right-aligned group ran into the interval and timed-send controls
+    /// before the layout moved it down.  Sweep the transition so the fix is
+    /// checked where the old overlap happened.
+    #[test]
+    fn send_toolbar_actions_never_overlap_the_options() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.show_tool_panel = true;
+
+        for width in [
+            880.0_f32, 900.0, 940.0, 980.0, 1020.0, 1080.0, 1140.0, 1200.0, 1280.0, 1440.0,
+        ] {
+            for _ in 0..2 {
+                let mut raw = input();
+                raw.screen_rect = Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 540.0),
+                ));
+                full_frame(&ctx, &mut app, raw);
+            }
+
+            let rects = panels::probe::send_toolbar_rects();
+            let find = |name: &str| {
+                rects
+                    .iter()
+                    .find(|(candidate, _)| *candidate == name)
+                    .map(|(_, rect)| *rect)
+                    .unwrap_or_else(|| panic!("{name} was not laid out at {width}px"))
+            };
+            let options = [
+                ("section", find("section")),
+                ("hex", find("hex")),
+                ("newline", find("newline")),
+                ("interval label", find("interval_label")),
+                ("interval", find("interval")),
+                ("timed", find("timed")),
+            ];
+            let actions = [
+                ("history", find("history")),
+                ("clear", find("clear")),
+                ("file", find("file")),
+                ("send", find("send")),
+            ];
+            for (option_name, option) in options {
+                for (action_name, action) in actions {
+                    let overlap = option.intersect(action);
+                    assert!(
+                        overlap.width() <= 0.5 || overlap.height() <= 0.5,
+                        "at {width}px the {option_name} control {option:?} overlaps \
+                         {action_name} {action:?}"
+                    );
+                }
+            }
         }
     }
 
@@ -2881,12 +2935,70 @@ mod layout_tests {
         );
     }
 
+    /// The display settings page also hosts the keyword rules.
     #[test]
     fn renders_the_display_settings_window() {
         let ctx = egui::Context::default();
         let mut app = seeded();
         app.show_display_settings = true;
+        app.settings.log_colors.enabled = true;
+        app.settings.highlights.enabled = true;
+        app.settings.highlights.rules = vec![
+            crate::highlight::HighlightRule {
+                text: "OK".to_owned(),
+                color: [0x4C, 0xAF, 0x50],
+            },
+            crate::highlight::HighlightRule {
+                text: "ERROR".to_owned(),
+                color: [0xE5, 0x53, 0x53],
+            },
+        ];
         render(&mut app, &ctx, "display settings");
+    }
+
+    /// The keyword column is a table cell with room for a real pattern.
+    #[test]
+    fn highlight_table_gives_the_keyword_field_room() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.show_display_settings = true;
+        app.settings.highlights.enabled = true;
+        app.settings.highlights.rules = vec![
+            crate::highlight::HighlightRule {
+                text: "ERROR".to_owned(),
+                color: [0xE5, 0x53, 0x53],
+            },
+            crate::highlight::HighlightRule {
+                text: "OK".to_owned(),
+                color: [0x4C, 0xAF, 0x50],
+            },
+        ];
+        render(&mut app, &ctx, "display settings");
+
+        let table = panels::probe::highlight_table_rect();
+        let fields = panels::probe::highlight_keyword_rects();
+        assert_eq!(fields.len(), 2, "the keyword rows were not laid out");
+        assert!(
+            table.width() <= 450.5,
+            "the keyword table overflows the 450px page: {:.1}px",
+            table.width()
+        );
+        assert!(
+            table.width() >= 400.0,
+            "the keyword table is only {:.1}px wide",
+            table.width()
+        );
+        for rect in fields {
+            assert!(
+                rect.width() >= 290.0,
+                "a keyword field is only {:.1}px wide",
+                rect.width()
+            );
+            assert!(
+                table.contains_rect(rect),
+                "a keyword field escaped the table: {rect:?} vs {table:?}"
+            );
+        }
     }
 
     /// The protocol form stays inside its panel in every language.

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::encoding::EncodingChoice;
+use crate::highlight::HighlightSettings;
 use crate::i18n::Lang;
 use crate::logstore::DisplayOptions;
 use crate::multi::MultiSend;
@@ -153,6 +154,8 @@ pub struct Settings {
     /// Interface language; `None` means "not chosen yet, follow the system".
     pub lang: Option<Lang>,
     pub log_colors: LogColorOverride,
+    /// Keyword highlighting for the receive view.
+    pub highlights: HighlightSettings,
     pub serial: SerialConfig,
     pub display: DisplayOptions,
     /// Receive decoding: `None` means auto-detect.
@@ -214,6 +217,7 @@ impl Default for Settings {
             theme: ThemeMode::Dark,
             lang: None,
             log_colors: LogColorOverride::default(),
+            highlights: HighlightSettings::default(),
             serial: SerialConfig::default(),
             display: DisplayOptions::default(),
             encoding: None,
@@ -252,6 +256,7 @@ impl Settings {
         self.max_raw = self.max_raw.clamp(64 * 1024, 512 * 1024 * 1024);
         self.multi.normalize();
         self.protocol.normalize();
+        self.highlights.normalize();
         self.left_panel_width = self.left_panel_width.clamp(
             crate::ui::panels::LEFT_PANEL_MIN,
             crate::ui::panels::LEFT_PANEL_MAX,
@@ -400,6 +405,32 @@ mod tests {
             !text.contains("log_font_size"),
             "legacy size should not be written"
         );
+    }
+
+    #[test]
+    fn keyword_highlights_round_trip_through_json() {
+        use crate::highlight::HighlightRule;
+
+        let mut settings = Settings::default();
+        settings.highlights.enabled = true;
+        settings.highlights.rules = vec![
+            HighlightRule {
+                text: "OK".to_owned(),
+                color: [0x4C, 0xAF, 0x50],
+            },
+            HighlightRule {
+                text: "ERROR".to_owned(),
+                color: [0xE5, 0x53, 0x53],
+            },
+        ];
+
+        let text = serde_json::to_string(&settings).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.highlights, settings.highlights);
+
+        // A file written before the feature existed still loads.
+        let legacy: Settings = serde_json::from_str(r#"{"theme":"Light"}"#).unwrap();
+        assert_eq!(legacy.highlights, HighlightSettings::default());
     }
 
     #[test]

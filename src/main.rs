@@ -10,6 +10,7 @@ mod app;
 mod encoding;
 mod fonts;
 mod hex;
+mod highlight;
 mod i18n;
 mod logstore;
 mod multi;

@@ -12,8 +12,9 @@ use eframe::egui::{
     self, Color32, FontId, Galley, Pos2, Rect, ScrollArea, Sense, TextFormat, Ui, Vec2,
 };
 
+use crate::highlight::HighlightSettings;
 use crate::i18n::tr;
-use crate::logstore::{LogStore, RowKind};
+use crate::logstore::{DisplayOptions, LogStore, RowKind, ViewMode};
 use crate::theme::LogPalette;
 
 /// A caret position: a row id plus a character index within that row.
@@ -129,12 +130,17 @@ impl LogViewState {
 }
 
 /// How the view should behave this frame.
-pub struct LogViewOptions {
+pub struct LogViewOptions<'a> {
     pub auto_scroll: bool,
     pub font: FontId,
     pub line_spacing: f32,
     /// Whether the display is currently frozen, for the context menu label.
     pub paused: bool,
+    /// Current display options, so the context menu shows their state.
+    pub display: DisplayOptions,
+    pub echo_sent: bool,
+    /// Keyword rules applied to the data part of each row.
+    pub highlights: &'a HighlightSettings,
 }
 
 /// Actions the surrounding UI should perform, requested from the view.
@@ -146,6 +152,15 @@ pub struct LogViewOutput {
     pub has_selection: bool,
     /// The context menu asked to freeze or resume the display.
     pub toggle_pause: bool,
+    /// The context menu asked to switch between text and HEX display.
+    pub toggle_hex: bool,
+    /// The context menu asked to toggle echoing sent content.
+    pub toggle_echo: bool,
+    /// Context menu display switches.
+    pub toggle_markers: bool,
+    pub toggle_timestamp: bool,
+    pub toggle_wrap: bool,
+    pub toggle_auto_scroll: bool,
     /// The context menu asked to clear the receive view.
     pub clear_received: bool,
 }
@@ -155,6 +170,12 @@ pub struct LogViewOutput {
 struct ContextActions {
     copied: bool,
     toggle_pause: bool,
+    toggle_hex: bool,
+    toggle_echo: bool,
+    toggle_markers: bool,
+    toggle_timestamp: bool,
+    toggle_wrap: bool,
+    toggle_auto_scroll: bool,
     clear_received: bool,
 }
 
@@ -167,7 +188,7 @@ fn context_menu(
     response: egui::Response,
     store: &LogStore,
     state: &mut LogViewState,
-    options: &LogViewOptions,
+    options: &LogViewOptions<'_>,
 ) -> ContextActions {
     let mut actions = ContextActions::default();
     response.context_menu(|ui| {
@@ -201,6 +222,44 @@ fn context_menu(
             actions.toggle_pause = true;
             ui.close();
         }
+
+        let mut hex = options.display.mode == ViewMode::Hex;
+        if ui.checkbox(&mut hex, tr("16进制显示")).changed() {
+            actions.toggle_hex = true;
+            ui.close();
+        }
+        let mut echo = options.echo_sent;
+        if ui.checkbox(&mut echo, tr("回显发送")).changed() {
+            actions.toggle_echo = true;
+            ui.close();
+        }
+
+        ui.separator();
+        let mut markers = options.display.markers;
+        if ui.checkbox(&mut markers, tr("方向标记")).changed() {
+            actions.toggle_markers = true;
+            ui.close();
+        }
+        let mut timestamp = options.display.timestamp;
+        if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
+            actions.toggle_timestamp = true;
+            ui.close();
+        }
+        let mut wrap = options.display.wrap;
+        if ui.checkbox(&mut wrap, tr("自动换行")).changed() {
+            actions.toggle_wrap = true;
+            ui.close();
+        }
+        let mut auto_scroll = options.auto_scroll;
+        if ui
+            .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
+            .changed()
+        {
+            actions.toggle_auto_scroll = true;
+            ui.close();
+        }
+
+        ui.separator();
         if ui.button(tr("清除接收")).clicked() {
             actions.clear_received = true;
             ui.close();
@@ -227,7 +286,7 @@ pub fn show(
     store: &LogStore,
     palette: LogPalette,
     state: &mut LogViewState,
-    options: &LogViewOptions,
+    options: &LogViewOptions<'_>,
 ) -> LogViewOutput {
     let font = options.font.clone();
     let row_height = ui.ctx().fonts_mut(|f| f.row_height(&font)) + options.line_spacing;
@@ -245,6 +304,12 @@ pub fn show(
         let actions = context_menu(response, store, state, options);
         output.copied = actions.copied;
         output.toggle_pause = actions.toggle_pause;
+        output.toggle_hex = actions.toggle_hex;
+        output.toggle_echo = actions.toggle_echo;
+        output.toggle_markers = actions.toggle_markers;
+        output.toggle_timestamp = actions.toggle_timestamp;
+        output.toggle_wrap = actions.toggle_wrap;
+        output.toggle_auto_scroll = actions.toggle_auto_scroll;
         output.clear_received = actions.clear_received;
         return output;
     }
@@ -302,6 +367,7 @@ pub fn show(
                     &font,
                     color,
                     palette,
+                    options.highlights,
                 ))
             });
             let origin = Pos2::new(rect.left(), rect.top() + index as f32 * row_height);
@@ -370,6 +436,12 @@ pub fn show(
         let row_actions = context_menu(response, store, state, options);
         context_actions.copied |= row_actions.copied;
         context_actions.toggle_pause |= row_actions.toggle_pause;
+        context_actions.toggle_hex |= row_actions.toggle_hex;
+        context_actions.toggle_echo |= row_actions.toggle_echo;
+        context_actions.toggle_markers |= row_actions.toggle_markers;
+        context_actions.toggle_timestamp |= row_actions.toggle_timestamp;
+        context_actions.toggle_wrap |= row_actions.toggle_wrap;
+        context_actions.toggle_auto_scroll |= row_actions.toggle_auto_scroll;
         context_actions.clear_received |= row_actions.clear_received;
         output.has_selection = state.has_selection();
     });
@@ -393,6 +465,12 @@ pub fn show(
 
     output.copied |= context_actions.copied;
     output.toggle_pause |= context_actions.toggle_pause;
+    output.toggle_hex |= context_actions.toggle_hex;
+    output.toggle_echo |= context_actions.toggle_echo;
+    output.toggle_markers |= context_actions.toggle_markers;
+    output.toggle_timestamp |= context_actions.toggle_timestamp;
+    output.toggle_wrap |= context_actions.toggle_wrap;
+    output.toggle_auto_scroll |= context_actions.toggle_auto_scroll;
     output.clear_received |= context_actions.clear_received;
     let _ = result;
     output
@@ -410,6 +488,7 @@ fn row_job(
     font: &FontId,
     color: Color32,
     palette: LogPalette,
+    highlights: &HighlightSettings,
 ) -> LayoutJob {
     let (mark_len, stamp_len) = prefix;
     let mark_len = clamp_to_boundary(text, mark_len);
@@ -435,7 +514,27 @@ fn row_job(
     };
     push(&text[..mark_len], marker_color);
     push(&text[mark_len..stamp_end], palette.timestamp);
-    push(&text[stamp_end..], color);
+
+    let data = &text[stamp_end..];
+    if highlights.is_active() {
+        let mut last = 0;
+        for found in highlights.matches(data) {
+            if found.start > last {
+                push(&data[last..found.start], color);
+            }
+            let rule = &highlights.rules[found.rule];
+            push(
+                &data[found.start..found.end],
+                Color32::from_rgb(rule.color[0], rule.color[1], rule.color[2]),
+            );
+            last = found.end;
+        }
+        if last < data.len() {
+            push(&data[last..], color);
+        }
+    } else {
+        push(data, color);
+    }
     job
 }
 
@@ -747,6 +846,7 @@ mod tests {
             &font,
             DARK_LOG.foreground,
             DARK_LOG,
+            &HighlightSettings::default(),
         );
         // The galley text must stay identical to the row, or caret columns
         // would drift away from the stored text.
@@ -778,6 +878,7 @@ mod tests {
             &font,
             DARK_LOG.foreground,
             DARK_LOG,
+            &HighlightSettings::default(),
         );
         let section = |i: usize| &job.text[byte_range(&job, i)];
         assert_eq!(job.sections[0].format.color, DARK_LOG.sent_marker);
@@ -797,6 +898,7 @@ mod tests {
             &font,
             DARK_LOG.foreground,
             DARK_LOG,
+            &HighlightSettings::default(),
         );
         assert_eq!(job.sections.len(), 1);
         assert_eq!(byte_range(&job, 0), 0..5);
@@ -815,9 +917,53 @@ mod tests {
             &font,
             DARK_LOG.foreground,
             DARK_LOG,
+            &HighlightSettings::default(),
         );
         assert_eq!(job.text, "中");
         assert_eq!(job.sections.len(), 1);
         assert_eq!(byte_range(&job, 0), 0..3);
+    }
+
+    #[test]
+    fn row_job_paints_keywords_without_changing_the_text() {
+        let font = FontId::monospace(12.0);
+        let highlights = HighlightSettings {
+            enabled: true,
+            rules: vec![
+                crate::highlight::HighlightRule {
+                    text: "OK".to_owned(),
+                    color: [1, 2, 3],
+                },
+                crate::highlight::HighlightRule {
+                    text: "ERROR".to_owned(),
+                    color: [4, 5, 6],
+                },
+            ],
+        };
+        let text = "OK no ERROR";
+        let job = row_job(
+            text,
+            (0, 0),
+            RowKind::Received,
+            &font,
+            DARK_LOG.foreground,
+            DARK_LOG,
+            &highlights,
+        );
+        assert_eq!(job.text, text, "highlighting must not alter the row text");
+        let sections: Vec<(&str, Color32)> = job
+            .sections
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (&job.text[byte_range(&job, i)], s.format.color))
+            .collect();
+        assert_eq!(
+            sections,
+            vec![
+                ("OK", Color32::from_rgb(1, 2, 3)),
+                (" no ", DARK_LOG.foreground),
+                ("ERROR", Color32::from_rgb(4, 5, 6)),
+            ]
+        );
     }
 }

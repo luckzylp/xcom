@@ -42,10 +42,10 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Hot-plug serial ports | ✅ | Auto-closes and prompts on disconnect |
 | Hex display (can auto-convert existing data) | ✅ | Text ⇄ HEX toggle re-renders historical data |
 | Display modes: black bg green text / white bg black text | ✅ | Controlled by theme; custom foreground/background colors also available |
-| Echo sent content | ✅ | Sent content shown in a different color in the receive area; toggle under View → Display |
+| Echo sent content | ✅ | Sent content shown in a different color in the receive area; toggle in the receive area's right-click menu |
 | RTS / DTR control | ✅ | Switchable in real time while port is open |
 | Timestamps (frame-delimited by CR/LF) | ✅ | Shows "receiving" preview in status bar when a frame is incomplete |
-| Direction markers on every row | ✅ | Coloured `->` for received data, `<-` for sent data; toggle under View → Display |
+| Direction markers on every row | ✅ | Coloured `->` for received data, `<-` for sent data; toggle in View → Display settings… |
 | Save receive window as any format file | ✅ | Save as text or raw binary |
 | Clear receive (also resets Tx/Rx counters) | ✅ | |
 | Single send: any characters / hex / auto-split bytes | ✅ | `0102`, `01 02`, `0x01,0x02`, `01-02` all accepted |
@@ -71,10 +71,11 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 
 - **Automatic encoding detection**: No need to manually guess GBK / UTF-8 / Shift_JIS.
 - **Dark + Light themes** (can also follow the system).
-- **Chinese/English UI toggle**: switchable at any time from **View → Language** or **Edit → Preferences**; follows system `LANG` on first launch; choice is persisted.
+- **Chinese/English UI toggle**: switchable at any time from **View → Language**; follows system `LANG` on first launch; choice is persisted.
 - **Receive area text selection**: drag-select with mouse, Ctrl+C copy, Ctrl+A select all (based on glyph metrics, CJK full-width characters select correctly).
+- **Keyword highlighting**: add literal keywords and colours under View → Display settings… → Keyword highlighting; the rules persist in the settings file, and longer keywords win when matches overlap.
 - **Virtualized log view**: Only visible lines are rendered, staying smooth during long high-speed reception.
-- **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off under View → Display. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
+- **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off in View → Display settings…. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.
 - **Adjustable receive area line spacing**; auto-wrap width follows window resize and the selected font.
 - **Collapsible side panels**: drag the configuration panel's splitter all the way left (or the tool panel's all the way right) and it snaps shut, handing the width to the receive area. A hairline stays at the edge, with a chevron on hover to open it again; the "Show configuration panel / Show tool panel" items under **View** are the same state. The centre column keeps a 320px floor, so each panel's maximum is a *soft* one that only applies when the window can spare the room.
@@ -114,7 +115,7 @@ The binary is at `target/release/xcom` (`xcom.exe` on Windows).
 
 ### UI Language
 
-The **View → Language** submenu (or **Edit → Preferences**) switches between **Simplified Chinese** and **English** instantly, without restarting.
+The **View → Language** submenu switches between **Simplified Chinese** and **English** instantly, without restarting.
 
 - On first launch, it detects from `LC_ALL` / `LC_MESSAGES` / `LANG` (`zh*` → Chinese, otherwise English), and persists the result; thereafter the user's choice takes precedence.
 - The implementation uses a gettext-style approach: **the Chinese text is the translation key**, wrapped as `tr("打开串口")`. This makes batch conversion mechanical and diffs readable; if a translation is missing, it falls back to the Chinese original rather than showing a blank label.
@@ -148,7 +149,7 @@ The UI is in Chinese; on startup the program automatically searches for CJK font
 
 If none are found, the program still runs but Chinese characters appear as squares, with a status bar prompt to install a font (on Linux, install `fonts-noto-cjk` or `fonts-wqy-microhei`).
 
-The default interface stack prefers a font that contains both Latin and CJK glyphs (such as Noto Sans CJK SC, Microsoft YaHei, or PingFang SC). This avoids the vertical baseline mismatch that occurs when ASCII comes from one font and Chinese from a fallback. Users can still select any installed interface, receive, or send font in **View → Display → More display settings… → Fonts**.
+The default interface stack prefers a font that contains both Latin and CJK glyphs (such as Noto Sans CJK SC, Microsoft YaHei, or PingFang SC). This avoids the vertical baseline mismatch that occurs when ASCII comes from one font and Chinese from a fallback. Users can still select any installed interface, receive, or send font in **View → Display settings… → Fonts**.
 
 ---
 
@@ -212,13 +213,12 @@ The frame period **must be greater than the response frame-delimiting time**, ot
 | `F5` | Refresh the port list |
 | `Ctrl + S` | Save receive data |
 | `Ctrl + Shift + S` | Save raw data |
-| `Ctrl + ,` | Open Preferences |
 | `Ctrl + Q` | Quit |
 | `Ctrl + C` | Copy selected content in receive area |
 | `Ctrl + A` | Select all in receive area |
 | `1`–`9`, `0` | Send corresponding entry when "link numeric keypad" is checked in multi-send panel |
 
-Right-click inside the receive area for Copy selection, Select all, Pause/Resume display and Clear receive.
+Right-click inside the receive area for Copy selection, Select all, Pause/Resume display, HEX display, Echo sent and Clear receive.
 
 ---
 

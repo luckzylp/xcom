@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use crate::app::{Level, SideTab, XcomApp, draw_log};
 use crate::encoding::EncodingId;
+use crate::highlight::{HighlightRule, MAX_RULES};
 use crate::i18n::{self, Lang, tr};
 use crate::logstore::{HexStyle, ViewMode};
 use crate::protocol::{ChecksumKind, TaskKind};
@@ -75,6 +76,9 @@ pub(crate) mod probe {
         static ABOUT_CLOSE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static TOP_BAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
+        static HIGHLIGHT_TABLE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static HIGHLIGHT_KEYWORD_RECTS: RefCell<Vec<egui::Rect>> =
+            const { RefCell::new(Vec::new()) };
         static PROTOCOL_ROW_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
         static PROTOCOL_CONTENT_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
@@ -113,6 +117,41 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn protocol_content_rect() -> egui::Rect {
         PROTOCOL_CONTENT_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_highlight_table() {
+        HIGHLIGHT_TABLE_RECT.with(|cell| cell.set(egui::Rect::NOTHING));
+        HIGHLIGHT_KEYWORD_RECTS.with(|rects| rects.borrow_mut().clear());
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn begin_highlight_table() {}
+
+    #[cfg(test)]
+    pub(crate) fn set_highlight_table_rect(rect: egui::Rect) {
+        HIGHLIGHT_TABLE_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_highlight_table_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn push_highlight_keyword_rect(rect: egui::Rect) {
+        HIGHLIGHT_KEYWORD_RECTS.with(|rects| rects.borrow_mut().push(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_highlight_keyword_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn highlight_table_rect() -> egui::Rect {
+        HIGHLIGHT_TABLE_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn highlight_keyword_rects() -> Vec<egui::Rect> {
+        HIGHLIGHT_KEYWORD_RECTS.with(|rects| rects.borrow().clone())
     }
 
     #[cfg(test)]
@@ -1089,11 +1128,6 @@ fn menu_dialog_item_shortcut(ui: &mut Ui, label: &'static str, shortcut: &str) -
     menu_item(ui, &format!("{}…", tr(label)), shortcut)
 }
 
-/// A menu item that opens [`preferences_window`].
-fn preferences_item(ui: &mut Ui) -> bool {
-    menu_item(ui, &format!("{}…", tr("首选项")), "Ctrl+,")
-}
-
 /// egui temp-data key for the custom-baud dialog.
 ///
 /// The serial panel draws the dialog and the Tools menu asks for it, so both
@@ -1107,7 +1141,7 @@ fn custom_baud_manager_id() -> egui::Id {
 /// Configuration that used to sit in one crowded strip is organised the way a
 /// desktop application would: commands live in the menu of the thing they act
 /// on, toggles are check items under View, and the settings that need room for
-/// labels and colour pickers live in Preferences.
+/// labels and colour pickers live in the display settings page.
 pub(crate) fn menu_bar(app: &mut XcomApp, ui: &mut Ui) {
     egui::Panel::top("menu_bar").show(ui, |ui| {
         probe::begin_top_bar();
@@ -1164,14 +1198,12 @@ fn edit_menu(app: &mut XcomApp, ui: &mut Ui) {
     if menu_item(ui, tr("清除发送"), "") {
         clear_send(app);
     }
-    ui.separator();
-    if preferences_item(ui) {
-        app.show_preferences = true;
-    }
 }
 
 fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
-    ui.menu_button(tr("显示"), |ui| display_menu(app, ui));
+    if menu_dialog_item(ui, "显示设置") {
+        app.show_display_settings = true;
+    }
     ui.menu_button(tr("编码"), |ui| encoding_menu(app, ui));
     ui.separator();
 
@@ -1216,66 +1248,6 @@ fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
             }
         }
     });
-}
-
-/// The receive view's everyday switches, plus the full settings dialog.
-fn display_menu(app: &mut XcomApp, ui: &mut Ui) {
-    let mut display = app.settings.display;
-    let mut changed = false;
-
-    let mut hex = display.mode == ViewMode::Hex;
-    if ui.checkbox(&mut hex, tr("16进制显示")).changed() {
-        display.mode = if hex { ViewMode::Hex } else { ViewMode::Text };
-        changed = true;
-    }
-
-    let mut markers = display.markers;
-    if ui.checkbox(&mut markers, tr("方向标记")).changed() {
-        display.markers = markers;
-        changed = true;
-    }
-
-    let mut timestamp = display.timestamp;
-    if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
-        display.timestamp = timestamp;
-        changed = true;
-    }
-
-    let mut wrap = display.wrap;
-    if ui.checkbox(&mut wrap, tr("自动换行")).changed() {
-        display.wrap = wrap;
-        changed = true;
-    }
-
-    let mut auto_scroll = app.settings.auto_scroll;
-    if ui
-        .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
-        .changed()
-    {
-        app.settings.auto_scroll = auto_scroll;
-        app.mark_settings_dirty();
-    }
-
-    let mut echo = app.settings.echo_sent;
-    if ui
-        .checkbox(&mut echo, tr("回显发送"))
-        .on_hover_text(tr("把发出的内容显示在接收区，便于确认是否真的发出"))
-        .changed()
-    {
-        app.settings.echo_sent = echo;
-        app.mark_settings_dirty();
-    }
-
-    if changed {
-        app.settings.display = display;
-        app.log.set_options(display);
-        app.mark_settings_dirty();
-    }
-
-    ui.separator();
-    if menu_item(ui, &format!("{}…", tr("更多显示设置")), "") {
-        app.show_display_settings = true;
-    }
 }
 
 /// Receive and transmit encodings, as two short submenus.
@@ -1385,17 +1357,24 @@ pub(crate) fn display_settings_window(app: &mut XcomApp, ctx: &Context) {
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
-        .default_width(380.0)
+        .default_width(450.0)
         .show(ctx, |ui| {
             let header = dialog::header(ui, tr("显示设置"), None);
             if header.close_clicked {
                 close_requested = true;
             }
             ui.separator();
+            // Keep the page inside the window even when many keyword rules
+            // push it past the screen height.
+            let max_height = (ctx.content_rect().height() - 120.0).clamp(240.0, 600.0);
             egui::ScrollArea::vertical()
-                .max_height(560.0)
+                .max_height(max_height)
                 .auto_shrink([false, true])
-                .show(ui, |ui| display_settings_ui(app, ui));
+                .show(ui, |ui| {
+                    display_settings_ui(app, ui);
+                    ui.separator();
+                    highlight_settings_ui(app, ui);
+                });
         });
     if !open || close_requested {
         app.show_display_settings = false;
@@ -1403,94 +1382,122 @@ pub(crate) fn display_settings_window(app: &mut XcomApp, ctx: &Context) {
 }
 
 // ---------------------------------------------------------------------------
-// Preferences
+// Keyword highlighting
 // ---------------------------------------------------------------------------
 
-/// Settings that need more room than a menu row: appearance and receive
-/// colours, with the live preview the main window already provides.
-pub(crate) fn preferences_window(app: &mut XcomApp, ctx: &Context) {
-    if !app.show_preferences {
-        return;
-    }
-    let mut open = true;
-    let mut close_requested = false;
-    // Same self-drawn header as the other dialogs: egui's own title bar puts
-    // its close button on the right regardless of the desktop's layout.
-    egui::Window::new(tr("首选项"))
-        .id(egui::Id::new("preferences_dialog"))
-        .title_bar(false)
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .show(ctx, |ui| {
-            let header = dialog::header(ui, tr("首选项"), None);
-            if header.close_clicked {
-                close_requested = true;
-            }
-            ui.separator();
+/// Add, edit and remove the receive view's keyword rules.
+///
+/// This section lives inside the display settings page rather than in a dialog
+/// of its own; the rules are saved with the rest of the settings, and the log
+/// re-reads them every frame so changes also apply to data already on screen.
+fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
+    probe::begin_highlight_table();
+    ui.strong(tr("关键字高亮"));
 
-            ui.label(RichText::new(tr("外观")).strong());
-            egui::Grid::new("preferences_appearance")
-                .num_columns(2)
-                .spacing([8.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label(tr("主题"));
-                    let mut theme = app.settings.theme;
-                    if combo(
-                        ui,
-                        "preferences_theme",
-                        &mut theme,
-                        &ThemeMode::ALL,
-                        |mode| format!("{} {}", mode.icon(), tr(mode.label())),
-                    ) {
-                        app.settings.theme = theme;
-                        app.mark_settings_dirty();
-                    }
-                    ui.end_row();
+    let mut settings = app.settings.highlights.clone();
+    let mut changed = false;
 
-                    ui.label(tr("语言"));
-                    let mut language = i18n::lang();
-                    if combo(
-                        ui,
-                        "preferences_language",
-                        &mut language,
-                        &Lang::ALL,
-                        |candidate| candidate.label().to_owned(),
-                    ) {
-                        i18n::set_lang(language);
-                        app.settings.lang = Some(language);
-                        app.mark_settings_dirty();
-                    }
-                    ui.end_row();
-                });
+    changed |= ui
+        .checkbox(&mut settings.enabled, tr("启用关键字高亮"))
+        .changed();
 
-            ui.separator();
-            ui.label(RichText::new(tr("接收区配色")).strong());
-            let mut colors = app.settings.log_colors;
-            if ui
-                .checkbox(&mut colors.enabled, tr("自定义接收区配色"))
-                .changed()
-            {
-                app.settings.log_colors = colors;
-                app.mark_settings_dirty();
-            }
-            if colors.enabled {
-                ui.horizontal(|ui| {
-                    ui.label(tr("字色"));
-                    if ui.color_edit_button_srgb(&mut colors.foreground).changed() {
-                        app.settings.log_colors = colors;
-                        app.mark_settings_dirty();
-                    }
-                    ui.label(tr("底色"));
-                    if ui.color_edit_button_srgb(&mut colors.background).changed() {
-                        app.settings.log_colors = colors;
-                        app.mark_settings_dirty();
-                    }
-                });
-            }
+    // A manual table rather than `Grid`: Grid sizes its first column from the
+    // header text, which left a long keyword field clamped to a short cell.
+    // The keyword column takes whatever the 450px page leaves after the two
+    // fixed columns, so the table never overflows its container.
+    const COLOR_COL: f32 = 52.0;
+    const ACTION_COL: f32 = 44.0;
+    const COL_GAP: f32 = 8.0;
+    let body_font = egui::TextStyle::Body.resolve(ui.style());
+    let row_height = ui
+        .spacing()
+        .interact_size
+        .y
+        .max(ui.ctx().fonts_mut(|fonts| fonts.row_height(&body_font)) + 8.0);
+    let rule_count = settings.rules.len();
+
+    let mut remove = None;
+    let table = egui::Frame::group(ui.style()).show(ui, |ui| {
+        let table_width = ui.available_width();
+        let keyword_col = (table_width - COLOR_COL - ACTION_COL - COL_GAP * 2.0).max(200.0);
+        ui.set_width(table_width);
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = COL_GAP;
+            ui.add_sized(
+                [keyword_col, row_height],
+                egui::Label::new(RichText::new(tr("关键字")).strong()),
+            );
+            ui.add_sized(
+                [COLOR_COL, row_height],
+                egui::Label::new(RichText::new(tr("颜色")).strong()),
+            );
+            ui.add_sized(
+                [ACTION_COL, row_height],
+                egui::Label::new(RichText::new(tr("操作")).strong()),
+            );
         });
-    if !open || close_requested {
-        app.show_preferences = false;
+        ui.separator();
+
+        for (index, rule) in settings.rules.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = COL_GAP;
+                let keyword = ui.add_sized(
+                    [keyword_col, row_height],
+                    egui::TextEdit::singleline(&mut rule.text).hint_text(tr("关键字")),
+                );
+                probe::push_highlight_keyword_rect(keyword.rect);
+                changed |= keyword.changed();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(COLOR_COL, row_height),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        changed |= ui.color_edit_button_srgb(&mut rule.color).changed();
+                    },
+                );
+                if ui
+                    .add_sized([ACTION_COL, row_height], egui::Button::new("×"))
+                    .on_hover_text(tr("删除"))
+                    .clicked()
+                {
+                    remove = Some(index);
+                }
+            });
+            if index + 1 < rule_count {
+                ui.separator();
+            }
+        }
+    });
+    probe::set_highlight_table_rect(table.response.rect);
+    if let Some(index) = remove {
+        settings.rules.remove(index);
+        changed = true;
+    }
+    if settings.rules.is_empty() {
+        ui.weak(tr("暂无关键字"));
+    }
+
+    ui.horizontal(|ui| {
+        let full = settings.rules.len() >= MAX_RULES;
+        if ui
+            .add_enabled(!full, egui::Button::new(tr("添加关键字")))
+            .clicked()
+        {
+            settings.rules.push(HighlightRule::default());
+            changed = true;
+        }
+        ui.weak(crate::i18n::tr2(
+            "{} / {} 条规则",
+            settings.rules.len(),
+            MAX_RULES,
+        ));
+    });
+    ui.small(tr("按字面匹配，区分大小写；重叠时较长关键字优先。"));
+
+    if changed {
+        settings.normalize();
+        app.settings.highlights = settings;
+        app.mark_settings_dirty();
     }
 }
 
@@ -2080,6 +2087,16 @@ fn display_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
         app.mark_settings_dirty();
     }
 
+    let mut echo = app.settings.echo_sent;
+    if ui
+        .checkbox(&mut echo, tr("回显发送"))
+        .on_hover_text(tr("把发出的内容显示在接收区，便于确认是否真的发出"))
+        .changed()
+    {
+        app.settings.echo_sent = echo;
+        app.mark_settings_dirty();
+    }
+
     ui.horizontal(|ui| {
         ui.label(tr("行距"));
         let mut spacing = app.settings.line_spacing;
@@ -2160,8 +2177,30 @@ fn display_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
         app.mark_settings_dirty();
     }
 
-    // The clear/save actions live in the receive toolbar, right next to the
-    // data they act on; repeating them here was redundant.
+    ui.separator();
+    ui.strong(tr("接收区配色"));
+    let mut colors = app.settings.log_colors;
+    if ui
+        .checkbox(&mut colors.enabled, tr("自定义接收区配色"))
+        .changed()
+    {
+        app.settings.log_colors = colors;
+        app.mark_settings_dirty();
+    }
+    if colors.enabled {
+        ui.horizontal(|ui| {
+            ui.label(tr("字色"));
+            if ui.color_edit_button_srgb(&mut colors.foreground).changed() {
+                app.settings.log_colors = colors;
+                app.mark_settings_dirty();
+            }
+            ui.label(tr("底色"));
+            if ui.color_edit_button_srgb(&mut colors.background).changed() {
+                app.settings.log_colors = colors;
+                app.mark_settings_dirty();
+            }
+        });
+    }
 }
 
 fn statistics_section(app: &mut XcomApp, ui: &mut Ui) {
@@ -2232,7 +2271,7 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
         // Its floor depends on the interface font and on whether the action
         // group needs a second row: a constant minimum let the separator eat
         // into the toolbar when the user dragged it down.
-        let min_height = send_area_min_height(app, ui, ui.available_width());
+        let min_height = send_area_min_height(app, ui);
         if app.settings.show_send_area {
             let height = app.settings.send_area_height.max(min_height);
             let panel = egui::Panel::bottom("send_area")
@@ -2281,6 +2320,40 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
                 app.show_paused = true;
                 app.info(tr("显示已暂停，数据仍在后台接收"));
             }
+        }
+        let mut display = app.settings.display;
+        let display_changed = output.toggle_hex
+            || output.toggle_markers
+            || output.toggle_timestamp
+            || output.toggle_wrap;
+        if output.toggle_hex {
+            display.mode = if display.mode == ViewMode::Hex {
+                ViewMode::Text
+            } else {
+                ViewMode::Hex
+            };
+        }
+        if output.toggle_markers {
+            display.markers = !display.markers;
+        }
+        if output.toggle_timestamp {
+            display.timestamp = !display.timestamp;
+        }
+        if output.toggle_wrap {
+            display.wrap = !display.wrap;
+        }
+        if display_changed {
+            app.settings.display = display;
+            app.log.set_options(display);
+            app.mark_settings_dirty();
+        }
+        if output.toggle_auto_scroll {
+            app.settings.auto_scroll = !app.settings.auto_scroll;
+            app.mark_settings_dirty();
+        }
+        if output.toggle_echo {
+            app.settings.echo_sent = !app.settings.echo_sent;
+            app.mark_settings_dirty();
         }
         if output.clear_received {
             app.clear_receive();
@@ -2435,36 +2508,44 @@ fn send_toolbar_row_height(app: &XcomApp, ui: &Ui) -> f32 {
     )
 }
 
-/// Whether the send toolbar's action group needs a row of its own.
+/// Width the send action group needs on one row, at the current font.
 ///
-/// At the minimum window size the centre column is narrower than the left
-/// options plus the fixed-width action group.  Keep them on one row when there
-/// is room; otherwise move the actions to a second, left-aligned row instead of
-/// letting the two overlap.
-fn send_actions_on_second_row(app: &XcomApp, width: f32) -> bool {
-    let one_row_min = 620.0 * (app.settings.fonts.ui_size / 13.0).max(1.0);
-    width < one_row_min
+/// The three buttons are laid out at fixed widths; the history combo is at
+/// least 68 points but grows with its label, which differs between languages.
+fn send_actions_width(ui: &Ui) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let label = ui.ctx().fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(tr("历史").to_owned(), font, egui::Color32::WHITE)
+            .size()
+            .x
+    });
+    let history = (label
+        + ui.spacing().icon_width
+        + ui.spacing().icon_spacing
+        + 2.0 * ui.spacing().button_padding.x)
+        .max(68.0);
+    // 发送 + 发送文件 + 清除发送 + 历史, with three 6-point gaps.
+    96.0 + 76.0 + 76.0 + history + 18.0
 }
 
 /// The smallest send panel that still shows the whole toolbar and an editor.
 ///
-/// The toolbar is one or two rows depending on the panel width, each row grows
-/// with the interface font, and a file transmission adds a progress bar.  A
-/// constant minimum cannot cover those cases, so the separator could be dragged
-/// down until the toolbar was clipped.  Sum the parts the panel itself will
-/// lay out: its frame margins, the toolbar rows, the gap before the editor, the
-/// optional progress bar and the editor's own floor.
-fn send_area_min_height(app: &XcomApp, ui: &Ui, outer_width: f32) -> f32 {
+/// The toolbar may occupy one or two rows depending on the labels and the
+/// panel width, each row grows with the interface font, and a file
+/// transmission adds a progress bar.  A constant minimum cannot cover those
+/// cases, so the separator could be dragged down until the toolbar was
+/// clipped.  Sum the parts the panel itself will lay out: its frame margins,
+/// two toolbar rows, the gap before the editor, the optional progress bar and
+/// the editor's own floor.  Reserving both rows is deliberate: the editor takes
+/// any extra room on a wide window, and the floor can then never undercut a
+/// toolbar that wrapped at run time.
+fn send_area_min_height(app: &XcomApp, ui: &Ui) -> f32 {
     let frame = egui::Frame::side_top_panel(ui.style());
     let margin = frame.total_margin().sum();
-    let inner_width = (outer_width - margin.x).max(0.0);
     let row = send_toolbar_row_height(app, ui);
-    let rows = if send_actions_on_second_row(app, inner_width) {
-        2.0
-    } else {
-        1.0
-    };
     let gap = ui.spacing().item_spacing.y;
+    let rows = 2.0;
     let progress = if app.file_send.is_some() {
         16.0 + gap
     } else {
@@ -2484,7 +2565,7 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
 
     // Toolbar row height: tall enough that text/checkboxes are not clipped.
     let btn_height = send_toolbar_row_height(app, ui);
-    let actions_on_second_row = send_actions_on_second_row(app, ui.available_width());
+    let mut actions_on_second_row = false;
 
     ui.horizontal(|ui| {
         ui.set_height(btn_height);
@@ -2524,34 +2605,39 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
         // The interval is configured before the box is ticked, so it comes
         // first and locks once sending starts.
         let can_edit_interval = app.link.is_open() && !app.settings.send.timed;
-        ui.label(tr("定时间隔"));
+        let interval_label = ui.label(tr("定时间隔"));
+        probe::push_send_toolbar_rect("interval_label", interval_label.rect);
         let mut period = app.settings.send.period_ms;
-        if ui
-            .add_enabled(
-                can_edit_interval,
-                egui::DragValue::new(&mut period)
-                    .speed(10.0)
-                    .range(1..=3_600_000)
-                    .suffix(" ms"),
-            )
-            .changed()
-        {
+        let interval = ui.add_enabled(
+            can_edit_interval,
+            egui::DragValue::new(&mut period)
+                .speed(10.0)
+                .range(1..=3_600_000)
+                .suffix(" ms"),
+        );
+        probe::push_send_toolbar_rect("interval", interval.rect);
+        if interval.changed() {
             app.settings.send.period_ms = period;
             app.mark_settings_dirty();
         }
 
         let mut timed = app.settings.send.timed;
         let can_timed = app.link.is_open();
-        if ui
-            .add_enabled(can_timed, egui::Checkbox::new(&mut timed, tr("定时发送")))
-            .changed()
-        {
+        let timed_control =
+            ui.add_enabled(can_timed, egui::Checkbox::new(&mut timed, tr("定时发送")));
+        probe::push_send_toolbar_rect("timed", timed_control.rect);
+        if timed_control.changed() {
             // A run state: no need to persist it.
             app.settings.send.timed = timed;
         }
 
-        if !actions_on_second_row {
+        // Decide from the room actually left after the options were laid out,
+        // not from a width guess: when the group does not fit, the whole row
+        // moves below instead of the first buttons overlapping the options.
+        if ui.available_width() >= send_actions_width(ui) + SEND_RIGHT_PAD {
             right_aligned_send_actions(app, ui, btn_height);
+        } else {
+            actions_on_second_row = true;
         }
     });
 
