@@ -2415,11 +2415,20 @@ const MULTI_HEADERS: [&str; 8] = ["启用", "#", "内容", "备注", "HEX", "新
 /// language — “Content” is twice the width of 内容 — so it cannot be a
 /// constant.
 fn multi_header_widths(ctx: &egui::Context, ui_size: f32) -> [f32; 8] {
+    multi_header_widths_in(ctx, ui_size, i18n::lang())
+}
+
+/// What each header measures in one explicit language.
+fn multi_header_widths_in(ctx: &egui::Context, ui_size: f32, language: Lang) -> [f32; 8] {
     let font = egui::FontId::proportional(ui_size);
     MULTI_HEADERS.map(|header| {
         ctx.fonts_mut(|fonts| {
             fonts
-                .layout_no_wrap(tr(header).to_owned(), font.clone(), egui::Color32::WHITE)
+                .layout_no_wrap(
+                    i18n::tr_lang(language, header).to_owned(),
+                    font.clone(),
+                    egui::Color32::WHITE,
+                )
                 .size()
                 .x
         })
@@ -2455,13 +2464,25 @@ fn multi_row_floor(headers: [f32; 8]) -> f32 {
 /// separator line inside the edge it resizes from; both come off the table's
 /// row.  The panel's floor and the splitter's minimum are taken from here, so
 /// neither can leave the table narrower than it can be — at whatever interface
-/// font and language is in use.
+/// font is in use.
+///
+/// The measurement is taken across *every* supported language, not just the
+/// active one, and the widest header wins.  Otherwise the panel resized when
+/// the user switched between Chinese and English: the English headers are
+/// wider, so the same stored width produced a visibly narrower panel in
+/// Chinese.
 pub(crate) fn multi_table_min_width(ui: &Ui, ui_size: f32) -> f32 {
     let frame = egui::Frame::side_top_panel(ui.style());
     // The frame's margins, the separator line, and a point to spare so the row
     // does not end up rounding over the edge.
     let insets = frame.total_margin().sum().x + 1.0 + 1.0;
-    multi_row_floor(multi_header_widths(ui.ctx(), ui_size)) + insets
+    let headers = Lang::ALL
+        .into_iter()
+        .map(|language| multi_header_widths_in(ui.ctx(), ui_size, language))
+        .fold([0.0_f32; 8], |widest, widths| {
+            std::array::from_fn(|index| widest[index].max(widths[index]))
+        });
+    multi_row_floor(headers) + insets
 }
 
 /// Widths for the multi-send table's columns, in the order a row lays them out:
@@ -2722,13 +2743,12 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         send_w,
     ] = columns;
 
-    // The send status bar is pinned under the table: a rule and two rows, the
-    // loop standing above the entry in flight.  Two rows whatever the run -- it
-    // is this number the table's height comes out of, and a bar that grew when
-    // a run started would move the page boundary underneath it.  The table and
-    // the bar are two widgets in a column, so egui's item spacing comes off the
-    // top of the table as well.
-    let bar_height = row_height * 2.0 + ROW_GAP;
+    // The send status bar is pinned under the table: a rule and one line
+    // carrying the loop state, the loop count and the entry in flight.  Its
+    // height is fixed, so the table's height -- and the page boundary with it
+    // -- does not move when a run starts or stops; text that does not fit is
+    // truncated rather than allowed to wrap into a second line.
+    let bar_height = row_height + ROW_GAP;
     let status_height = bar_height + ui.spacing().item_spacing.y;
 
     // The pool is a fixed 100-slot list, so a page is a window onto it.
@@ -2913,10 +2933,9 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     probe::set_multi_table(table.inner_rect, table.content_size, scrollbars);
     // ---- send status bar --------------------------------------------------
     // Pinned under the table and always visible, so the table keeps its height
-    // as a run starts and stops.  The bar is two rows whatever the run: at the
-    // width a tool panel has, the loop state and the entry in flight cannot sit
-    // side by side, and a bar laid out as one wrapping row grew past the
-    // reserved height and ended up under the window's status bar.  Only
+    // as a run starts and stops.  The bar is one row whatever the run: the
+    // fixed height is what the table's height is derived from, and a bar that
+    // wrapped would move the page boundary under a running loop.  Only
     // read-only state lives here; the loop count is edited with the controls
     // above.
     let status = ui.allocate_ui_with_layout(
@@ -2975,9 +2994,8 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         );
                     }
                 }
-            });
 
-            status_row(ui, row_height, |ui| {
+                ui.separator();
                 ui.label(tr("当前条目"));
                 match app.multi_run_sent() {
                     Some(sent) => {
@@ -2988,6 +3006,8 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                             sent.round_len,
                         );
                         probe::set_multi_status_text(&text);
+                        // The entry in flight is the part that gives way when
+                        // the panel is too narrow for the whole line.
                         ui.add(
                             egui::Label::new(
                                 RichText::new(text).strong().color(active_colours.bar),

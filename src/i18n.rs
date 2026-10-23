@@ -76,7 +76,16 @@ pub fn set_lang(lang: Lang) {
 /// Chinese is returned as-is; English is looked up, falling back to the source
 /// string so a missing entry is visible rather than blank.
 pub fn tr(zh: &'static str) -> &'static str {
-    match lang() {
+    tr_lang(lang(), zh)
+}
+
+/// Translate a source string for an explicit language.
+///
+/// Unlike [`tr`] this ignores the active language, so layout code that must
+/// size something for every language it supports -- the widest being the
+/// binding one -- can measure them all.
+pub fn tr_lang(language: Lang, zh: &'static str) -> &'static str {
+    match language {
         Lang::ZhCn => zh,
         Lang::EnUs => table().get(zh).copied().unwrap_or(zh),
     }

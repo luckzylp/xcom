@@ -2169,10 +2169,9 @@ mod layout_tests {
 
     #[test]
     fn tool_panel_is_never_narrower_than_its_table() {
-        // The panel's minimum follows the table's headers, which are wider in
-        // English than in Chinese, so the boundary *is* language-dependent:
-        // "Content" needs more room than "内容".  What must hold in both is that
-        // the panel is wide enough for the table it holds.
+        // The panel is sized for the widest supported language, so the same
+        // stored width produces the same panel in Chinese and English; what
+        // must hold in both is that the table it holds still fits.
         let _guard = crate::i18n::test_lock();
         for language in [crate::i18n::Lang::ZhCn, crate::i18n::Lang::EnUs] {
             crate::i18n::set_lang(language);
@@ -2199,10 +2198,37 @@ mod layout_tests {
     }
 
     #[test]
+    fn the_default_tool_panel_width_is_language_independent() {
+        // Reported: with the shipped defaults the English panel opened wider
+        // than the Chinese one.  The minimum is now measured against every
+        // supported language, so switching language must not resize it.
+        let _guard = crate::i18n::test_lock();
+        let mut widths = Vec::new();
+        for language in [crate::i18n::Lang::ZhCn, crate::i18n::Lang::EnUs] {
+            crate::i18n::set_lang(language);
+            let ctx = egui::Context::default();
+            let mut app = XcomApp::headless(crate::settings::Settings::default());
+            app.settings.show_tool_panel = true;
+            app.side_tab = SideTab::Multi;
+            full_frame(&ctx, &mut app, input());
+            full_frame(&ctx, &mut app, input());
+            let panel = panels::probe::tool_panel_rect();
+            assert!(panel.width() > 0.0, "{language:?}: panel not laid out");
+            widths.push(panel.width());
+        }
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        assert!(
+            (widths[0] - widths[1]).abs() < 0.5,
+            "the default tool panel width depends on the language: {widths:?}"
+        );
+    }
+
+    #[test]
     fn shrinking_the_tool_panel_persists() {
-        // The panel's minimum follows the table's headers.  In Chinese there is
-        // room to shrink below the default and have it persist; in English the
-        // default already *is* the minimum, so the panel can only widen.
+        // The panel's minimum follows the widest supported language, so the
+        // default panel already sits on that floor.  Widen it first to leave
+        // room to shrink, then check the smaller width sticks instead of
+        // snapping back on release.
         let _guard = crate::i18n::test_lock();
         crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
         let ctx = egui::Context::default();
@@ -2211,8 +2237,18 @@ mod layout_tests {
         app.side_tab = SideTab::Multi;
 
         let before = full_frame(&ctx, &mut app, input());
-        // The right panel's left edge; shrinking it moves this right.
         let grab = egui::pos2(before.max.x, before.center().y);
+        drag(&ctx, &mut app, grab, egui::pos2(grab.x - 120.0, grab.y));
+        let widened = full_frame(&ctx, &mut app, input());
+        assert!(
+            widened.max.x < before.max.x - 80.0,
+            "the panel did not widen: {} -> {}",
+            before.max.x,
+            widened.max.x
+        );
+
+        // Shrink by 15px from the widened state; still above the floor.
+        let grab = egui::pos2(widened.max.x, widened.center().y);
         drag(&ctx, &mut app, grab, egui::pos2(grab.x + 15.0, grab.y));
 
         let mut after = full_frame(&ctx, &mut app, input());
@@ -2220,9 +2256,9 @@ mod layout_tests {
             after = full_frame(&ctx, &mut app, input());
         }
         assert!(
-            after.max.x > before.max.x + 10.0,
+            after.max.x > widened.max.x + 10.0,
             "the tool panel snapped back: {} -> {}",
-            before.max.x,
+            widened.max.x,
             after.max.x
         );
     }
@@ -3399,9 +3435,9 @@ mod layout_tests {
     ///
     /// Laid out as one wrapping row it was three rows tall while looping, and a
     /// panel that had reserved one clipped the rest: the loop state and the
-    /// entry in flight ended up behind the window's status bar.  Two rows of a
-    /// fixed height, so the table's height — and the page boundary with it —
-    /// does not move when a run starts or stops.
+    /// entry in flight ended up behind the window's status bar.  One fixed
+    /// row, with overflow truncated, so the table's height — and the page
+    /// boundary with it — does not move when a run starts or stops.
     #[test]
     fn the_send_status_bar_keeps_its_place() {
         let _guard = crate::i18n::test_lock();
@@ -3424,6 +3460,19 @@ mod layout_tests {
                 assert!(
                     bar.height() > 0.0,
                     "{w}x{h}: the status bar was not laid out"
+                );
+                // One row of state plus the rule: anything taller means the
+                // status text wrapped instead of being kept on one line.
+                let row_height = 20.0_f32.max(
+                    ctx.fonts_mut(|fonts| {
+                        fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
+                    }) + 4.0,
+                );
+                assert!(
+                    bar.height() <= row_height + 6.0,
+                    "{w}x{h} (looping: {running}): the status bar is {}px tall, more \
+                     than one {row_height:.1}px row",
+                    bar.height()
                 );
                 assert!(
                     bar.max.y <= panel.max.y + 0.5,
