@@ -1081,7 +1081,12 @@ fn menu_item(ui: &mut Ui, label: &str, shortcut: &str) -> bool {
 
 /// A menu item that opens a dialog, marked with the conventional ellipsis.
 fn menu_dialog_item(ui: &mut Ui, label: &'static str) -> bool {
-    menu_item(ui, &format!("{}…", tr(label)), "")
+    menu_dialog_item_shortcut(ui, label, "")
+}
+
+/// As [`menu_dialog_item`], with the shortcut shown at the right edge.
+fn menu_dialog_item_shortcut(ui: &mut Ui, label: &'static str, shortcut: &str) -> bool {
+    menu_item(ui, &format!("{}…", tr(label)), shortcut)
 }
 
 /// A menu item that opens [`preferences_window`].
@@ -1091,7 +1096,7 @@ fn preferences_item(ui: &mut Ui) -> bool {
 
 /// egui temp-data key for the custom-baud dialog.
 ///
-/// The serial panel draws the dialog and the Serial menu asks for it, so both
+/// The serial panel draws the dialog and the Tools menu asks for it, so both
 /// routes have to agree on where "open" is stored.
 fn custom_baud_manager_id() -> egui::Id {
     egui::Id::new("custom_baud_manager")
@@ -1113,8 +1118,6 @@ pub(crate) fn menu_bar(app: &mut XcomApp, ui: &mut Ui) {
             probe::push_top_bar_rect("edit", edit.response.rect);
             let view = ui.menu_button(tr("视图"), |ui| view_menu(app, ui));
             probe::push_top_bar_rect("view", view.response.rect);
-            let serial = ui.menu_button(tr("串口连接"), |ui| serial_menu(app, ui));
-            probe::push_top_bar_rect("serial", serial.response.rect);
             let tools = ui.menu_button(tr("工具"), |ui| tools_menu(app, ui));
             probe::push_top_bar_rect("tools", tools.response.rect);
             let help = ui.menu_button(tr("帮助"), |ui| help_menu(app, ui));
@@ -1124,10 +1127,11 @@ pub(crate) fn menu_bar(app: &mut XcomApp, ui: &mut Ui) {
 }
 
 fn file_menu(app: &mut XcomApp, ui: &mut Ui) {
-    if menu_dialog_item(ui, "保存接收数据") {
+    // Save / Save As carry the shortcuts users expect from desktop apps.
+    if menu_dialog_item_shortcut(ui, "保存接收数据", "Ctrl+S") {
         save_log(app);
     }
-    if menu_dialog_item(ui, "保存原始数据") {
+    if menu_dialog_item_shortcut(ui, "保存原始数据", "Ctrl+Shift+S") {
         save_raw_log(app);
     }
     if menu_dialog_item(ui, "发送文件")
@@ -1167,6 +1171,10 @@ fn edit_menu(app: &mut XcomApp, ui: &mut Ui) {
 }
 
 fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
+    ui.menu_button(tr("显示"), |ui| display_menu(app, ui));
+    ui.menu_button(tr("编码"), |ui| encoding_menu(app, ui));
+    ui.separator();
+
     let mut changed = false;
     changed |= ui
         .checkbox(&mut app.settings.show_config_panel, tr("显示配置面板"))
@@ -1210,30 +1218,115 @@ fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
     });
 }
 
-fn serial_menu(app: &mut XcomApp, ui: &mut Ui) {
-    let toggle = if app.link.is_open() {
-        tr("关闭串口")
-    } else {
-        tr("打开串口")
-    };
-    if menu_item(ui, toggle, "Ctrl+O") {
-        app.toggle_port();
+/// The receive view's everyday switches, plus the full settings dialog.
+fn display_menu(app: &mut XcomApp, ui: &mut Ui) {
+    let mut display = app.settings.display;
+    let mut changed = false;
+
+    let mut hex = display.mode == ViewMode::Hex;
+    if ui.checkbox(&mut hex, tr("16进制显示")).changed() {
+        display.mode = if hex { ViewMode::Hex } else { ViewMode::Text };
+        changed = true;
     }
-    if menu_item(ui, tr("刷新串口列表"), "F5") {
-        app.ports.poll();
-        app.info(tr("已刷新串口列表"));
+
+    let mut markers = display.markers;
+    if ui.checkbox(&mut markers, tr("方向标记")).changed() {
+        display.markers = markers;
+        changed = true;
     }
+
+    let mut timestamp = display.timestamp;
+    if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
+        display.timestamp = timestamp;
+        changed = true;
+    }
+
+    let mut wrap = display.wrap;
+    if ui.checkbox(&mut wrap, tr("自动换行")).changed() {
+        display.wrap = wrap;
+        changed = true;
+    }
+
+    let mut auto_scroll = app.settings.auto_scroll;
+    if ui
+        .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
+        .changed()
+    {
+        app.settings.auto_scroll = auto_scroll;
+        app.mark_settings_dirty();
+    }
+
+    let mut echo = app.settings.echo_sent;
+    if ui
+        .checkbox(&mut echo, tr("回显发送"))
+        .on_hover_text(tr("把发出的内容显示在接收区，便于确认是否真的发出"))
+        .changed()
+    {
+        app.settings.echo_sent = echo;
+        app.mark_settings_dirty();
+    }
+
+    if changed {
+        app.settings.display = display;
+        app.log.set_options(display);
+        app.mark_settings_dirty();
+    }
+
     ui.separator();
-    if menu_item(ui, &format!("{}…", tr("管理自定义波特率")), "") {
-        app.settings.show_config_panel = true;
-        app.mark_settings_dirty();
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(custom_baud_manager_id(), true));
+    if menu_item(ui, &format!("{}…", tr("更多显示设置")), "") {
+        app.show_display_settings = true;
     }
-    if menu_item(ui, tr("串口设置"), "") {
-        app.settings.show_config_panel = true;
-        app.mark_settings_dirty();
-    }
+}
+
+/// Receive and transmit encodings, as two short submenus.
+fn encoding_menu(app: &mut XcomApp, ui: &mut Ui) {
+    ui.menu_button(tr("接收编码"), |ui| {
+        if ui
+            .selectable_label(app.settings.encoding.is_none(), tr("自动识别"))
+            .clicked()
+        {
+            app.set_encoding(None);
+        }
+        for id in EncodingId::ALL {
+            if ui
+                .selectable_label(app.settings.encoding == Some(id), tr(id.label()))
+                .clicked()
+            {
+                app.set_encoding(Some(id));
+            }
+        }
+    });
+
+    ui.menu_button(tr("发送编码"), |ui| {
+        if ui
+            .selectable_label(app.settings.tx_encoding.is_none(), tr("跟随接收编码"))
+            .clicked()
+        {
+            app.settings.tx_encoding = None;
+            app.mark_settings_dirty();
+        }
+        for id in EncodingId::ALL {
+            if ui
+                .selectable_label(app.settings.tx_encoding == Some(id), tr(id.label()))
+                .clicked()
+            {
+                app.settings.tx_encoding = Some(id);
+                app.mark_settings_dirty();
+            }
+        }
+    });
+
+    ui.separator();
+    ui.label(
+        RichText::new(crate::i18n::tr1("当前接收: {}", app.encoding_label()))
+            .small()
+            .color(ui.visuals().weak_text_color()),
+    );
+    ui.label(
+        RichText::new(crate::i18n::tr1("已分析 {} 字节", app.auto.total()))
+            .small()
+            .color(ui.visuals().weak_text_color()),
+    );
 }
 
 fn tools_menu(app: &mut XcomApp, ui: &mut Ui) {
@@ -1246,6 +1339,13 @@ fn tools_menu(app: &mut XcomApp, ui: &mut Ui) {
         app.side_tab = SideTab::Protocol;
         app.settings.show_tool_panel = true;
         app.mark_settings_dirty();
+    }
+    ui.separator();
+    if menu_item(ui, &format!("{}…", tr("管理自定义波特率")), "") {
+        app.settings.show_config_panel = true;
+        app.mark_settings_dirty();
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(custom_baud_manager_id(), true));
     }
     ui.separator();
     if menu_item(ui, tr("恢复默认设置"), "") {
@@ -1261,6 +1361,44 @@ fn tools_menu(app: &mut XcomApp, ui: &mut Ui) {
 fn help_menu(app: &mut XcomApp, ui: &mut Ui) {
     if menu_item(ui, tr("关于 XCOM"), "") {
         app.show_about = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Display settings
+// ---------------------------------------------------------------------------
+
+/// The full display form, moved out of the configuration panel.
+///
+/// View → Display carries the switches used from day to day; this dialog also
+/// holds the HEX layout, line spacing and fonts, which need labels and sliders
+/// rather than menu rows.
+pub(crate) fn display_settings_window(app: &mut XcomApp, ctx: &Context) {
+    if !app.show_display_settings {
+        return;
+    }
+    let mut open = true;
+    let mut close_requested = false;
+    egui::Window::new(tr("显示设置"))
+        .id(egui::Id::new("display_settings_dialog"))
+        .title_bar(false)
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(380.0)
+        .show(ctx, |ui| {
+            let header = dialog::header(ui, tr("显示设置"), None);
+            if header.close_clicked {
+                close_requested = true;
+            }
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .max_height(560.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| display_settings_ui(app, ui));
+        });
+    if !open || close_requested {
+        app.show_display_settings = false;
     }
 }
 
@@ -1392,10 +1530,6 @@ pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     serial_section(app, ui);
-                    ui.add_space(6.0);
-                    display_section(app, ui);
-                    ui.add_space(6.0);
-                    encoding_section(app, ui);
                     ui.add_space(6.0);
                     statistics_section(app, ui);
                 });
@@ -1859,249 +1993,175 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
     });
 }
 
-fn display_section(app: &mut XcomApp, ui: &mut Ui) {
-    egui::CollapsingHeader::new(tr("显示设置"))
-        .default_open(true)
-        .show(ui, |ui| {
-            let mut display = app.settings.display;
-            let mut changed = false;
+/// Every display control, without a container.
+///
+/// The left panel used to host this; it now lives in a dialog opened from
+/// **View → Display settings…**, so the configuration panel can stay focused on
+/// the serial connection.
+fn display_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
+    let mut display = app.settings.display;
+    let mut changed = false;
 
-            let mut hex = display.mode == ViewMode::Hex;
-            if ui.checkbox(&mut hex, tr("16进制显示")).changed() {
-                display.mode = if hex { ViewMode::Hex } else { ViewMode::Text };
+    let mut hex = display.mode == ViewMode::Hex;
+    if ui.checkbox(&mut hex, tr("16进制显示")).changed() {
+        display.mode = if hex { ViewMode::Hex } else { ViewMode::Text };
+        changed = true;
+    }
+
+    if display.mode == ViewMode::Hex {
+        ui.horizontal(|ui| {
+            ui.label(tr("HEX 样式"));
+            let mut style = display.hex_style;
+            if combo(
+                ui,
+                "hex_style",
+                &mut style,
+                &[HexStyle::Stream, HexStyle::Dump],
+                |s| match s {
+                    HexStyle::Stream => tr("连续").to_owned(),
+                    HexStyle::Dump => tr("16 字节/行").to_owned(),
+                },
+            ) {
+                display.hex_style = style;
                 changed = true;
             }
-
-            if display.mode == ViewMode::Hex {
-                ui.horizontal(|ui| {
-                    ui.label(tr("HEX 样式"));
-                    let mut style = display.hex_style;
-                    if combo(
-                        ui,
-                        "hex_style",
-                        &mut style,
-                        &[HexStyle::Stream, HexStyle::Dump],
-                        |s| match s {
-                            HexStyle::Stream => tr("连续").to_owned(),
-                            HexStyle::Dump => tr("16 字节/行").to_owned(),
-                        },
-                    ) {
-                        display.hex_style = style;
-                        changed = true;
-                    }
-                    let mut upper = display.upper_hex;
-                    if ui.checkbox(&mut upper, tr("大写")).changed() {
-                        display.upper_hex = upper;
-                        changed = true;
-                    }
-                });
-                if display.hex_style == HexStyle::Dump {
-                    ui.horizontal(|ui| {
-                        ui.label(tr("每行字节"));
-                        let mut per_row = display.hex_bytes_per_row;
-                        if ui
-                            .add(egui::DragValue::new(&mut per_row).range(1..=64))
-                            .changed()
-                        {
-                            display.hex_bytes_per_row = per_row;
-                            changed = true;
-                        }
-                    });
-                }
-            }
-
-            let mut markers = display.markers;
-            if ui
-                .checkbox(&mut markers, tr("方向标记"))
-                .on_hover_text(tr("接收的数据以 -> 开头，发送的数据以 <- 开头"))
-                .changed()
-            {
-                display.markers = markers;
+            let mut upper = display.upper_hex;
+            if ui.checkbox(&mut upper, tr("大写")).changed() {
+                display.upper_hex = upper;
                 changed = true;
             }
-
-            let mut timestamp = display.timestamp;
-            if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
-                display.timestamp = timestamp;
-                changed = true;
-            }
-            if display.timestamp {
-                ui.small(tr("以回车换行断帧；数据中若不含回车换行则不会显示时间戳"));
-            }
-
-            let mut wrap = display.wrap;
-            if ui.checkbox(&mut wrap, tr("自动换行")).changed() {
-                display.wrap = wrap;
-                changed = true;
-            }
-
-            let mut auto_scroll = app.settings.auto_scroll;
-            if ui
-                .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
-                .changed()
-            {
-                app.settings.auto_scroll = auto_scroll;
-                app.mark_settings_dirty();
-            }
-
+        });
+        if display.hex_style == HexStyle::Dump {
             ui.horizontal(|ui| {
-                ui.label(tr("行距"));
-                let mut spacing = app.settings.line_spacing;
+                ui.label(tr("每行字节"));
+                let mut per_row = display.hex_bytes_per_row;
                 if ui
-                    .add(
-                        egui::Slider::new(
-                            &mut spacing,
-                            crate::settings::LINE_SPACING_MIN..=crate::settings::LINE_SPACING_MAX,
-                        )
-                        .fixed_decimals(0),
-                    )
+                    .add(egui::DragValue::new(&mut per_row).range(1..=64))
                     .changed()
                 {
-                    app.settings.line_spacing = spacing;
-                    app.mark_settings_dirty();
+                    display.hex_bytes_per_row = per_row;
+                    changed = true;
                 }
             });
+        }
+    }
 
-            ui.separator();
-            ui.strong(tr("字体设置"));
-            let mut fonts = app.settings.fonts.clone();
-            let mut font_changed = false;
-            egui::Grid::new("font_grid")
-                .num_columns(2)
-                .spacing([8.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label(tr("界面字体"));
-                    let mut family = fonts.ui_family.clone();
-                    font_changed |= font_combo(ui, "ui_font_family", &mut family);
-                    fonts.ui_family = family;
-                    ui.end_row();
+    let mut markers = display.markers;
+    if ui
+        .checkbox(&mut markers, tr("方向标记"))
+        .on_hover_text(tr("接收的数据以 -> 开头，发送的数据以 <- 开头"))
+        .changed()
+    {
+        display.markers = markers;
+        changed = true;
+    }
 
-                    ui.label(tr("界面字号"));
-                    let mut size = fonts.ui_size;
-                    font_changed |= ui
-                        .add(egui::Slider::new(&mut size, 9.0..=24.0).fixed_decimals(0))
-                        .changed();
-                    fonts.ui_size = size;
-                    ui.end_row();
+    let mut timestamp = display.timestamp;
+    if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
+        display.timestamp = timestamp;
+        changed = true;
+    }
+    if display.timestamp {
+        ui.small(tr("以回车换行断帧；数据中若不含回车换行则不会显示时间戳"));
+    }
 
-                    ui.label(tr("接收区字体"));
-                    let mut family = fonts.receive_family.clone();
-                    font_changed |= font_combo(ui, "receive_font_family", &mut family);
-                    fonts.receive_family = family;
-                    ui.end_row();
+    let mut wrap = display.wrap;
+    if ui.checkbox(&mut wrap, tr("自动换行")).changed() {
+        display.wrap = wrap;
+        changed = true;
+    }
 
-                    ui.label(tr("接收区字号"));
-                    let mut size = fonts.receive_size;
-                    font_changed |= ui
-                        .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
-                        .changed();
-                    fonts.receive_size = size;
-                    ui.end_row();
+    let mut auto_scroll = app.settings.auto_scroll;
+    if ui
+        .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
+        .changed()
+    {
+        app.settings.auto_scroll = auto_scroll;
+        app.mark_settings_dirty();
+    }
 
-                    ui.label(tr("发送区字体"));
-                    let mut family = fonts.send_family.clone();
-                    font_changed |= font_combo(ui, "send_font_family", &mut family);
-                    fonts.send_family = family;
-                    ui.end_row();
+    ui.horizontal(|ui| {
+        ui.label(tr("行距"));
+        let mut spacing = app.settings.line_spacing;
+        if ui
+            .add(
+                egui::Slider::new(
+                    &mut spacing,
+                    crate::settings::LINE_SPACING_MIN..=crate::settings::LINE_SPACING_MAX,
+                )
+                .fixed_decimals(0),
+            )
+            .changed()
+        {
+            app.settings.line_spacing = spacing;
+            app.mark_settings_dirty();
+        }
+    });
 
-                    ui.label(tr("发送区字号"));
-                    let mut size = fonts.send_size;
-                    font_changed |= ui
-                        .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
-                        .changed();
-                    fonts.send_size = size;
-                    ui.end_row();
-                });
-            if font_changed {
-                fonts.normalize();
-                app.settings.fonts = fonts;
-                app.mark_settings_dirty();
-            }
-
-            if changed {
-                app.settings.display = display;
-                app.log.set_options(display);
-                app.mark_settings_dirty();
-            }
-
-            // The clear/save actions live in the receive toolbar, right next
-            // to the data they act on; repeating them here was redundant.
-        });
-}
-
-fn encoding_section(app: &mut XcomApp, ui: &mut Ui) {
-    egui::CollapsingHeader::new(tr("编码设置"))
-        .default_open(true)
+    ui.separator();
+    ui.strong(tr("字体设置"));
+    let mut fonts = app.settings.fonts.clone();
+    let mut font_changed = false;
+    egui::Grid::new("font_grid")
+        .num_columns(2)
+        .spacing([8.0, 6.0])
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(tr("接收编码"));
-                let choice = app.settings.encoding;
-                let label = match choice {
-                    None => crate::i18n::tr1("自动识别（{}）", app.encoding_label()),
-                    Some(id) => tr(id.label()).to_owned(),
-                };
-                let mut newly_selected = None;
-                egui::ComboBox::from_id_salt("rx_encoding")
-                    .selected_text(label)
-                    .width(160.0)
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(choice.is_none(), tr("自动识别"))
-                            .clicked()
-                        {
-                            newly_selected = Some(None);
-                        }
-                        for id in EncodingId::ALL {
-                            if ui
-                                .selectable_label(choice == Some(id), tr(id.label()))
-                                .clicked()
-                            {
-                                newly_selected = Some(Some(id));
-                            }
-                        }
-                    });
-                if let Some(selection) = newly_selected {
-                    app.set_encoding(selection);
-                }
-            });
+            ui.label(tr("界面字体"));
+            let mut family = fonts.ui_family.clone();
+            font_changed |= font_combo(ui, "ui_font_family", &mut family);
+            fonts.ui_family = family;
+            ui.end_row();
 
-            ui.horizontal(|ui| {
-                ui.label(tr("发送编码"));
-                let choice = app.settings.tx_encoding;
-                let label = match choice {
-                    None => tr("跟随接收编码").to_owned(),
-                    Some(id) => tr(id.label()).to_owned(),
-                };
-                let mut newly_selected = None;
-                egui::ComboBox::from_id_salt("tx_encoding")
-                    .selected_text(label)
-                    .width(160.0)
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(choice.is_none(), tr("跟随接收编码"))
-                            .clicked()
-                        {
-                            newly_selected = Some(None);
-                        }
-                        for id in EncodingId::ALL {
-                            if ui
-                                .selectable_label(choice == Some(id), tr(id.label()))
-                                .clicked()
-                            {
-                                newly_selected = Some(Some(id));
-                            }
-                        }
-                    });
-                if let Some(selection) = newly_selected {
-                    app.settings.tx_encoding = selection;
-                    app.mark_settings_dirty();
-                }
-            });
+            ui.label(tr("界面字号"));
+            let mut size = fonts.ui_size;
+            font_changed |= ui
+                .add(egui::Slider::new(&mut size, 9.0..=24.0).fixed_decimals(0))
+                .changed();
+            fonts.ui_size = size;
+            ui.end_row();
 
-            ui.small(crate::i18n::tr1("当前接收: {}", app.encoding_label()));
-            ui.small(crate::i18n::tr1("已分析 {} 字节", app.auto.total()));
-            ui.small(tr("自动识别会持续观察数据流，锁定后不再频繁切换"));
+            ui.label(tr("接收区字体"));
+            let mut family = fonts.receive_family.clone();
+            font_changed |= font_combo(ui, "receive_font_family", &mut family);
+            fonts.receive_family = family;
+            ui.end_row();
+
+            ui.label(tr("接收区字号"));
+            let mut size = fonts.receive_size;
+            font_changed |= ui
+                .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
+                .changed();
+            fonts.receive_size = size;
+            ui.end_row();
+
+            ui.label(tr("发送区字体"));
+            let mut family = fonts.send_family.clone();
+            font_changed |= font_combo(ui, "send_font_family", &mut family);
+            fonts.send_family = family;
+            ui.end_row();
+
+            ui.label(tr("发送区字号"));
+            let mut size = fonts.send_size;
+            font_changed |= ui
+                .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
+                .changed();
+            fonts.send_size = size;
+            ui.end_row();
         });
+    if font_changed {
+        fonts.normalize();
+        app.settings.fonts = fonts;
+        app.mark_settings_dirty();
+    }
+
+    if changed {
+        app.settings.display = display;
+        app.log.set_options(display);
+        app.mark_settings_dirty();
+    }
+
+    // The clear/save actions live in the receive toolbar, right next to the
+    // data they act on; repeating them here was redundant.
 }
 
 fn statistics_section(app: &mut XcomApp, ui: &mut Ui) {
@@ -2206,25 +2266,15 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
             ));
         }
 
-        log_toolbar(app, ui);
-        ui.separator();
-
         let palette = theme::log_palette(ui.ctx(), app.settings.theme, app.settings.log_colors);
         let rect = ui.available_rect_before_wrap();
         ui.painter()
             .rect_filled(rect, egui::CornerRadius::ZERO, palette.background);
-        draw_log(app, ui, palette);
-    });
-}
+        let output = draw_log(app, ui, palette);
 
-fn log_toolbar(app: &mut XcomApp, ui: &mut Ui) {
-    ui.horizontal_wrapped(|ui| {
-        let label = if app.show_paused {
-            tr("继续显示")
-        } else {
-            tr("暂停显示")
-        };
-        if ui.button(label).clicked() {
+        // The receive toolbar is gone; its secondary actions live in the log's
+        // context menu and report through the view's output.
+        if output.toggle_pause {
             if app.show_paused {
                 app.resume_display();
             } else {
@@ -2232,46 +2282,8 @@ fn log_toolbar(app: &mut XcomApp, ui: &mut Ui) {
                 app.info(tr("显示已暂停，数据仍在后台接收"));
             }
         }
-
-        let copy_enabled = app.log_view.has_selection();
-        if ui
-            .add_enabled(copy_enabled, egui::Button::new(tr("复制选中")))
-            .clicked()
-        {
-            copy_selection(app, ui);
-        }
-        if ui.button(tr("全选")).clicked() {
-            let store = &app.log;
-            app.log_view.select_all(store);
-        }
-        if ui.button(tr("清除接收")).clicked() {
+        if output.clear_received {
             app.clear_receive();
-        }
-        if ui.button(tr("保存接收数据")).clicked() {
-            save_log(app);
-        }
-        if ui.button(tr("保存原始数据")).clicked() {
-            save_raw_log(app);
-        }
-
-        ui.separator();
-        let mut echo = app.settings.echo_sent;
-        if ui
-            .checkbox(&mut echo, tr("回显发送"))
-            .on_hover_text(tr("把发出的内容显示在接收区，便于确认是否真的发出"))
-            .changed()
-        {
-            app.settings.echo_sent = echo;
-            app.mark_settings_dirty();
-        }
-        ui.separator();
-        ui.label(RichText::new(app.encoding_label()).monospace());
-        if app.log_view.has_selection() {
-            ui.label(
-                RichText::new(tr("已选中，Ctrl+C 复制"))
-                    .small()
-                    .color(ui.visuals().weak_text_color()),
-            );
         }
     });
 }
@@ -3759,7 +3771,7 @@ fn pick_save_file(title: &str, default_name: &str, extension: &str) -> Option<Pa
 }
 
 /// Save the retained receive buffer as raw bytes, byte for byte.
-fn save_raw_log(app: &mut XcomApp) {
+pub(crate) fn save_raw_log(app: &mut XcomApp) {
     let Some(path) = pick_save_file(tr("保存原始数据"), "xcom-receive.bin", "bin") else {
         return;
     };
@@ -3777,7 +3789,7 @@ fn save_raw_log(app: &mut XcomApp) {
 }
 
 /// Save the receive log to disk in the currently displayed form.
-fn save_log(app: &mut XcomApp) {
+pub(crate) fn save_log(app: &mut XcomApp) {
     let Some(path) = pick_save_file(tr("保存接收数据"), "xcom-receive.txt", "txt") else {
         return;
     };

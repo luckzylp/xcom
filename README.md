@@ -8,19 +8,19 @@ The UI contains **no advertisements** and additionally supports **automatic char
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ File  Edit  View  Serial  Tools  Help                                        │
+│ File  Edit  View  Tools  Help                                                │
 ├───────────────┬──────────────────────────────────────────┬───────────────────┤
-│ Serial Config  │ Continue Show Copy All Clear Save…      │ Multi-Send | Proto │
-│ Port   [▾]    │ Encoding Auto·UTF-8                      │                   │
+│ Serial Config  │                                          │ Multi-Send | Proto │
+│ Port   [▾]    │          Receive Area (black/green)       │                   │
 │ Baud   [▾]    ├──────────────────────────────────────────┤  # Content  Note  │
 │ Data   Stop   │                                          │  0 AT      Query  │
-│ Parity Flow   │          Receive Area (black/green)       │  1 ...            │
+│ Parity Flow   │                                          │  1 ...            │
 │ DTR RTS       │                                          │                   │
 │ [Open Port]   │                                          │                   │
-│ Display       ├──────────────────────────────────────────┤  Loop Send Keypad │
-│ Hex Timestamp │ Send Area                                 │                   │
-│ Encoding     │  [Hex Send] [Newline] [Timed interval] [Timed] │                   │
-│              │  [Send File] [History▾] [Send Ctrl+Enter]   │                   │
+│ Statistics    ├──────────────────────────────────────────┤  Loop Send Keypad │
+│               │ Send Area                                 │                   │
+│               │  [Hex Send] [Newline] [Timed interval] [Timed] │                   │
+│               │  [Send File] [History▾] [Send Ctrl+Enter]   │                   │
 ├──────────────┴──────────────────────────────────────────┴───────────────────┤
 │ ● /dev/ttyUSB0 [115200-8N1] Enc Auto·UTF-8 Tx:0 Rx:0 CTS● DSR○ DCD○ Time     │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -42,10 +42,10 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Hot-plug serial ports | ✅ | Auto-closes and prompts on disconnect |
 | Hex display (can auto-convert existing data) | ✅ | Text ⇄ HEX toggle re-renders historical data |
 | Display modes: black bg green text / white bg black text | ✅ | Controlled by theme; custom foreground/background colors also available |
-| Echo sent content | ✅ | Sent content shown in a different color in the receive area; toggle in the receive toolbar |
+| Echo sent content | ✅ | Sent content shown in a different color in the receive area; toggle under View → Display |
 | RTS / DTR control | ✅ | Switchable in real time while port is open |
 | Timestamps (frame-delimited by CR/LF) | ✅ | Shows "receiving" preview in status bar when a frame is incomplete |
-| Direction markers on every row | ✅ | Coloured `->` for received data, `<-` for sent data; toggle in Display settings |
+| Direction markers on every row | ✅ | Coloured `->` for received data, `<-` for sent data; toggle under View → Display |
 | Save receive window as any format file | ✅ | Save as text or raw binary |
 | Clear receive (also resets Tx/Rx counters) | ✅ | |
 | Single send: any characters / hex / auto-split bytes | ✅ | `0102`, `01 02`, `0x01,0x02`, `01-02` all accepted |
@@ -74,7 +74,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Chinese/English UI toggle**: switchable at any time from **View → Language** or **Edit → Preferences**; follows system `LANG` on first launch; choice is persisted.
 - **Receive area text selection**: drag-select with mouse, Ctrl+C copy, Ctrl+A select all (based on glyph metrics, CJK full-width characters select correctly).
 - **Virtualized log view**: Only visible lines are rendered, staying smooth during long high-speed reception.
-- **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off in Display settings. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
+- **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off under View → Display. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.
 - **Adjustable receive area line spacing**; auto-wrap width follows window resize and the selected font.
 - **Collapsible side panels**: drag the configuration panel's splitter all the way left (or the tool panel's all the way right) and it snaps shut, handing the width to the receive area. A hairline stays at the edge, with a chevron on hover to open it again; the "Show configuration panel / Show tool panel" items under **View** are the same state. The centre column keeps a 320px floor, so each panel's maximum is a *soft* one that only applies when the window can spare the room.
@@ -148,7 +148,7 @@ The UI is in Chinese; on startup the program automatically searches for CJK font
 
 If none are found, the program still runs but Chinese characters appear as squares, with a status bar prompt to install a font (on Linux, install `fonts-noto-cjk` or `fonts-wqy-microhei`).
 
-The default interface stack prefers a font that contains both Latin and CJK glyphs (such as Noto Sans CJK SC, Microsoft YaHei, or PingFang SC). This avoids the vertical baseline mismatch that occurs when ASCII comes from one font and Chinese from a fallback. Users can still select any installed interface, receive, or send font in **Display Settings → Font Settings**.
+The default interface stack prefers a font that contains both Latin and CJK glyphs (such as Noto Sans CJK SC, Microsoft YaHei, or PingFang SC). This avoids the vertical baseline mismatch that occurs when ASCII comes from one font and Chinese from a fallback. Users can still select any installed interface, receive, or send font in **View → Display → More display settings… → Fonts**.
 
 ---
 
@@ -165,7 +165,7 @@ This implementation provides both **auto-detection** (default) and **manual sele
   4. It never switches to a candidate encoding that decodes worse.
 - An incremental decoder handles multi-byte characters split across data packets — no half-characters.
 - When switching encoding or HEX/text mode, **received historical data is re-rendered under the new setting** (subject to the cache limit).
-- Send encoding defaults to "follow receive encoding" but can be set separately.
+- Receive and send encodings can be switched at any time under **View → Encoding**; send encoding defaults to "follow receive encoding" but can be set separately.
 
 The status bar shows the active encoding, e.g., `Auto·UTF-8`.
 
@@ -209,9 +209,16 @@ The frame period **must be greater than the response frame-delimiting time**, ot
 | --- | --- |
 | `Ctrl + Enter` | Send the content of the send area |
 | `Ctrl + O` | Open / close serial port |
+| `F5` | Refresh the port list |
+| `Ctrl + S` | Save receive data |
+| `Ctrl + Shift + S` | Save raw data |
+| `Ctrl + ,` | Open Preferences |
+| `Ctrl + Q` | Quit |
 | `Ctrl + C` | Copy selected content in receive area |
 | `Ctrl + A` | Select all in receive area |
 | `1`–`9`, `0` | Send corresponding entry when "link numeric keypad" is checked in multi-send panel |
+
+Right-click inside the receive area for Copy selection, Select all, Pause/Resume display and Clear receive.
 
 ---
 

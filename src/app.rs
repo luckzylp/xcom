@@ -161,6 +161,8 @@ pub struct XcomApp {
     pub(crate) show_about: bool,
     /// Whether the Preferences dialog is open.
     pub(crate) show_preferences: bool,
+    /// Whether the Display settings dialog is open.
+    pub(crate) show_display_settings: bool,
 
     /// Handshake line states, sampled by a background thread.
     pub(crate) signals: Signals,
@@ -248,6 +250,7 @@ impl XcomApp {
             side_tab: SideTab::Multi,
             show_about: false,
             show_preferences: false,
+            show_display_settings: false,
             signals: Signals::default(),
             applied_theme: None,
             applied_lang: None,
@@ -1103,6 +1106,17 @@ impl XcomApp {
         if preferences {
             self.show_preferences = true;
         }
+        // Save / Save As, matching the shortcuts shown in the File menu.
+        let save =
+            ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S));
+        if save {
+            panels::save_log(self);
+        }
+        let save_raw =
+            ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::S));
+        if save_raw {
+            panels::save_raw_log(self);
+        }
         let quit = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Q));
         if quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1190,6 +1204,7 @@ impl XcomApp {
         panels::tool_panel(self, ui);
         panels::center_panel(self, ui);
         panels::apply_splitters(self, ui);
+        panels::display_settings_window(self, ctx);
         panels::preferences_window(self, ctx);
         panels::about_window(self, ctx);
 
@@ -1208,6 +1223,7 @@ pub(crate) fn draw_log(
         auto_scroll: app.settings.auto_scroll,
         font: crate::fonts::receive_font_id(app.settings.fonts.receive_size),
         line_spacing: app.settings.line_spacing,
+        paused: app.show_paused,
     };
 
     // Tell the store how many columns fit, so text wrapping matches the panel.
@@ -1770,7 +1786,7 @@ mod layout_tests {
         full_frame(&ctx, &mut app, input());
 
         let rects = panels::probe::top_bar_rects();
-        let names = ["file", "edit", "view", "serial", "tools", "help"];
+        let names = ["file", "edit", "view", "tools", "help"];
         let find = |name: &str| {
             rects
                 .iter()
@@ -2830,6 +2846,47 @@ mod layout_tests {
         assert_eq!(app.pending_rx_len(), 0);
         assert!(app.log.row_count() >= before);
         render(&mut app, &ctx, "resumed");
+    }
+
+    /// A right-click anywhere in the receive area opens its action menu.
+    ///
+    /// The actions used to live in a toolbar; this guards the replacement, and
+    /// in particular the backdrop that makes a short log's blank area a valid
+    /// target.
+    #[test]
+    fn right_clicking_the_receive_area_opens_the_context_menu() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        full_frame(&ctx, &mut app, input());
+        let panel = panels::probe::send_panel_rect();
+        assert!(panel.height() > 0.0, "the send panel was not laid out");
+        // Below the three seeded rows, inside the receive viewport.
+        let pos = egui::pos2(panel.center().x, panel.top() - 60.0);
+
+        let mut raw = input();
+        raw.events.push(egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            raw.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: Default::default(),
+            });
+        }
+        full_frame(&ctx, &mut app, raw);
+
+        assert!(
+            egui::Popup::is_any_open(&ctx),
+            "right-clicking the receive area did not open a context menu"
+        );
+    }
+
+    #[test]
+    fn renders_the_display_settings_window() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.show_display_settings = true;
+        render(&mut app, &ctx, "display settings");
     }
 
     /// The protocol form stays inside its panel in every language.

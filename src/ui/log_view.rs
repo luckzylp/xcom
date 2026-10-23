@@ -12,6 +12,7 @@ use eframe::egui::{
     self, Color32, FontId, Galley, Pos2, Rect, ScrollArea, Sense, TextFormat, Ui, Vec2,
 };
 
+use crate::i18n::tr;
 use crate::logstore::{LogStore, RowKind};
 use crate::theme::LogPalette;
 
@@ -132,6 +133,8 @@ pub struct LogViewOptions {
     pub auto_scroll: bool,
     pub font: FontId,
     pub line_spacing: f32,
+    /// Whether the display is currently frozen, for the context menu label.
+    pub paused: bool,
 }
 
 /// Actions the surrounding UI should perform, requested from the view.
@@ -141,6 +144,69 @@ pub struct LogViewOutput {
     pub copied: bool,
     /// A selection exists and could be copied.
     pub has_selection: bool,
+    /// The context menu asked to freeze or resume the display.
+    pub toggle_pause: bool,
+    /// The context menu asked to clear the receive view.
+    pub clear_received: bool,
+}
+
+/// What the receive view's context menu asked for.
+#[derive(Default)]
+struct ContextActions {
+    copied: bool,
+    toggle_pause: bool,
+    clear_received: bool,
+}
+
+/// The receive view's right-click menu.
+///
+/// The receive toolbar used to carry these actions; they are secondary enough
+/// that a context menu keeps the data area free of chrome while leaving the
+/// clipboard and keyboard shortcuts unchanged.
+fn context_menu(
+    response: egui::Response,
+    store: &LogStore,
+    state: &mut LogViewState,
+    options: &LogViewOptions,
+) -> ContextActions {
+    let mut actions = ContextActions::default();
+    response.context_menu(|ui| {
+        let copy = ui.add_enabled(
+            state.has_selection(),
+            egui::Button::new(tr("复制选中")).shortcut_text("Ctrl+C"),
+        );
+        if copy.clicked() {
+            if let Some(text) = state.selected_text(store) {
+                ui.ctx().copy_text(text);
+                actions.copied = true;
+            }
+            ui.close();
+        }
+
+        if ui
+            .add(egui::Button::new(tr("全选")).shortcut_text("Ctrl+A"))
+            .clicked()
+        {
+            state.select_all(store);
+            ui.close();
+        }
+
+        ui.separator();
+        let pause = if options.paused {
+            tr("继续显示")
+        } else {
+            tr("暂停显示")
+        };
+        if ui.button(pause).clicked() {
+            actions.toggle_pause = true;
+            ui.close();
+        }
+        if ui.button(tr("清除接收")).clicked() {
+            actions.clear_received = true;
+            ui.close();
+        }
+    });
+    actions
 }
 
 /// Everything needed to hit-test and paint one visible row.
@@ -176,9 +242,20 @@ pub fn show(
             ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::click_and_drag());
         ui.painter()
             .rect_filled(rect, egui::CornerRadius::ZERO, palette.background);
-        let _ = response;
+        let actions = context_menu(response, store, state, options);
+        output.copied = actions.copied;
+        output.toggle_pause = actions.toggle_pause;
+        output.clear_received = actions.clear_received;
         return output;
     }
+
+    // The content response only covers the rows themselves, so a short log
+    // would leave most of the view with no right-click target.  This backdrop
+    // is registered first; the row response added later still wins over the
+    // data, while the blank area opens the same menu.
+    let viewport = ui.available_rect_before_wrap();
+    let backdrop = ui.interact(viewport, ui.id().with("log_context"), Sense::click());
+    let mut context_actions = context_menu(backdrop, store, state, options);
 
     let scroll = ScrollArea::both()
         .auto_shrink([false, false])
@@ -290,6 +367,10 @@ pub fn show(
             painter.galley(row.origin, row.galley.clone(), row.color);
         }
 
+        let row_actions = context_menu(response, store, state, options);
+        context_actions.copied |= row_actions.copied;
+        context_actions.toggle_pause |= row_actions.toggle_pause;
+        context_actions.clear_received |= row_actions.clear_received;
         output.has_selection = state.has_selection();
     });
 
@@ -310,6 +391,9 @@ pub fn show(
         state.select_all(store);
     }
 
+    output.copied |= context_actions.copied;
+    output.toggle_pause |= context_actions.toggle_pause;
+    output.clear_received |= context_actions.clear_received;
     let _ = result;
     output
 }

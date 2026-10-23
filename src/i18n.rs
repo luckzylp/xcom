@@ -256,14 +256,15 @@ static EN: &[(&str, &str)] = &[
     ("文件",                 "File"),
     ("编辑",                 "Edit"),
     ("视图",                 "View"),
-    ("串口连接",              "Serial"),
     ("工具",                 "Tools"),
     ("帮助",                 "Help"),
     ("退出",                 "Quit"),
-    ("刷新串口列表",          "Refresh port list"),
     ("首选项",               "Preferences"),
     ("外观",                 "Appearance"),
     ("接收区配色",            "Receive colours"),
+    ("显示",                 "Display"),
+    ("编码",                 "Encoding"),
+    ("更多显示设置",           "More display settings"),
 
     // -- top bar ------------------------------------------------------------
     ("主题",                 "Theme"),
