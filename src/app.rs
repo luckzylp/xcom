@@ -2832,6 +2832,60 @@ mod layout_tests {
         render(&mut app, &ctx, "resumed");
     }
 
+    /// The protocol form stays inside its panel in every language.
+    ///
+    /// At the minimum window width the English labels leave too little room for
+    /// a fixed-width combo box to be laid out on its row.  egui cannot wrap a
+    /// combo after starting it, so it used to paint the control past the panel
+    /// edge: the separator looked broken and the left-hand controls were
+    /// clipped.  Both languages must keep every row inside the panel.
+    #[test]
+    fn protocol_form_fits_its_panel_in_both_languages() {
+        let _guard = crate::i18n::test_lock();
+        for language in crate::i18n::Lang::ALL {
+            crate::i18n::set_lang(language);
+            let ctx = egui::Context::default();
+            let mut app = seeded();
+            app.settings.show_tool_panel = true;
+            app.settings.right_panel_width = panels::RIGHT_PANEL_MIN;
+            app.side_tab = SideTab::Protocol;
+            for _ in 0..2 {
+                let mut narrow = input();
+                narrow.screen_rect = Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(880.0, 540.0),
+                ));
+                full_frame(&ctx, &mut app, narrow);
+            }
+
+            let panel = panels::probe::tool_panel_rect();
+            let content = panels::probe::protocol_content_rect();
+            let rows = panels::probe::protocol_rows();
+            assert!(!rows.is_empty(), "the protocol form was not laid out");
+            for (name, rect) in rows {
+                assert!(
+                    rect.right() <= panel.right() + 0.5,
+                    "{language:?}: the protocol {name} row ends at {:.1}, \
+                     past the panel edge {:.1}",
+                    rect.right(),
+                    panel.right()
+                );
+            }
+            assert!(
+                content.right() <= panel.right() + 0.5,
+                "{language:?}: protocol content ends at {:.1}, past the panel edge {:.1}",
+                content.right(),
+                panel.right()
+            );
+            assert!(
+                content.bottom() <= panel.bottom() + 0.5,
+                "{language:?}: protocol content ends at {:.1}, past the panel bottom {:.1}",
+                content.bottom(),
+                panel.bottom()
+            );
+        }
+    }
+
     #[test]
     fn renders_both_tool_panel_tabs() {
         let ctx = egui::Context::default();

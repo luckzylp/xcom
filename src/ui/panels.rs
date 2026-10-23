@@ -75,6 +75,44 @@ pub(crate) mod probe {
         static ABOUT_CLOSE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static TOP_BAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
+        static PROTOCOL_ROW_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
+            const { RefCell::new(Vec::new()) };
+        static PROTOCOL_CONTENT_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_protocol_panel() {
+        PROTOCOL_ROW_RECTS.with(|rects| rects.borrow_mut().clear());
+        PROTOCOL_CONTENT_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn begin_protocol_panel() {}
+
+    #[cfg(test)]
+    pub(crate) fn push_protocol_row(name: &'static str, rect: egui::Rect) {
+        PROTOCOL_ROW_RECTS.with(|rects| rects.borrow_mut().push((name, rect)));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_protocol_row<R>(_name: &'static str, _rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn protocol_rows() -> Vec<(&'static str, egui::Rect)> {
+        PROTOCOL_ROW_RECTS.with(|rects| rects.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_protocol_content_rect(rect: egui::Rect) {
+        PROTOCOL_CONTENT_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_protocol_content_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn protocol_content_rect() -> egui::Rect {
+        PROTOCOL_CONTENT_RECT.with(|cell| cell.get())
     }
 
     #[cfg(test)]
@@ -935,6 +973,38 @@ fn combo<T: PartialEq + Copy>(
     label: impl Fn(T) -> String,
 ) -> bool {
     combo_response(ui, id, current, options, label).0
+}
+
+/// As [`combo`], but never wider than the room left on the current row.
+///
+/// A combo box is a horizontal child, so egui's wrapping row cannot move it to
+/// the next line after it has started laying it out.  Capping the requested
+/// width to what is actually available keeps a wide choice control from
+/// painting past a narrow panel.
+fn combo_capped<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    id: &str,
+    current: &mut T,
+    options: &[T],
+    label: impl Fn(T) -> String,
+    max_width: f32,
+) -> bool {
+    let width = ui.available_width().min(max_width);
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(label(*current))
+        .width(width)
+        .show_ui(ui, |ui| {
+            for option in options {
+                if ui
+                    .selectable_value(current, *option, label(*option))
+                    .clicked()
+                {
+                    changed = true;
+                }
+            }
+        });
+    changed
 }
 
 /// As [`combo`], but also hands back the response rect so a test can measure
@@ -3236,8 +3306,15 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
 fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
     let running = app.protocol.is_running();
     let mut config = app.protocol.config().clone();
+    probe::begin_protocol_panel();
 
-    ui.horizontal_wrapped(|ui| {
+    // The panel is narrow, and these are one control per row rather than a
+    // packed grid.  A `ComboBox` is itself a horizontal child: on a wrapped row
+    // with too little room left, egui hands that child the remaining width and
+    // then paints the fixed-width combo past the panel edge instead of wrapping
+    // it.  Giving each control a row of its own — and capping the combo to the
+    // room actually left — keeps the English labels inside the panel.
+    let identity = ui.horizontal_wrapped(|ui| {
         ui.label(tr("地址"));
         ui.add(
             egui::DragValue::new(&mut config.address)
@@ -3250,20 +3327,26 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
                 .range(0..=255)
                 .speed(1.0),
         );
+    });
+    probe::push_protocol_row("identity", identity.response.rect);
+
+    let checksum = ui.horizontal_wrapped(|ui| {
         ui.label(tr("校验"));
-        let mut checksum = config.checksum;
-        if combo(
+        let mut kind = config.checksum;
+        if combo_capped(
             ui,
             "protocol_checksum",
-            &mut checksum,
+            &mut kind,
             &ChecksumKind::ALL,
             |c| tr(c.label()).to_owned(),
+            SERIAL_COMBO_WIDTH,
         ) {
-            config.checksum = checksum;
+            config.checksum = kind;
         }
     });
+    probe::push_protocol_row("checksum", checksum.response.rect);
 
-    ui.horizontal_wrapped(|ui| {
+    let period = ui.horizontal_wrapped(|ui| {
         ui.label(tr("帧周期"));
         ui.add(
             egui::DragValue::new(&mut config.frame_period_ms)
@@ -3271,12 +3354,20 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
                 .range(1..=600_000)
                 .suffix(" ms"),
         );
+    });
+    probe::push_protocol_row("period", period.response.rect);
+
+    let retries = ui.horizontal_wrapped(|ui| {
         ui.label(tr("最大重发"));
         ui.add(
             egui::DragValue::new(&mut config.max_retries)
                 .speed(1.0)
                 .range(0..=255),
         );
+    });
+    probe::push_protocol_row("retries", retries.response.rect);
+
+    let data_len = ui.horizontal_wrapped(|ui| {
         ui.label(tr("最大数据长度"));
         ui.add(
             egui::DragValue::new(&mut config.max_data_len)
@@ -3284,12 +3375,14 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
                 .range(1..=255),
         );
     });
+    probe::push_protocol_row("data_len", data_len.response.rect);
 
-    ui.horizontal_wrapped(|ui| {
+    let options = ui.horizontal_wrapped(|ui| {
         ui.checkbox(&mut config.auto_send, tr("自动发送"));
         ui.checkbox(&mut config.show_raw, tr("显示原始帧"));
         ui.checkbox(&mut config.auto_wrap, tr("自动换行"));
     });
+    probe::push_protocol_row("options", options.response.rect);
 
     if let Some(warning) = config.period_warning(app.settings.serial.baud) {
         ui.colored_label(level_color(Level::Warning), warning);
@@ -3312,7 +3405,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
             .hint_text(tr("十六进制，如 00 00 00 0A")),
     );
 
-    ui.horizontal_wrapped(|ui| {
+    let actions = ui.horizontal_wrapped(|ui| {
         let enabled = app.link.is_open();
         if ui
             .add_enabled(enabled && !running, egui::Button::new(tr("单次发送")))
@@ -3350,6 +3443,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
             );
         }
     });
+    probe::push_protocol_row("actions", actions.response.rect);
 
     if let Some((sent, total)) = app.protocol_progress {
         let ratio = if total == 0 {
@@ -3365,7 +3459,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
     }
 
     ui.separator();
-    ui.horizontal(|ui| {
+    let response_header = ui.horizontal(|ui| {
         ui.label(RichText::new(tr("响应区")).strong());
         if ui.button(tr("清除")).clicked() {
             app.protocol_log.clear();
@@ -3376,6 +3470,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
                 .color(ui.visuals().weak_text_color()),
         );
     });
+    probe::push_protocol_row("response_header", response_header.response.rect);
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -3401,6 +3496,7 @@ fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
                 });
             }
         });
+    probe::set_protocol_content_rect(ui.min_rect());
 }
 
 fn protocol_start(app: &mut XcomApp, kind: TaskKind) {
