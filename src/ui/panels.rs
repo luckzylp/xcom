@@ -1201,27 +1201,25 @@ fn edit_menu(app: &mut XcomApp, ui: &mut Ui) {
 }
 
 fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
-    if menu_dialog_item(ui, "显示设置") {
-        app.show_display_settings = true;
-    }
-    ui.menu_button(tr("编码"), |ui| encoding_menu(app, ui));
-    ui.separator();
-
+    // Layout switches first (the most-used items), then content and appearance
+    // submenus; the settings dialog entry closes the menu, the way Options or
+    // Preferences close a Tools menu on the desktop.
     let mut changed = false;
     changed |= ui
-        .checkbox(&mut app.settings.show_config_panel, tr("显示配置面板"))
+        .checkbox(&mut app.settings.show_config_panel, tr("配置面板"))
         .changed();
     changed |= ui
-        .checkbox(&mut app.settings.show_tool_panel, tr("显示工具面板"))
+        .checkbox(&mut app.settings.show_tool_panel, tr("工具面板"))
         .changed();
     changed |= ui
-        .checkbox(&mut app.settings.show_send_area, tr("显示发送区"))
+        .checkbox(&mut app.settings.show_send_area, tr("发送区"))
         .changed();
     if changed {
         app.mark_settings_dirty();
     }
 
     ui.separator();
+    ui.menu_button(tr("编码"), |ui| encoding_menu(app, ui));
     ui.menu_button(tr("主题"), |ui| {
         for mode in ThemeMode::ALL {
             if ui
@@ -1248,6 +1246,11 @@ fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
             }
         }
     });
+
+    ui.separator();
+    if menu_dialog_item_shortcut(ui, "显示设置", "Ctrl+,") {
+        app.show_display_settings = true;
+    }
 }
 
 /// Receive and transmit encodings, as two short submenus.
@@ -1287,50 +1290,44 @@ fn encoding_menu(app: &mut XcomApp, ui: &mut Ui) {
             }
         }
     });
-
-    ui.separator();
-    ui.label(
-        RichText::new(crate::i18n::tr1("当前接收: {}", app.encoding_label()))
-            .small()
-            .color(ui.visuals().weak_text_color()),
-    );
-    ui.label(
-        RichText::new(crate::i18n::tr1("已分析 {} 字节", app.auto.total()))
-            .small()
-            .color(ui.visuals().weak_text_color()),
-    );
 }
 
 fn tools_menu(app: &mut XcomApp, ui: &mut Ui) {
-    if menu_item(ui, tr("多条发送"), "") {
+    // Radio-style: the active tool tab is the one currently selected, so the
+    // menu also answers "which tool am I looking at".
+    let multi_active = app.side_tab == SideTab::Multi && app.settings.show_tool_panel;
+    if ui.selectable_label(multi_active, tr("多条发送")).clicked() {
         app.side_tab = SideTab::Multi;
         app.settings.show_tool_panel = true;
         app.mark_settings_dirty();
     }
-    if menu_item(ui, tr("协议传输"), "") {
+    let protocol_active = app.side_tab == SideTab::Protocol && app.settings.show_tool_panel;
+    if ui
+        .selectable_label(protocol_active, tr("协议传输"))
+        .clicked()
+    {
         app.side_tab = SideTab::Protocol;
         app.settings.show_tool_panel = true;
         app.mark_settings_dirty();
     }
     ui.separator();
-    if menu_item(ui, &format!("{}…", tr("管理自定义波特率")), "") {
+    if menu_dialog_item(ui, "管理自定义波特率") {
         app.settings.show_config_panel = true;
         app.mark_settings_dirty();
         ui.ctx()
             .data_mut(|data| data.insert_temp(custom_baud_manager_id(), true));
     }
     ui.separator();
-    if menu_item(ui, tr("恢复默认设置"), "") {
-        app.settings = crate::settings::Settings::default();
-        app.log
-            .set_limits(app.settings.max_rows, app.settings.max_raw);
-        app.log.set_options(app.settings.display);
-        app.mark_settings_dirty();
-        app.info(tr("已恢复默认设置"));
+    // Destructive and irreversible, so it never runs straight from the menu.
+    if menu_dialog_item(ui, "恢复默认设置") {
+        app.show_reset_confirm = true;
     }
 }
 
 fn help_menu(app: &mut XcomApp, ui: &mut Ui) {
+    if menu_dialog_item(ui, "快捷键") {
+        app.show_shortcuts = true;
+    }
     if menu_item(ui, tr("关于 XCOM"), "") {
         app.show_about = true;
     }
@@ -1392,7 +1389,13 @@ pub(crate) fn display_settings_window(app: &mut XcomApp, ctx: &Context) {
 /// re-reads them every frame so changes also apply to data already on screen.
 fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
     probe::begin_highlight_table();
-    ui.strong(tr("关键字高亮"));
+    let title = ui.strong(tr("关键字高亮"));
+    // The receive view's context menu routes here; bring the section into view
+    // on the frame that arrival was requested.
+    if app.scroll_to_highlights {
+        title.scroll_to_me(Some(egui::Align::Min));
+        app.scroll_to_highlights = false;
+    }
 
     let mut settings = app.settings.highlights.clone();
     let mut changed = false;
@@ -2354,6 +2357,10 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
         if output.toggle_echo {
             app.settings.echo_sent = !app.settings.echo_sent;
             app.mark_settings_dirty();
+        }
+        if output.open_highlight_settings {
+            app.show_display_settings = true;
+            app.scroll_to_highlights = true;
         }
         if output.clear_received {
             app.clear_receive();
@@ -3713,6 +3720,17 @@ pub(crate) fn status_bar(app: &mut XcomApp, ui: &mut Ui) {
 
             ui.separator();
             ui.label(RichText::new(crate::i18n::tr1("编码 {}", app.encoding_label())).monospace());
+            // Auto-detection context, moved here from the Encoding submenu so
+            // the menu is only choices.
+            if app.settings.encoding.is_none() {
+                ui.separator();
+                ui.label(
+                    RichText::new(crate::i18n::tr1("已分析 {} 字节", app.auto.total()))
+                        .small()
+                        .monospace()
+                        .color(ui.visuals().weak_text_color()),
+                );
+            }
 
             ui.separator();
             ui.label(
@@ -3835,6 +3853,99 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
     }
     if !open || close_requested {
         app.show_about = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reset confirmation / keyboard shortcuts
+// ---------------------------------------------------------------------------
+
+/// "Restore defaults" is destructive and irreversible, so the menu item only
+/// asks; the reset itself happens after an explicit confirmation here.
+pub(crate) fn reset_confirm_window(app: &mut XcomApp, ctx: &Context) {
+    if !app.show_reset_confirm {
+        return;
+    }
+    let mut open = true;
+    let mut close_requested = false;
+    egui::Window::new(tr("恢复默认设置"))
+        .id(egui::Id::new("reset_confirm_dialog"))
+        .title_bar(false)
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            let header = dialog::header(ui, tr("恢复默认设置"), None);
+            if header.close_clicked {
+                close_requested = true;
+            }
+            ui.separator();
+            ui.label(tr(
+                "将清除全部设置（串口参数、界面布局、主题与语言等），此操作无法撤销。",
+            ));
+            ui.add_space(6.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let confirm = egui::Button::new(
+                    RichText::new(tr("确认恢复")).color(level_color(Level::Warning)),
+                );
+                if ui.add(confirm).clicked() {
+                    app.apply_default_settings();
+                    close_requested = true;
+                }
+                if ui.button(tr("取消")).clicked() {
+                    close_requested = true;
+                }
+            });
+        });
+    if !open || close_requested {
+        app.show_reset_confirm = false;
+    }
+}
+
+/// The keyboard map for every shortcut the app handles, so users never have to
+/// discover them by reading the source.
+pub(crate) fn shortcuts_window(app: &mut XcomApp, ctx: &Context) {
+    if !app.show_shortcuts {
+        return;
+    }
+    let mut open = true;
+    let mut close_requested = false;
+    egui::Window::new(tr("快捷键"))
+        .id(egui::Id::new("shortcuts_dialog"))
+        .title_bar(false)
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            let header = dialog::header(ui, tr("快捷键"), None);
+            if header.close_clicked {
+                close_requested = true;
+            }
+            ui.separator();
+            egui::Grid::new("shortcuts_grid")
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    let rows = [
+                        ("Ctrl+,", tr("显示设置")),
+                        ("Ctrl+O", tr("打开/关闭串口")),
+                        ("Ctrl+Enter", tr("发送")),
+                        ("Ctrl+S", tr("保存接收数据")),
+                        ("Ctrl+Shift+S", tr("保存原始数据")),
+                        ("Ctrl+C", tr("复制选中")),
+                        ("Ctrl+A", tr("全选")),
+                        ("F5", tr("刷新串口列表")),
+                        ("Ctrl+Q", tr("退出")),
+                    ];
+                    for (keys, what) in rows {
+                        ui.label(RichText::new(keys).monospace());
+                        ui.label(what);
+                        ui.end_row();
+                    }
+                });
+        });
+    if !open || close_requested {
+        app.show_shortcuts = false;
     }
 }
 

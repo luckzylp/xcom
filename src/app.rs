@@ -161,6 +161,12 @@ pub struct XcomApp {
     pub(crate) show_about: bool,
     /// Whether the Display settings dialog is open.
     pub(crate) show_display_settings: bool,
+    /// Whether the confirmation dialog for restoring defaults is open.
+    pub(crate) show_reset_confirm: bool,
+    /// Whether the keyboard-shortcuts dialog is open.
+    pub(crate) show_shortcuts: bool,
+    /// Set when the display settings page should scroll to the keyword rules.
+    pub(crate) scroll_to_highlights: bool,
 
     /// Handshake line states, sampled by a background thread.
     pub(crate) signals: Signals,
@@ -248,6 +254,9 @@ impl XcomApp {
             side_tab: SideTab::Multi,
             show_about: false,
             show_display_settings: false,
+            show_reset_confirm: false,
+            show_shortcuts: false,
+            scroll_to_highlights: false,
             signals: Signals::default(),
             applied_theme: None,
             applied_lang: None,
@@ -1099,6 +1108,12 @@ impl XcomApp {
             self.ports.poll();
             self.info(tr("已刷新串口列表"));
         }
+        // The desktop convention for "open the settings dialog".
+        let display_settings =
+            ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Comma));
+        if display_settings {
+            self.show_display_settings = true;
+        }
         // Save / Save As, matching the shortcuts shown in the File menu.
         let save =
             ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S));
@@ -1114,6 +1129,21 @@ impl XcomApp {
         if quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+
+    /// Apply the factory defaults everywhere, including the parts that live
+    /// outside `settings` (the live log options and the UI language).
+    pub(crate) fn apply_default_settings(&mut self) {
+        self.settings = crate::settings::Settings::default();
+        self.log
+            .set_limits(self.settings.max_rows, self.settings.max_raw);
+        self.log.set_options(self.settings.display);
+        // `Settings::default()` has `lang: None` ("follow the system"), so the
+        // live language must follow too or the session keeps the old language
+        // until restart.
+        crate::i18n::set_lang(crate::i18n::system_lang());
+        self.mark_settings_dirty();
+        self.info(tr("已恢复默认设置"));
     }
 }
 
@@ -1198,6 +1228,8 @@ impl XcomApp {
         panels::center_panel(self, ui);
         panels::apply_splitters(self, ui);
         panels::display_settings_window(self, ctx);
+        panels::reset_confirm_window(self, ctx);
+        panels::shortcuts_window(self, ctx);
         panels::about_window(self, ctx);
 
         self.maybe_save_settings(ctx);
@@ -2954,6 +2986,31 @@ mod layout_tests {
             },
         ];
         render(&mut app, &ctx, "display settings");
+    }
+
+    /// The reset confirmation dialog renders without applying anything: the
+    /// reset must wait for the explicit confirmation button.
+    #[test]
+    fn renders_the_reset_confirmation_dialog_without_resetting() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.echo_sent = true;
+        app.show_reset_confirm = true;
+        render(&mut app, &ctx, "reset confirmation");
+        assert!(app.show_reset_confirm, "the dialog closed on its own");
+        assert!(
+            app.settings.echo_sent,
+            "rendering the dialog must not apply the reset"
+        );
+    }
+
+    /// The keyboard-shortcuts dialog renders with the full shortcut map.
+    #[test]
+    fn renders_the_shortcuts_dialog() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.show_shortcuts = true;
+        render(&mut app, &ctx, "shortcuts");
     }
 
     /// The keyword column is a table cell with room for a real pattern.

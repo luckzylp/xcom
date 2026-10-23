@@ -275,6 +275,9 @@ static EN: &[(&str, &str)] = &[
     // -- top bar ------------------------------------------------------------
     ("主题",                 "Theme"),
     ("语言",                 "Language"),
+    ("配置面板",             "Configuration panel"),
+    ("工具面板",             "Tool panel"),
+    ("发送区",               "Send area"),
     ("显示配置面板",          "Show configuration panel"),
     ("显示工具面板",          "Show tool panel"),
     ("显示发送区",            "Show send area"),
@@ -287,6 +290,13 @@ static EN: &[(&str, &str)] = &[
     ("关于",                 "About"),
     ("恢复默认设置",          "Restore defaults"),
     ("已恢复默认设置",         "Defaults restored"),
+    ("将清除全部设置（串口参数、界面布局、主题与语言等），此操作无法撤销。",
+                              "This clears every setting (serial parameters, layout, theme, language, …). It cannot be undone."),
+    ("确认恢复",              "Reset everything"),
+    ("取消",                 "Cancel"),
+    ("快捷键",               "Keyboard shortcuts"),
+    ("打开/关闭串口",          "Open / close port"),
+    ("刷新串口列表",           "Refresh the port list"),
     ("关于 XCOM",            "About XCOM"),
 
     // -- theme names (src/theme.rs) ----------------------------------------
@@ -331,8 +341,6 @@ static EN: &[(&str, &str)] = &[
     // -- panels ------------------------------------------------------------
     ("显示设置", "Display settings"),
     ("16进制显示", "Hex display"),
-    ("在接收区右键菜单中开启 16进制显示后，可在此设置 HEX 样式。",
-     "Enable HEX display from the receive area's right-click menu to configure its layout here."),
     ("HEX 样式", "Hex style"),
     ("连续", "Continuous"),
     ("16 字节/行", "16 bytes/row"),
@@ -377,8 +385,7 @@ static EN: &[(&str, &str)] = &[
     ("全选", "Select all"),
     ("已选中，Ctrl+C 复制", "Selected - Ctrl+C to copy"),
     ("已复制选中内容到剪贴板", "Selection copied to clipboard"),
-    ("没有可复制的内容", "Nothing to copy"),
-    ("发送区", "Send"),
+    ("没有可复制的内容",     "Nothing to copy"),
     ("16进制发送", "Hex send"),
     ("发送新行", "Append newline"),
     ("定时发送", "Timed send"),

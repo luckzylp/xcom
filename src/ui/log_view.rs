@@ -161,6 +161,8 @@ pub struct LogViewOutput {
     pub toggle_timestamp: bool,
     pub toggle_wrap: bool,
     pub toggle_auto_scroll: bool,
+    /// The context menu asked to open the keyword-highlight settings.
+    pub open_highlight_settings: bool,
     /// The context menu asked to clear the receive view.
     pub clear_received: bool,
 }
@@ -176,6 +178,7 @@ struct ContextActions {
     toggle_timestamp: bool,
     toggle_wrap: bool,
     toggle_auto_scroll: bool,
+    open_highlight_settings: bool,
     clear_received: bool,
 }
 
@@ -260,6 +263,13 @@ fn context_menu(
         }
 
         ui.separator();
+        // A dialog opener rather than a checkbox: the switch and the rules
+        // editor live together on the display settings page.
+        if ui.button(format!("{}…", tr("关键字高亮"))).clicked() {
+            actions.open_highlight_settings = true;
+            ui.close();
+        }
+        ui.separator();
         if ui.button(tr("清除接收")).clicked() {
             actions.clear_received = true;
             ui.close();
@@ -310,6 +320,7 @@ pub fn show(
         output.toggle_timestamp = actions.toggle_timestamp;
         output.toggle_wrap = actions.toggle_wrap;
         output.toggle_auto_scroll = actions.toggle_auto_scroll;
+        output.open_highlight_settings = actions.open_highlight_settings;
         output.clear_received = actions.clear_received;
         return output;
     }
@@ -442,6 +453,7 @@ pub fn show(
         context_actions.toggle_timestamp |= row_actions.toggle_timestamp;
         context_actions.toggle_wrap |= row_actions.toggle_wrap;
         context_actions.toggle_auto_scroll |= row_actions.toggle_auto_scroll;
+        context_actions.open_highlight_settings |= row_actions.open_highlight_settings;
         context_actions.clear_received |= row_actions.clear_received;
         output.has_selection = state.has_selection();
     });
@@ -471,6 +483,7 @@ pub fn show(
     output.toggle_timestamp |= context_actions.toggle_timestamp;
     output.toggle_wrap |= context_actions.toggle_wrap;
     output.toggle_auto_scroll |= context_actions.toggle_auto_scroll;
+    output.open_highlight_settings |= context_actions.open_highlight_settings;
     output.clear_received |= context_actions.clear_received;
     let _ = result;
     output
