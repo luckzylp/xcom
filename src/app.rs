@@ -2886,6 +2886,113 @@ mod layout_tests {
         }
     }
 
+    /// The send toolbar and editor stay inside the area at its floor.
+    ///
+    /// Dragging the separator down used to clip the toolbar: the old minimum
+    /// was a constant, while the toolbar is one or two rows depending on the
+    /// width and every row grows with the interface font.  The floor is now
+    /// computed from those parts, so the whole toolbar and a usable editor must
+    /// remain visible in both languages and at the largest font.
+    #[test]
+    fn send_toolbar_and_editor_fit_at_the_area_floor() {
+        let _guard = crate::i18n::test_lock();
+        for language in crate::i18n::Lang::ALL {
+            crate::i18n::set_lang(language);
+            for width in [880.0_f32, 1600.0] {
+                for ui_size in [13.0_f32, 24.0] {
+                    let ctx = egui::Context::default();
+                    let mut app = seeded();
+                    app.settings.fonts.ui_size = ui_size;
+                    // The stored value the separator would leave behind when
+                    // dragged all the way down.
+                    app.settings.send_area_height = panels::SEND_AREA_MIN;
+                    // A file send adds a progress bar above the editor, which
+                    // is one more piece of content the floor must hold.
+                    app.file_send = Some(FileSend {
+                        path: "firmware.bin".to_owned(),
+                        data: vec![0; 32],
+                        offset: 0,
+                        chunk: 8,
+                        last: std::time::Instant::now(),
+                    });
+                    for _ in 0..2 {
+                        let mut raw = input();
+                        raw.screen_rect = Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 540.0),
+                        ));
+                        full_frame(&ctx, &mut app, raw);
+                    }
+
+                    let panel = panels::probe::send_panel_rect();
+                    assert!(panel.height() > 0.0, "the send panel was not laid out");
+                    for (name, rect) in panels::probe::send_toolbar_rects() {
+                        assert!(
+                            rect.min.y >= panel.min.y - 0.5,
+                            "{language:?} {width}x540 font {ui_size}: the {name} control \
+                             starts above the send panel: {rect:?} vs {panel:?}"
+                        );
+                        assert!(
+                            rect.max.y <= panel.max.y + 0.5,
+                            "{language:?} {width}x540 font {ui_size}: the {name} control \
+                             is clipped at the bottom: {rect:?} vs {panel:?}"
+                        );
+                    }
+
+                    let editor = panels::probe::editor_rect();
+                    assert!(
+                        editor.height() >= panels::SEND_EDITOR_MIN - 0.5,
+                        "{language:?} {width}x540 font {ui_size}: the editor is only \
+                         {:.1}px tall",
+                        editor.height()
+                    );
+                    assert!(
+                        editor.max.y <= panel.max.y + 0.5,
+                        "{language:?} {width}x540 font {ui_size}: the editor overflows the \
+                         send panel: {editor:?} vs {panel:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Dragging the separator down stops at the measured toolbar floor.
+    ///
+    /// The floor is dynamic, so this drives the real drag path rather than
+    /// only setting `send_area_height` below it: the stored height must be
+    /// lifted above the constant minimum and the toolbar must stay whole.
+    #[test]
+    fn dragging_the_send_separator_stops_at_the_toolbar_floor() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.fonts.ui_size = 24.0;
+
+        full_frame(&ctx, &mut app, input());
+        let panel = panels::probe::send_panel_rect();
+        let grab = egui::pos2(panel.center().x, panel.top());
+        drag(&ctx, &mut app, grab, egui::pos2(grab.x, grab.y + 90.0));
+
+        let panel = full_frame(&ctx, &mut app, input());
+        assert!(
+            app.settings.show_send_area,
+            "the send area collapsed instead of stopping at its floor"
+        );
+        assert!(
+            app.settings.send_area_height > panels::SEND_AREA_MIN,
+            "the floor is still the constant minimum: {}",
+            app.settings.send_area_height
+        );
+
+        let toolbar = panels::probe::send_toolbar_rects();
+        assert!(!toolbar.is_empty(), "the toolbar was not laid out");
+        for (name, rect) in toolbar {
+            assert!(
+                rect.max.y <= panel.max.y + 0.5,
+                "the {name} control is clipped after the drag: {rect:?} vs {panel:?}"
+            );
+        }
+    }
+
     #[test]
     fn renders_both_tool_panel_tabs() {
         let ctx = egui::Context::default();

@@ -645,9 +645,16 @@ pub(crate) const CENTER_MIN: f32 = 320.0;
 const SEPARATOR_SLACK: f32 = 4.0;
 
 /// Height of the send area.
+///
+/// `SEND_AREA_MIN` is only the floor stored in settings.  The live floor is
+/// measured from the toolbar by [`send_area_min_height`], because the toolbar
+/// grows with the interface font and may occupy two rows.
 pub(crate) const SEND_AREA_DEFAULT: f32 = 196.0;
 pub(crate) const SEND_AREA_MIN: f32 = 96.0;
 pub(crate) const SEND_AREA_MAX: f32 = 560.0;
+
+/// Height below which the send editor is no longer worth showing, in points.
+pub(crate) const SEND_EDITOR_MIN: f32 = 48.0;
 
 /// Which way a panel extends from its fixed edge.
 ///
@@ -2162,8 +2169,12 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
     egui::CentralPanel::default().show(ui, |ui| {
         // The send area sits at the bottom of the central column, so that the
         // configuration and tool panels flank the full height of the window.
+        // Its floor depends on the interface font and on whether the action
+        // group needs a second row: a constant minimum let the separator eat
+        // into the toolbar when the user dragged it down.
+        let min_height = send_area_min_height(app, ui, ui.available_width());
         if app.settings.show_send_area {
-            let height = app.settings.send_area_height;
+            let height = app.settings.send_area_height.max(min_height);
             let panel = egui::Panel::bottom("send_area")
                 .resizable(false)
                 .exact_size(height)
@@ -2174,8 +2185,8 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
                 growth: SplitterGrowth::Upward,
                 boundary: outer.top(),
                 cross: outer.x_range(),
-                current_size: app.settings.send_area_height,
-                min: SEND_AREA_MIN,
+                current_size: height,
+                min: min_height,
                 max: SEND_AREA_MAX,
                 target: SplitterTarget::SendHeight,
                 collapsed: false,
@@ -2190,7 +2201,7 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
                 SplitterGrowth::Upward,
                 SplitterTarget::SendHeight,
                 area,
-                SEND_AREA_MIN,
+                min_height,
                 SEND_AREA_MAX,
             ));
         }
@@ -2400,6 +2411,59 @@ fn left_aligned_send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
     );
 }
 
+/// Height of one send-toolbar row at the current interface font.
+///
+/// Checkboxes and buttons grow with the interface font, so a fixed row height
+/// would clip them as soon as the user chose a larger size.
+fn send_toolbar_row_height(app: &XcomApp, ui: &Ui) -> f32 {
+    28.0_f32.max(
+        ui.ctx().fonts_mut(|fonts| {
+            fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
+        }) + 10.0,
+    )
+}
+
+/// Whether the send toolbar's action group needs a row of its own.
+///
+/// At the minimum window size the centre column is narrower than the left
+/// options plus the fixed-width action group.  Keep them on one row when there
+/// is room; otherwise move the actions to a second, left-aligned row instead of
+/// letting the two overlap.
+fn send_actions_on_second_row(app: &XcomApp, width: f32) -> bool {
+    let one_row_min = 620.0 * (app.settings.fonts.ui_size / 13.0).max(1.0);
+    width < one_row_min
+}
+
+/// The smallest send panel that still shows the whole toolbar and an editor.
+///
+/// The toolbar is one or two rows depending on the panel width, each row grows
+/// with the interface font, and a file transmission adds a progress bar.  A
+/// constant minimum cannot cover those cases, so the separator could be dragged
+/// down until the toolbar was clipped.  Sum the parts the panel itself will
+/// lay out: its frame margins, the toolbar rows, the gap before the editor, the
+/// optional progress bar and the editor's own floor.
+fn send_area_min_height(app: &XcomApp, ui: &Ui, outer_width: f32) -> f32 {
+    let frame = egui::Frame::side_top_panel(ui.style());
+    let margin = frame.total_margin().sum();
+    let inner_width = (outer_width - margin.x).max(0.0);
+    let row = send_toolbar_row_height(app, ui);
+    let rows = if send_actions_on_second_row(app, inner_width) {
+        2.0
+    } else {
+        1.0
+    };
+    let gap = ui.spacing().item_spacing.y;
+    let progress = if app.file_send.is_some() {
+        16.0 + gap
+    } else {
+        0.0
+    };
+    // One point of slack: egui rounds the panel's edges independently, and a
+    // floor that lands exactly on the boundary can clip the editor's last row.
+    (margin.y + rows * row + (rows - 1.0) * gap + gap + progress + SEND_EDITOR_MIN + 1.0)
+        .clamp(SEND_AREA_MIN, SEND_AREA_MAX)
+}
+
 /// Lay out only the send editor and report the height it took, so a test can
 /// observe that dragging the separator really resizes it.
 fn send_area(app: &mut XcomApp, ui: &mut Ui) {
@@ -2407,17 +2471,8 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
     probe::begin_send_toolbar();
 
     // Toolbar row height: tall enough that text/checkboxes are not clipped.
-    let btn_height = 28.0_f32.max(
-        ui.ctx().fonts_mut(|fonts| {
-            fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
-        }) + 10.0,
-    );
-    // At the minimum window size the center panel is narrower than the left
-    // options plus the fixed-width action group. Keep them on one row when
-    // there is room; otherwise move the actions to a second, right-aligned row
-    // instead of letting the right-to-left layout overlap the options.
-    let one_row_min = 620.0 * (app.settings.fonts.ui_size / 13.0).max(1.0);
-    let actions_on_second_row = ui.available_width() < one_row_min;
+    let btn_height = send_toolbar_row_height(app, ui);
+    let actions_on_second_row = send_actions_on_second_row(app, ui.available_width());
 
     ui.horizontal(|ui| {
         ui.set_height(btn_height);
@@ -2510,11 +2565,15 @@ fn send_area(app: &mut XcomApp, ui: &mut Ui) {
     // `desired_rows` left the editor four rows tall no matter how the panel
     // was resized, which reads as "dragging does nothing".
     let available = ui.available_size();
-    let editor_size = egui::vec2(available.x, available.y.max(48.0));
+    let editor_size = egui::vec2(available.x, available.y.max(SEND_EDITOR_MIN));
     let editor = ui.add(
         egui::TextEdit::multiline(&mut app.settings.send.buffer)
             .font(crate::fonts::send_font_id(app.settings.fonts.send_size))
             .desired_width(editor_size.x)
+            // One row plus `min_size`: the editor fills the room the panel
+            // gives it instead of insisting on four rows and overflowing the
+            // panel when the user drags the separator all the way down.
+            .desired_rows(1)
             .min_size(editor_size)
             .hint_text(if app.settings.send.hex {
                 tr("输入十六进制，如 01 02 0A（可省略空格）")
