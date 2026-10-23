@@ -159,6 +159,8 @@ pub struct XcomApp {
 
     pub(crate) side_tab: SideTab,
     pub(crate) show_about: bool,
+    /// Whether the Preferences dialog is open.
+    pub(crate) show_preferences: bool,
 
     /// Handshake line states, sampled by a background thread.
     pub(crate) signals: Signals,
@@ -245,6 +247,7 @@ impl XcomApp {
             protocol_progress: None,
             side_tab: SideTab::Multi,
             show_about: false,
+            show_preferences: false,
             signals: Signals::default(),
             applied_theme: None,
             applied_lang: None,
@@ -1091,6 +1094,19 @@ impl XcomApp {
         if toggle_port {
             self.toggle_port();
         }
+        let refresh_ports = ctx.input(|i| i.key_pressed(egui::Key::F5));
+        if refresh_ports {
+            self.ports.poll();
+            self.info(tr("已刷新串口列表"));
+        }
+        let preferences = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Comma));
+        if preferences {
+            self.show_preferences = true;
+        }
+        let quit = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Q));
+        if quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 }
 
@@ -1168,12 +1184,13 @@ impl XcomApp {
         self.pump_timers(ctx);
         self.handle_shortcuts(ctx);
 
-        panels::top_bar(self, ui);
+        panels::menu_bar(self, ui);
         panels::status_bar(self, ui);
         panels::left_panel(self, ui);
         panels::tool_panel(self, ui);
         panels::center_panel(self, ui);
         panels::apply_splitters(self, ui);
+        panels::preferences_window(self, ctx);
         panels::about_window(self, ctx);
 
         self.maybe_save_settings(ctx);
@@ -1283,7 +1300,7 @@ mod layout_tests {
         crate::fonts::install_default_families(ctx);
         let slot = std::cell::Cell::new(egui::Rect::NOTHING);
         let mut output = ctx.run_ui(raw, |ui| {
-            panels::top_bar(app, ui);
+            panels::menu_bar(app, ui);
             panels::status_bar(app, ui);
             panels::left_panel(app, ui);
             panels::tool_panel(app, ui);
@@ -1733,19 +1750,16 @@ mod layout_tests {
         );
     }
 
-    /// Every control on the top bar shares one vertical centre line.
+    /// The menu bar is one left-to-right row of top-level menus.
     ///
-    /// The theme and language labels used to sit above their own dropdowns, and
-    /// all four used to sit above the buttons on the right.  The bar lays out in
-    /// a wrapping row, and egui re-centres each item against the row as it
-    /// stands at that moment; a taller interface font is what makes the row
-    /// outgrow its seed and the items drift apart.  A taller font is a supported
-    /// setting, so it is also the tightest way to drive the bug.
+    /// Menus are text buttons, and the same taller-font case that used to push
+    /// the old toolbar off its centre line applies: every title must share one
+    /// baseline, and the order must be stable regardless of label widths.
     #[test]
-    fn top_bar_controls_share_one_vertical_centre() {
-        // Pin the language for the duration: longer English labels wrap the
-        // bar, and a concurrent language change would move the very centres
-        // this asserts on.
+    fn menu_titles_share_one_row_in_reading_order() {
+        // Pin the language: English and Chinese labels have different widths,
+        // and a concurrent language change would move the very rects this
+        // asserts on.
         let _guard = crate::i18n::test_lock();
         crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
         let ctx = egui::Context::default();
@@ -1756,33 +1770,28 @@ mod layout_tests {
         full_frame(&ctx, &mut app, input());
 
         let rects = panels::probe::top_bar_rects();
-        let centre = |name: &str| {
+        let names = ["file", "edit", "view", "serial", "tools", "help"];
+        let find = |name: &str| {
             rects
                 .iter()
                 .find(|(candidate, _)| *candidate == name)
-                .map(|(_, rect)| rect.center().y)
-                .unwrap_or_else(|| panic!("{name} was not laid out"))
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("{name} menu was not laid out"))
         };
-        // 关于 is part of the button group the labels must line up with.
-        let reference = centre("about");
-        for name in [
-            "theme_label",
-            "theme_combo",
-            "lang_label",
-            "lang_combo",
-            "config_panel",
-            "tool_panel",
-            "send_area",
-            "log_colors",
-            "reset",
-        ] {
-            let offset = centre(name) - reference;
+        let reference = find("file").center().y;
+        let mut previous_right = f32::NEG_INFINITY;
+        for name in names {
+            let rect = find(name);
+            let offset = rect.center().y - reference;
             assert!(
                 offset.abs() <= 0.75,
-                "{name} is {offset:.2}px off the top bar's centre line \
-                 (its centre {:.1}, the button row's {reference:.1})",
-                centre(name)
+                "the {name} menu is {offset:.2}px off the menu bar's centre line"
             );
+            assert!(
+                rect.min.x >= previous_right,
+                "the {name} menu overlaps or precedes the one before it: {rect:?}"
+            );
+            previous_right = rect.max.x;
         }
     }
 

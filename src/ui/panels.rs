@@ -989,124 +989,294 @@ fn font_combo(ui: &mut Ui, id: &str, current: &mut Option<String>) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Top bar
+// Menu bar
 // ---------------------------------------------------------------------------
 
-pub(crate) fn top_bar(app: &mut XcomApp, ui: &mut Ui) {
-    egui::Panel::top("top_bar").show(ui, |ui| {
+/// A drop-down menu item, with its keyboard shortcut at the right edge.
+fn menu_item(ui: &mut Ui, label: &str, shortcut: &str) -> bool {
+    let button = if shortcut.is_empty() {
+        egui::Button::new(label)
+    } else {
+        egui::Button::new(label).shortcut_text(shortcut)
+    };
+    ui.add(button).clicked()
+}
+
+/// A menu item that opens a dialog, marked with the conventional ellipsis.
+fn menu_dialog_item(ui: &mut Ui, label: &'static str) -> bool {
+    menu_item(ui, &format!("{}…", tr(label)), "")
+}
+
+/// A menu item that opens [`preferences_window`].
+fn preferences_item(ui: &mut Ui) -> bool {
+    menu_item(ui, &format!("{}…", tr("首选项")), "Ctrl+,")
+}
+
+/// egui temp-data key for the custom-baud dialog.
+///
+/// The serial panel draws the dialog and the Serial menu asks for it, so both
+/// routes have to agree on where "open" is stored.
+fn custom_baud_manager_id() -> egui::Id {
+    egui::Id::new("custom_baud_manager")
+}
+
+/// The application menu bar.
+///
+/// Configuration that used to sit in one crowded strip is organised the way a
+/// desktop application would: commands live in the menu of the thing they act
+/// on, toggles are check items under View, and the settings that need room for
+/// labels and colour pickers live in Preferences.
+pub(crate) fn menu_bar(app: &mut XcomApp, ui: &mut Ui) {
+    egui::Panel::top("menu_bar").show(ui, |ui| {
         probe::begin_top_bar();
-        // One row, one centre line.  `horizontal_wrapped` seeds its row extent
-        // from `interact_size.y` and re-centres every item against the row as
-        // it stands *at that moment*: as soon as a control is taller than that
-        // seed the row grows mid-row and each later item drifts by a pixel or
-        // two.  Sizing the row up front keeps one shared centre.
-        let row_height = ui.ctx().fonts_mut(|fonts| {
-            fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
-        }) + 10.0;
-        ui.spacing_mut().interact_size.y = row_height;
-        ui.horizontal_wrapped(|ui| {
-            let theme_label = ui.label(tr("主题"));
-            probe::push_top_bar_rect("theme_label", theme_label.rect);
-            let mut theme_mode = app.settings.theme;
-            let (theme_changed, theme_rect) =
-                combo_response(ui, "theme_mode", &mut theme_mode, &ThemeMode::ALL, |m| {
-                    format!("{} {}", m.icon(), tr(m.label()))
-                });
-            probe::push_top_bar_rect("theme_combo", theme_rect);
-            if theme_changed {
-                app.settings.theme = theme_mode;
-                app.mark_settings_dirty();
-            }
-
-            ui.separator();
-            let lang_label = ui.label(tr("语言"));
-            probe::push_top_bar_rect("lang_label", lang_label.rect);
-            let mut language = i18n::lang();
-            let lang_combo = egui::ComboBox::from_id_salt("language")
-                .selected_text(language.label())
-                .width(110.0)
-                .show_ui(ui, |ui| {
-                    for candidate in Lang::ALL {
-                        if ui
-                            .selectable_value(&mut language, candidate, candidate.label())
-                            .clicked()
-                        {
-                            i18n::set_lang(candidate);
-                            app.settings.lang = Some(candidate);
-                            app.mark_settings_dirty();
-                        }
-                    }
-                });
-            probe::push_top_bar_rect("lang_combo", lang_combo.response.rect);
-
-            ui.separator();
-            let mut show_config = app.settings.show_config_panel;
-            let config_panel = ui.checkbox(&mut show_config, tr("显示配置面板"));
-            probe::push_top_bar_rect("config_panel", config_panel.rect);
-            if config_panel.changed() {
-                app.settings.show_config_panel = show_config;
-                app.mark_settings_dirty();
-            }
-
-            ui.separator();
-            let mut show_tool = app.settings.show_tool_panel;
-            let tool_panel = ui.checkbox(&mut show_tool, tr("显示工具面板"));
-            probe::push_top_bar_rect("tool_panel", tool_panel.rect);
-            if tool_panel.changed() {
-                app.settings.show_tool_panel = show_tool;
-                app.mark_settings_dirty();
-            }
-
-            ui.separator();
-            let mut show_send = app.settings.show_send_area;
-            let send_area = ui.checkbox(&mut show_send, tr("显示发送区"));
-            probe::push_top_bar_rect("send_area", send_area.rect);
-            if send_area.changed() {
-                app.settings.show_send_area = show_send;
-                app.mark_settings_dirty();
-            }
-
-            ui.separator();
-            let mut log_colors = app.settings.log_colors;
-            let log_colors_checkbox = ui.checkbox(&mut log_colors.enabled, tr("自定义接收区配色"));
-            probe::push_top_bar_rect("log_colors", log_colors_checkbox.rect);
-            if log_colors_checkbox.changed() {
-                app.settings.log_colors = log_colors;
-                app.mark_settings_dirty();
-            }
-            if app.settings.log_colors.enabled {
-                ui.label(tr("字色"));
-                let mut fg = app.settings.log_colors.foreground;
-                if ui.color_edit_button_srgb(&mut fg).changed() {
-                    app.settings.log_colors.foreground = fg;
-                    app.mark_settings_dirty();
-                }
-                ui.label(tr("底色"));
-                let mut bg = app.settings.log_colors.background;
-                if ui.color_edit_button_srgb(&mut bg).changed() {
-                    app.settings.log_colors.background = bg;
-                    app.mark_settings_dirty();
-                }
-            }
-
-            ui.separator();
-            let reset = ui.button(tr("恢复默认设置"));
-            probe::push_top_bar_rect("reset", reset.rect);
-            if reset.clicked() {
-                app.settings = crate::settings::Settings::default();
-                app.log
-                    .set_limits(app.settings.max_rows, app.settings.max_raw);
-                app.log.set_options(app.settings.display);
-                app.mark_settings_dirty();
-                app.info(tr("已恢复默认设置"));
-            }
-            let about = ui.button(tr("关于"));
-            probe::push_top_bar_rect("about", about.rect);
-            if about.clicked() {
-                app.show_about = true;
-            }
+        egui::MenuBar::new().ui(ui, |ui| {
+            let file = ui.menu_button(tr("文件"), |ui| file_menu(app, ui));
+            probe::push_top_bar_rect("file", file.response.rect);
+            let edit = ui.menu_button(tr("编辑"), |ui| edit_menu(app, ui));
+            probe::push_top_bar_rect("edit", edit.response.rect);
+            let view = ui.menu_button(tr("视图"), |ui| view_menu(app, ui));
+            probe::push_top_bar_rect("view", view.response.rect);
+            let serial = ui.menu_button(tr("串口连接"), |ui| serial_menu(app, ui));
+            probe::push_top_bar_rect("serial", serial.response.rect);
+            let tools = ui.menu_button(tr("工具"), |ui| tools_menu(app, ui));
+            probe::push_top_bar_rect("tools", tools.response.rect);
+            let help = ui.menu_button(tr("帮助"), |ui| help_menu(app, ui));
+            probe::push_top_bar_rect("help", help.response.rect);
         });
     });
+}
+
+fn file_menu(app: &mut XcomApp, ui: &mut Ui) {
+    if menu_dialog_item(ui, "保存接收数据") {
+        save_log(app);
+    }
+    if menu_dialog_item(ui, "保存原始数据") {
+        save_raw_log(app);
+    }
+    if menu_dialog_item(ui, "发送文件")
+        && let Some(path) = pick_open_file(tr("选择要发送的文件"))
+    {
+        app.start_file_send(path);
+    }
+    ui.separator();
+    if menu_item(ui, tr("退出"), "Ctrl+Q") {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+}
+
+fn edit_menu(app: &mut XcomApp, ui: &mut Ui) {
+    let copy = ui.add_enabled(
+        app.log_view.has_selection(),
+        egui::Button::new(tr("复制选中")).shortcut_text("Ctrl+C"),
+    );
+    if copy.clicked() {
+        copy_selection(app, ui);
+    }
+    if menu_item(ui, tr("全选"), "Ctrl+A") {
+        let store = &app.log;
+        app.log_view.select_all(store);
+    }
+    ui.separator();
+    if menu_item(ui, tr("清除接收"), "") {
+        app.clear_receive();
+    }
+    if menu_item(ui, tr("清除发送"), "") {
+        clear_send(app);
+    }
+    ui.separator();
+    if preferences_item(ui) {
+        app.show_preferences = true;
+    }
+}
+
+fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
+    let mut changed = false;
+    changed |= ui
+        .checkbox(&mut app.settings.show_config_panel, tr("显示配置面板"))
+        .changed();
+    changed |= ui
+        .checkbox(&mut app.settings.show_tool_panel, tr("显示工具面板"))
+        .changed();
+    changed |= ui
+        .checkbox(&mut app.settings.show_send_area, tr("显示发送区"))
+        .changed();
+    if changed {
+        app.mark_settings_dirty();
+    }
+
+    ui.separator();
+    ui.menu_button(tr("主题"), |ui| {
+        for mode in ThemeMode::ALL {
+            if ui
+                .selectable_label(
+                    app.settings.theme == mode,
+                    format!("{} {}", mode.icon(), tr(mode.label())),
+                )
+                .clicked()
+            {
+                app.settings.theme = mode;
+                app.mark_settings_dirty();
+            }
+        }
+    });
+    ui.menu_button(tr("语言"), |ui| {
+        for candidate in Lang::ALL {
+            if ui
+                .selectable_label(i18n::lang() == candidate, candidate.label())
+                .clicked()
+            {
+                i18n::set_lang(candidate);
+                app.settings.lang = Some(candidate);
+                app.mark_settings_dirty();
+            }
+        }
+    });
+}
+
+fn serial_menu(app: &mut XcomApp, ui: &mut Ui) {
+    let toggle = if app.link.is_open() {
+        tr("关闭串口")
+    } else {
+        tr("打开串口")
+    };
+    if menu_item(ui, toggle, "Ctrl+O") {
+        app.toggle_port();
+    }
+    if menu_item(ui, tr("刷新串口列表"), "F5") {
+        app.ports.poll();
+        app.info(tr("已刷新串口列表"));
+    }
+    ui.separator();
+    if menu_item(ui, &format!("{}…", tr("管理自定义波特率")), "") {
+        app.settings.show_config_panel = true;
+        app.mark_settings_dirty();
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(custom_baud_manager_id(), true));
+    }
+    if menu_item(ui, tr("串口设置"), "") {
+        app.settings.show_config_panel = true;
+        app.mark_settings_dirty();
+    }
+}
+
+fn tools_menu(app: &mut XcomApp, ui: &mut Ui) {
+    if menu_item(ui, tr("多条发送"), "") {
+        app.side_tab = SideTab::Multi;
+        app.settings.show_tool_panel = true;
+        app.mark_settings_dirty();
+    }
+    if menu_item(ui, tr("协议传输"), "") {
+        app.side_tab = SideTab::Protocol;
+        app.settings.show_tool_panel = true;
+        app.mark_settings_dirty();
+    }
+    ui.separator();
+    if menu_item(ui, tr("恢复默认设置"), "") {
+        app.settings = crate::settings::Settings::default();
+        app.log
+            .set_limits(app.settings.max_rows, app.settings.max_raw);
+        app.log.set_options(app.settings.display);
+        app.mark_settings_dirty();
+        app.info(tr("已恢复默认设置"));
+    }
+}
+
+fn help_menu(app: &mut XcomApp, ui: &mut Ui) {
+    if menu_item(ui, tr("关于 XCOM"), "") {
+        app.show_about = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Preferences
+// ---------------------------------------------------------------------------
+
+/// Settings that need more room than a menu row: appearance and receive
+/// colours, with the live preview the main window already provides.
+pub(crate) fn preferences_window(app: &mut XcomApp, ctx: &Context) {
+    if !app.show_preferences {
+        return;
+    }
+    let mut open = true;
+    let mut close_requested = false;
+    // Same self-drawn header as the other dialogs: egui's own title bar puts
+    // its close button on the right regardless of the desktop's layout.
+    egui::Window::new(tr("首选项"))
+        .id(egui::Id::new("preferences_dialog"))
+        .title_bar(false)
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            let header = dialog::header(ui, tr("首选项"), None);
+            if header.close_clicked {
+                close_requested = true;
+            }
+            ui.separator();
+
+            ui.label(RichText::new(tr("外观")).strong());
+            egui::Grid::new("preferences_appearance")
+                .num_columns(2)
+                .spacing([8.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label(tr("主题"));
+                    let mut theme = app.settings.theme;
+                    if combo(
+                        ui,
+                        "preferences_theme",
+                        &mut theme,
+                        &ThemeMode::ALL,
+                        |mode| format!("{} {}", mode.icon(), tr(mode.label())),
+                    ) {
+                        app.settings.theme = theme;
+                        app.mark_settings_dirty();
+                    }
+                    ui.end_row();
+
+                    ui.label(tr("语言"));
+                    let mut language = i18n::lang();
+                    if combo(
+                        ui,
+                        "preferences_language",
+                        &mut language,
+                        &Lang::ALL,
+                        |candidate| candidate.label().to_owned(),
+                    ) {
+                        i18n::set_lang(language);
+                        app.settings.lang = Some(language);
+                        app.mark_settings_dirty();
+                    }
+                    ui.end_row();
+                });
+
+            ui.separator();
+            ui.label(RichText::new(tr("接收区配色")).strong());
+            let mut colors = app.settings.log_colors;
+            if ui
+                .checkbox(&mut colors.enabled, tr("自定义接收区配色"))
+                .changed()
+            {
+                app.settings.log_colors = colors;
+                app.mark_settings_dirty();
+            }
+            if colors.enabled {
+                ui.horizontal(|ui| {
+                    ui.label(tr("字色"));
+                    if ui.color_edit_button_srgb(&mut colors.foreground).changed() {
+                        app.settings.log_colors = colors;
+                        app.mark_settings_dirty();
+                    }
+                    ui.label(tr("底色"));
+                    if ui.color_edit_button_srgb(&mut colors.background).changed() {
+                        app.settings.log_colors = colors;
+                        app.mark_settings_dirty();
+                    }
+                });
+            }
+        });
+    if !open || close_requested {
+        app.show_preferences = false;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1253,7 +1423,7 @@ fn paint_tune_icon(ui: &Ui, rect: egui::Rect, color: egui::Color32) -> usize {
 
 fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
     let open = app.link.is_open();
-    let manager_id = egui::Id::new("custom_baud_manager");
+    let manager_id = custom_baud_manager_id();
     let input_id = egui::Id::new("custom_baud_input");
     let mut manager_open = ui
         .ctx()
@@ -2083,12 +2253,17 @@ fn clear_button(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
     let button = ui.add_sized([76.0, btn_height], egui::Button::new(tr("清除发送")));
     probe::push_send_toolbar_rect("clear", button.rect);
     if button.clicked() {
-        app.settings.send.buffer.clear();
-        app.tx_bytes = 0;
-        app.rx_bytes = 0;
-        app.mark_settings_dirty();
-        app.info(tr("已清除发送区与收发计数"));
+        clear_send(app);
     }
+}
+
+/// Empty the send buffer and reset the session counters.
+fn clear_send(app: &mut XcomApp) {
+    app.settings.send.buffer.clear();
+    app.tx_bytes = 0;
+    app.rx_bytes = 0;
+    app.mark_settings_dirty();
+    app.info(tr("已清除发送区与收发计数"));
 }
 
 /// The history dropdown, leftmost of the group.

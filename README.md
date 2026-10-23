@@ -8,7 +8,7 @@ The UI contains **no advertisements** and additionally supports **automatic char
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ Theme [Dark]  Show Tool Panel  Custom Rx Colors  Rx Font Size ─────  About Reset│
+│ File  Edit  View  Serial  Tools  Help                                        │
 ├───────────────┬──────────────────────────────────────────┬───────────────────┤
 │ Serial Config  │ Continue Show Copy All Clear Save…      │ Multi-Send | Proto │
 │ Port   [▾]    │ Encoding Auto·UTF-8                      │                   │
@@ -71,13 +71,13 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 
 - **Automatic encoding detection**: No need to manually guess GBK / UTF-8 / Shift_JIS.
 - **Dark + Light themes** (can also follow the system).
-- **Chinese/English UI toggle**: switchable from the top bar at any time; follows system `LANG` on first launch; choice is persisted.
+- **Chinese/English UI toggle**: switchable at any time from **View → Language** or **Edit → Preferences**; follows system `LANG` on first launch; choice is persisted.
 - **Receive area text selection**: drag-select with mouse, Ctrl+C copy, Ctrl+A select all (based on glyph metrics, CJK full-width characters select correctly).
 - **Virtualized log view**: Only visible lines are rendered, staying smooth during long high-speed reception.
 - **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off in Display settings. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.
 - **Adjustable receive area line spacing**; auto-wrap width follows window resize and the selected font.
-- **Collapsible side panels**: drag the configuration panel's splitter all the way left (or the tool panel's all the way right) and it snaps shut, handing the width to the receive area. A hairline stays at the edge, with a chevron on hover to open it again; the top bar's "Show configuration panel / Show tool panel" switches are the same state. The centre column keeps a 320px floor, so each panel's maximum is a *soft* one that only applies when the window can spare the room.
+- **Collapsible side panels**: drag the configuration panel's splitter all the way left (or the tool panel's all the way right) and it snaps shut, handing the width to the receive area. A hairline stays at the edge, with a chevron on hover to open it again; the "Show configuration panel / Show tool panel" items under **View** are the same state. The centre column keeps a 320px floor, so each panel's maximum is a *soft* one that only applies when the window can spare the room.
 - **The multi-send panel marks the entry being sent**: during "send checked" or looping, the entry in flight is highlighted with a leading colour bar, and the send status bar below the table shows `Sending #3 (3 / 7)` using the same global number as the table's `#` column (the run spans the whole pool, not just the current page, and the mark appears only on the page currently showing that entry). The mark clears when the run ends, is stopped, the port closes, or the app restarts. "Loop sending" is a run state rather than a saved preference, so it never survives into a state where it claims to be looping but isn't.
 - Configuration file persistence; restores last serial and display settings after restart.
 
@@ -114,7 +114,7 @@ The binary is at `target/release/xcom` (`xcom.exe` on Windows).
 
 ### UI Language
 
-The "Language" dropdown in the top bar switches between **Simplified Chinese** and **English** instantly, without restarting.
+The **View → Language** submenu (or **Edit → Preferences**) switches between **Simplified Chinese** and **English** instantly, without restarting.
 
 - On first launch, it detects from `LC_ALL` / `LC_MESSAGES` / `LANG` (`zh*` → Chinese, otherwise English), and persists the result; thereafter the user's choice takes precedence.
 - The implementation uses a gettext-style approach: **the Chinese text is the translation key**, wrapped as `tr("打开串口")`. This makes batch conversion mechanical and diffs readable; if a translation is missing, it falls back to the Chinese original rather than showing a blank label.
@@ -308,7 +308,7 @@ Test coverage:
 - **Config backward compatibility**: asserting that old config files missing new fields still load (otherwise all settings would silently reset);
 - **UI layer no untranslated text**: scanning `src/ui/`, any Chinese literal not wrapped in `tr()` causes the test to fail;
 - **Splitter drag**: simulating real pointer event sequences, asserting all three splitters can be dragged both ways, content changes accordingly, overflow is clamped, and sizes persist;
-- **Panel collapse**: driving the same real pointer sequences to assert a panel dragged off the window edge folds away while keeping the width to restore, that the edge strip reopens it by click and by drag, that the top bar switch agrees, and that the centre column keeps its minimum width;
+- **Panel collapse**: driving the same real pointer sequences to assert a panel dragged off the window edge folds away while keeping the width to restore, that the edge strip reopens it by click and by drag, that the menu checkbox agrees, and that the centre column keeps its minimum width;
 - **Dialog title bars**: asserting both app-drawn dialogs put the close button where the desktop's `button-layout` says, plus parser unit tests (close on the left only when the left group names it; a value with no colon counts as unset and stays right);
 - **Entry pool and pagination**: asserting the fixed pool of 100 global slots, that the page size derives the page count and the current page is clamped, that sparse storage is padded back to the full pool on load, and that the legacy page format still imports;
 - **Multi-send marker**: asserting the mark lands on the right row, that the status line names the entry and its place in the round, that the mark appears only on the page showing the entry, and that ending the run or closing the port clears both the mark and the loop switch — including that `loop_enabled` and the page number are never written to, nor read back from, the config file;

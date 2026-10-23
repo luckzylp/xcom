@@ -252,6 +252,19 @@ pub fn system_lang() -> Lang {
 /// irrelevant: [`table`] builds a map.
 #[rustfmt::skip]
 static EN: &[(&str, &str)] = &[
+    // -- menu bar -----------------------------------------------------------
+    ("文件",                 "File"),
+    ("编辑",                 "Edit"),
+    ("视图",                 "View"),
+    ("串口连接",              "Serial"),
+    ("工具",                 "Tools"),
+    ("帮助",                 "Help"),
+    ("退出",                 "Quit"),
+    ("刷新串口列表",          "Refresh port list"),
+    ("首选项",               "Preferences"),
+    ("外观",                 "Appearance"),
+    ("接收区配色",            "Receive colours"),
+
     // -- top bar ------------------------------------------------------------
     ("主题",                 "Theme"),
     ("语言",                 "Language"),
