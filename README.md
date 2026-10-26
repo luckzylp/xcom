@@ -71,7 +71,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 ### Additions in This Implementation
 
 - **Automatic encoding detection**: No need to manually guess GBK / UTF-8 / Shift_JIS.
-- **Dark + Light themes** (can also follow the system).
+- **Dark + Light themes** (can also follow the system); the dark theme uses a pure black background, with menus and input fields kept a few steps above it for contrast.
 - **Chinese/English UI toggle**: switchable at any time from **View → Language**; follows system `LANG` on first launch; choice is persisted.
 - **Receive area text selection**: drag-select with mouse, Ctrl+C copy, Ctrl+A select all (based on glyph metrics, CJK full-width characters select correctly).
 - **Keyword highlighting**: add keywords and colours under View → Display → Keyword highlighting…; every row has its own enable switch (new rules start off) and a `#N` number. Each rule is a literal or, with the `.*` toggle, a regular expression (invalid patterns are flagged and skipped). There is no fixed rule limit: a long list scrolls inside the table while the Add row stays visible. Rules persist in the settings file, and longer matches win when they overlap.
