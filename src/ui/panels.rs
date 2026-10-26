@@ -1681,7 +1681,9 @@ pub(crate) fn highlight_window(app: &mut XcomApp, ctx: &Context) {
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_size([520.0, 480.0])
+        // One third wider than the previous default (520 -> 693), so the
+        // keyword field and the extra enable/number columns have room.
+        .default_size([693.0, 480.0])
         .min_size([420.0, 320.0]);
     center_on_open(window, ctx, id).show(ctx, |ui| {
         let header = dialog::header(ui, tr("关键字高亮"), None);

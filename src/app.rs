@@ -3311,8 +3311,8 @@ mod layout_tests {
         let fields = panels::probe::highlight_keyword_rects();
         assert_eq!(fields.len(), 2, "the keyword rows were not laid out");
         assert!(
-            table.width() <= 520.5,
-            "the keyword table overflows the 520px page: {:.1}px",
+            table.width() <= 693.5,
+            "the keyword table overflows the 693px page: {:.1}px",
             table.width()
         );
         assert!(
