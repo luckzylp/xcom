@@ -1363,6 +1363,16 @@ fn display_menu(app: &mut XcomApp, ui: &mut Ui) {
     });
 
     ui.separator();
+    if menu_dialog_item(ui, "字体设置") {
+        app.show_font_settings = true;
+    }
+    if menu_dialog_item(ui, "接收区配色") {
+        app.show_log_colors = true;
+    }
+    if menu_dialog_item(ui, "关键字高亮") {
+        app.show_highlight = true;
+    }
+    ui.separator();
     if menu_dialog_item_shortcut(ui, "显示设置", "Ctrl+,") {
         app.show_display_settings = true;
     }
@@ -1454,11 +1464,11 @@ fn help_menu(app: &mut XcomApp, ui: &mut Ui) {
 // Display settings
 // ---------------------------------------------------------------------------
 
-/// The full display form, moved out of the configuration panel.
+/// The display form, moved out of the configuration panel.
 ///
-/// View → Display carries the switches used from day to day; this dialog also
-/// holds the HEX layout, line spacing and fonts, which need labels and sliders
-/// rather than menu rows.
+/// View → Display carries the switches used from day to day; this page adds
+/// the HEX layout and a fine-grained line-spacing slider.  Fonts, receive
+/// colours and keyword rules now have windows of their own.
 pub(crate) fn display_settings_window(app: &mut XcomApp, ctx: &Context) {
     if !app.show_display_settings {
         return;
@@ -1485,8 +1495,6 @@ pub(crate) fn display_settings_window(app: &mut XcomApp, ctx: &Context) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     display_settings_ui(app, ui);
-                    ui.separator();
-                    highlight_settings_ui(app, ui);
                 });
         });
     if let Some(window) = window {
@@ -1497,24 +1505,201 @@ pub(crate) fn display_settings_window(app: &mut XcomApp, ctx: &Context) {
     }
 }
 
+/// The font grid shared by the font-settings window.
+fn font_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
+    let mut fonts = app.settings.fonts.clone();
+    let mut font_changed = false;
+    egui::Grid::new("font_grid")
+        .num_columns(2)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label(tr("界面字体"));
+            let mut family = fonts.ui_family.clone();
+            font_changed |= font_combo(ui, "ui_font_family", &mut family);
+            fonts.ui_family = family;
+            ui.end_row();
+
+            ui.label(tr("界面字号"));
+            let mut size = fonts.ui_size;
+            font_changed |= ui
+                .add(egui::Slider::new(&mut size, 9.0..=24.0).fixed_decimals(0))
+                .changed();
+            fonts.ui_size = size;
+            ui.end_row();
+
+            ui.label(tr("接收区字体"));
+            let mut family = fonts.receive_family.clone();
+            font_changed |= font_combo(ui, "receive_font_family", &mut family);
+            fonts.receive_family = family;
+            ui.end_row();
+
+            ui.label(tr("接收区字号"));
+            let mut size = fonts.receive_size;
+            font_changed |= ui
+                .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
+                .changed();
+            fonts.receive_size = size;
+            ui.end_row();
+
+            ui.label(tr("发送区字体"));
+            let mut family = fonts.send_family.clone();
+            font_changed |= font_combo(ui, "send_font_family", &mut family);
+            fonts.send_family = family;
+            ui.end_row();
+
+            ui.label(tr("发送区字号"));
+            let mut size = fonts.send_size;
+            font_changed |= ui
+                .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
+                .changed();
+            fonts.send_size = size;
+            ui.end_row();
+        });
+    if font_changed {
+        fonts.normalize();
+        app.settings.fonts = fonts;
+        app.mark_settings_dirty();
+    }
+
+    ui.small(tr("字体修改会立即应用到对应的文本区。"));
+}
+
+/// The receive-area colours, with a live sample using the effective palette.
+fn log_colors_ui(app: &mut XcomApp, ui: &mut Ui) {
+    let mut colors = app.settings.log_colors;
+    if ui
+        .checkbox(&mut colors.enabled, tr("自定义接收区配色"))
+        .changed()
+    {
+        app.settings.log_colors = colors;
+        app.mark_settings_dirty();
+    }
+    if colors.enabled {
+        ui.horizontal(|ui| {
+            ui.label(tr("字色"));
+            if ui.color_edit_button_srgb(&mut colors.foreground).changed() {
+                app.settings.log_colors = colors;
+                app.mark_settings_dirty();
+            }
+            ui.label(tr("底色"));
+            if ui.color_edit_button_srgb(&mut colors.background).changed() {
+                app.settings.log_colors = colors;
+                app.mark_settings_dirty();
+            }
+        });
+    }
+    ui.separator();
+    let palette = theme::log_palette(ui.ctx(), app.settings.theme, app.settings.log_colors);
+    ui.label(tr("预览"));
+    ui.label(
+        RichText::new(tr("接收区示例"))
+            .monospace()
+            .color(palette.foreground)
+            .background_color(palette.background),
+    );
+}
+
+/// The font-settings window (View → Display → Font settings…).
+pub(crate) fn font_settings_window(app: &mut XcomApp, ctx: &Context) {
+    if !app.show_font_settings {
+        return;
+    }
+    let mut open = true;
+    let mut close_requested = false;
+    egui::Window::new(tr("字体设置"))
+        .id(egui::Id::new("font_settings_dialog"))
+        .title_bar(false)
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_size([520.0, 360.0])
+        .min_size([380.0, 260.0])
+        .show(ctx, |ui| {
+            let header = dialog::header(ui, tr("字体设置"), None);
+            if header.close_clicked {
+                close_requested = true;
+            }
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| font_settings_ui(app, ui));
+        });
+    if !open || close_requested {
+        app.show_font_settings = false;
+    }
+}
+
+/// The receive-colours window (View → Display → Receive colours…).
+pub(crate) fn log_colors_window(app: &mut XcomApp, ctx: &Context) {
+    if !app.show_log_colors {
+        return;
+    }
+    let mut open = true;
+    let mut close_requested = false;
+    egui::Window::new(tr("接收区配色"))
+        .id(egui::Id::new("log_colors_dialog"))
+        .title_bar(false)
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_size([440.0, 260.0])
+        .min_size([340.0, 200.0])
+        .show(ctx, |ui| {
+            let header = dialog::header(ui, tr("接收区配色"), None);
+            if header.close_clicked {
+                close_requested = true;
+            }
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| log_colors_ui(app, ui));
+        });
+    if !open || close_requested {
+        app.show_log_colors = false;
+    }
+}
+
+/// The keyword-highlight window (View → Display → Keyword highlighting…).
+pub(crate) fn highlight_window(app: &mut XcomApp, ctx: &Context) {
+    if !app.show_highlight {
+        return;
+    }
+    let mut open = true;
+    let mut close_requested = false;
+    egui::Window::new(tr("关键字高亮"))
+        .id(egui::Id::new("highlight_dialog"))
+        .title_bar(false)
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_size([480.0, 480.0])
+        .min_size([380.0, 300.0])
+        .show(ctx, |ui| {
+            let header = dialog::header(ui, tr("关键字高亮"), None);
+            if header.close_clicked {
+                close_requested = true;
+            }
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| highlight_settings_ui(app, ui));
+        });
+    if !open || close_requested {
+        app.show_highlight = false;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Keyword highlighting
 // ---------------------------------------------------------------------------
 
 /// Add, edit and remove the receive view's keyword rules.
 ///
-/// This section lives inside the display settings page rather than in a dialog
-/// of its own; the rules are saved with the rest of the settings, and the log
-/// re-reads them every frame so changes also apply to data already on screen.
+/// This is the body of the keyword-highlight window.  The rules are saved with
+/// the rest of the settings, and the log re-reads them every frame so changes
+/// also apply to data already on screen.
 fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
     probe::begin_highlight_table();
-    let title = ui.strong(tr("关键字高亮"));
-    // The receive view's context menu routes here; bring the section into view
-    // on the frame that arrival was requested.
-    if app.scroll_to_highlights {
-        title.scroll_to_me(Some(egui::Align::Min));
-        app.scroll_to_highlights = false;
-    }
 
     let mut settings = app.settings.highlights.clone();
     let mut changed = false;
@@ -2274,91 +2459,10 @@ fn display_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
         }
     });
 
-    ui.separator();
-    ui.strong(tr("字体设置"));
-    let mut fonts = app.settings.fonts.clone();
-    let mut font_changed = false;
-    egui::Grid::new("font_grid")
-        .num_columns(2)
-        .spacing([8.0, 6.0])
-        .show(ui, |ui| {
-            ui.label(tr("界面字体"));
-            let mut family = fonts.ui_family.clone();
-            font_changed |= font_combo(ui, "ui_font_family", &mut family);
-            fonts.ui_family = family;
-            ui.end_row();
-
-            ui.label(tr("界面字号"));
-            let mut size = fonts.ui_size;
-            font_changed |= ui
-                .add(egui::Slider::new(&mut size, 9.0..=24.0).fixed_decimals(0))
-                .changed();
-            fonts.ui_size = size;
-            ui.end_row();
-
-            ui.label(tr("接收区字体"));
-            let mut family = fonts.receive_family.clone();
-            font_changed |= font_combo(ui, "receive_font_family", &mut family);
-            fonts.receive_family = family;
-            ui.end_row();
-
-            ui.label(tr("接收区字号"));
-            let mut size = fonts.receive_size;
-            font_changed |= ui
-                .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
-                .changed();
-            fonts.receive_size = size;
-            ui.end_row();
-
-            ui.label(tr("发送区字体"));
-            let mut family = fonts.send_family.clone();
-            font_changed |= font_combo(ui, "send_font_family", &mut family);
-            fonts.send_family = family;
-            ui.end_row();
-
-            ui.label(tr("发送区字号"));
-            let mut size = fonts.send_size;
-            font_changed |= ui
-                .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
-                .changed();
-            fonts.send_size = size;
-            ui.end_row();
-        });
-    if font_changed {
-        fonts.normalize();
-        app.settings.fonts = fonts;
-        app.mark_settings_dirty();
-    }
-
     if changed {
         app.settings.display = display;
         app.log.set_options(display);
         app.mark_settings_dirty();
-    }
-
-    ui.separator();
-    ui.strong(tr("接收区配色"));
-    let mut colors = app.settings.log_colors;
-    if ui
-        .checkbox(&mut colors.enabled, tr("自定义接收区配色"))
-        .changed()
-    {
-        app.settings.log_colors = colors;
-        app.mark_settings_dirty();
-    }
-    if colors.enabled {
-        ui.horizontal(|ui| {
-            ui.label(tr("字色"));
-            if ui.color_edit_button_srgb(&mut colors.foreground).changed() {
-                app.settings.log_colors = colors;
-                app.mark_settings_dirty();
-            }
-            ui.label(tr("底色"));
-            if ui.color_edit_button_srgb(&mut colors.background).changed() {
-                app.settings.log_colors = colors;
-                app.mark_settings_dirty();
-            }
-        });
     }
 }
 
@@ -2514,8 +2618,7 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
             app.mark_settings_dirty();
         }
         if output.open_highlight_settings {
-            app.show_display_settings = true;
-            app.scroll_to_highlights = true;
+            app.show_highlight = true;
         }
         if output.clear_received {
             app.clear_receive();

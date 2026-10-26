@@ -162,6 +162,12 @@ pub struct XcomApp {
     pub(crate) show_about: bool,
     /// Whether the Display settings dialog is open.
     pub(crate) show_display_settings: bool,
+    /// Whether the font-settings dialog is open.
+    pub(crate) show_font_settings: bool,
+    /// Whether the receive-colours dialog is open.
+    pub(crate) show_log_colors: bool,
+    /// Whether the keyword-highlight dialog is open.
+    pub(crate) show_highlight: bool,
     /// Whether the confirmation dialog for restoring defaults is open.
     pub(crate) show_reset_confirm: bool,
     /// Whether the keyboard-shortcuts dialog is open.
@@ -170,8 +176,6 @@ pub struct XcomApp {
     pub(crate) show_log_file: bool,
     /// The receive stream's current log file, when logging is running.
     pub(crate) log_file: LogFile,
-    /// Set when the display settings page should scroll to the keyword rules.
-    pub(crate) scroll_to_highlights: bool,
 
     /// Handshake line states, sampled by a background thread.
     pub(crate) signals: Signals,
@@ -259,11 +263,13 @@ impl XcomApp {
             side_tab: SideTab::Multi,
             show_about: false,
             show_display_settings: false,
+            show_font_settings: false,
+            show_log_colors: false,
+            show_highlight: false,
             show_reset_confirm: false,
             show_shortcuts: false,
             show_log_file: false,
             log_file: LogFile::default(),
-            scroll_to_highlights: false,
             signals: Signals::default(),
             applied_theme: None,
             applied_lang: None,
@@ -1327,6 +1333,9 @@ impl XcomApp {
         panels::center_panel(self, ui);
         panels::apply_splitters(self, ui);
         panels::display_settings_window(self, ctx);
+        panels::font_settings_window(self, ctx);
+        panels::log_colors_window(self, ctx);
+        panels::highlight_window(self, ctx);
         panels::log_file_window(self, ctx);
         panels::reset_confirm_window(self, ctx);
         panels::shortcuts_window(self, ctx);
@@ -3067,27 +3076,32 @@ mod layout_tests {
         );
     }
 
-    /// The display settings page also hosts the keyword rules.
+    /// The display settings page keeps the display switches and HEX layout.
     #[test]
     fn renders_the_display_settings_window() {
         let ctx = egui::Context::default();
         let mut app = seeded();
         app.show_display_settings = true;
+        app.settings.display.mode = crate::logstore::ViewMode::Hex;
+        render(&mut app, &ctx, "display settings");
+    }
+
+    /// Fonts, receive colours and keyword rules each have their own window.
+    #[test]
+    fn renders_the_font_colour_and_highlight_windows() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.show_font_settings = true;
+        app.show_log_colors = true;
+        app.show_highlight = true;
         app.settings.log_colors.enabled = true;
         app.settings.highlights.enabled = true;
-        app.settings.highlights.rules = vec![
-            crate::highlight::HighlightRule {
-                text: "OK".to_owned(),
-                regex: false,
-                color: [0x4C, 0xAF, 0x50],
-            },
-            crate::highlight::HighlightRule {
-                text: "ERROR".to_owned(),
-                regex: false,
-                color: [0xE5, 0x53, 0x53],
-            },
-        ];
-        render(&mut app, &ctx, "display settings");
+        app.settings.highlights.rules = vec![crate::highlight::HighlightRule {
+            text: "OK".to_owned(),
+            regex: false,
+            color: [0x4C, 0xAF, 0x50],
+        }];
+        render(&mut app, &ctx, "display sub-windows");
     }
 
     /// The display-settings dialog is a real window: it can be dragged bigger.
@@ -3219,7 +3233,7 @@ mod layout_tests {
     fn highlight_table_gives_the_keyword_field_room() {
         let ctx = egui::Context::default();
         let mut app = seeded();
-        app.show_display_settings = true;
+        app.show_highlight = true;
         app.settings.highlights.enabled = true;
         app.settings.highlights.rules = vec![
             crate::highlight::HighlightRule {
@@ -3233,7 +3247,7 @@ mod layout_tests {
                 color: [0x4C, 0xAF, 0x50],
             },
         ];
-        render(&mut app, &ctx, "display settings");
+        render(&mut app, &ctx, "keyword highlighting");
 
         let table = panels::probe::highlight_table_rect();
         let fields = panels::probe::highlight_keyword_rects();
