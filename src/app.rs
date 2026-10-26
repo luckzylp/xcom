@@ -3176,7 +3176,7 @@ mod layout_tests {
         let table = panels::probe::highlight_table_rect();
         assert!(table.height() > 0.0, "the keyword table was not laid out");
         assert!(
-            table.height() < 420.0,
+            table.height() < 520.0,
             "the keyword table grew to {:.1}px instead of scrolling",
             table.height()
         );
@@ -3397,8 +3397,8 @@ mod layout_tests {
         let fields = panels::probe::highlight_keyword_rects();
         assert_eq!(fields.len(), 2, "the keyword rows were not laid out");
         assert!(
-            table.width() <= 600.5,
-            "the keyword table overflows the 600px page: {:.1}px",
+            table.width() <= 800.5,
+            "the keyword table overflows the 800px page: {:.1}px",
             table.width()
         );
         assert!(

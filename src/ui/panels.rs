@@ -1696,7 +1696,7 @@ pub(crate) fn highlight_window(app: &mut XcomApp, ctx: &Context) {
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_size([600.0, 520.0])
+        .default_size([800.0, 600.0])
         .min_size([420.0, 320.0]);
     let window = center_on_open(window, ctx, id).show(ctx, |ui| {
         let header = dialog::header(ui, tr("关键字高亮"), None);
