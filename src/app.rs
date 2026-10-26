@@ -678,6 +678,18 @@ impl XcomApp {
 
     // -- settings -----------------------------------------------------------
 
+    /// Replace the display options, re-rendering the history when the layout
+    /// changes.  The menus and the settings page share this path so a switch
+    /// flicked from either place behaves the same.
+    pub(crate) fn set_display_options(&mut self, display: crate::logstore::DisplayOptions) {
+        if display == self.settings.display {
+            return;
+        }
+        self.settings.display = display;
+        self.log.set_options(display);
+        self.mark_settings_dirty();
+    }
+
     /// Turn "auto-scroll to newest" on or off.
     ///
     /// Enabling it also drops the text selection: a selection suspends
@@ -3078,6 +3090,66 @@ mod layout_tests {
         render(&mut app, &ctx, "display settings");
     }
 
+    /// The display-settings dialog is a real window: it can be dragged bigger.
+    #[test]
+    fn the_display_settings_window_can_be_resized() {
+        let ctx = egui::Context::default();
+        // Fonts must be bound before the first frame: `set_fonts` only takes
+        // effect for the next one, which is why `render` does the same.
+        crate::fonts::install_default_families(&ctx);
+        let mut app = seeded();
+        app.show_display_settings = true;
+
+        let draw = |app: &mut XcomApp, events: Vec<egui::Event>| {
+            let mut raw = input();
+            raw.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 840.0),
+            ));
+            raw.events = events;
+            let mut output = ctx.run_ui(raw, |ui| app.draw(ui));
+            output.textures_delta.clear();
+        };
+        let press = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+
+        // Two passes let the window settle at its default size.
+        draw(&mut app, Vec::new());
+        draw(&mut app, Vec::new());
+        let before = panels::probe::display_window_rect();
+        assert!(
+            before.width() >= 360.0 && before.height() >= 280.0,
+            "the display window was not laid out: {before:?}"
+        );
+
+        // Drag the bottom-right corner outwards.
+        let from = before.max - egui::vec2(2.0, 2.0);
+        let to = from + egui::vec2(120.0, 80.0);
+        draw(&mut app, vec![egui::Event::PointerMoved(from)]);
+        draw(
+            &mut app,
+            vec![egui::Event::PointerMoved(from), press(from, true)],
+        );
+        draw(&mut app, vec![egui::Event::PointerMoved(to)]);
+        draw(&mut app, vec![egui::Event::PointerMoved(to)]);
+        draw(&mut app, vec![press(to, false)]);
+        draw(&mut app, Vec::new());
+
+        let after = panels::probe::display_window_rect();
+        assert!(
+            after.width() > before.width() + 80.0,
+            "the window did not grow horizontally: {before:?} -> {after:?}"
+        );
+        assert!(
+            after.height() > before.height() + 50.0,
+            "the window did not grow vertically: {before:?} -> {after:?}"
+        );
+    }
+
     /// The log-file dialog renders with a pattern and a resolved preview.
     #[test]
     fn renders_the_log_file_dialog() {
@@ -3167,8 +3239,8 @@ mod layout_tests {
         let fields = panels::probe::highlight_keyword_rects();
         assert_eq!(fields.len(), 2, "the keyword rows were not laid out");
         assert!(
-            table.width() <= 450.5,
-            "the keyword table overflows the 450px page: {:.1}px",
+            table.width() <= 480.5,
+            "the keyword table overflows the 480px page: {:.1}px",
             table.width()
         );
         assert!(

@@ -70,6 +70,7 @@ pub(crate) mod probe {
         /// the panel hands the multi-send table and the bar under it.
         static TOOL_PANEL_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static BOTTOM_STATUS_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static DISPLAY_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static ABOUT_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static ABOUT_HEADER_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static ABOUT_TITLE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
@@ -566,6 +567,20 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn bottom_status_rect() -> egui::Rect {
         BOTTOM_STATUS_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_display_window_rect(rect: egui::Rect) {
+        DISPLAY_WINDOW_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_display_window_rect<R>(_rect: R) {}
+
+    /// Where the display-settings window was laid out last.
+    #[cfg(test)]
+    pub(crate) fn display_window_rect() -> egui::Rect {
+        DISPLAY_WINDOW_RECT.with(|cell| cell.get())
     }
 
     #[cfg(test)]
@@ -1206,24 +1221,25 @@ fn edit_menu(app: &mut XcomApp, ui: &mut Ui) {
 }
 
 fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
-    // Layout switches first (the most-used items), then content and appearance
-    // submenus; the settings dialog entry closes the menu, the way Options or
-    // Preferences close a Tools menu on the desktop.
-    let mut changed = false;
-    changed |= ui
-        .checkbox(&mut app.settings.show_config_panel, tr("配置面板"))
-        .changed();
-    changed |= ui
-        .checkbox(&mut app.settings.show_tool_panel, tr("工具面板"))
-        .changed();
-    changed |= ui
-        .checkbox(&mut app.settings.show_send_area, tr("发送区"))
-        .changed();
-    if changed {
-        app.mark_settings_dirty();
-    }
-
-    ui.separator();
+    // Every entry is a submenu: the layout switches live under 面板, the
+    // receive-view switches under 显示, and the three choice lists keep their
+    // own menus.  This keeps the top level short and predictable.
+    ui.menu_button(tr("面板"), |ui| {
+        let mut changed = false;
+        changed |= ui
+            .checkbox(&mut app.settings.show_config_panel, tr("配置面板"))
+            .changed();
+        changed |= ui
+            .checkbox(&mut app.settings.show_tool_panel, tr("工具面板"))
+            .changed();
+        changed |= ui
+            .checkbox(&mut app.settings.show_send_area, tr("发送区"))
+            .changed();
+        if changed {
+            app.mark_settings_dirty();
+        }
+    });
+    ui.menu_button(tr("显示"), |ui| display_menu(app, ui));
     ui.menu_button(tr("编码"), |ui| encoding_menu(app, ui));
     ui.menu_button(tr("主题"), |ui| {
         for mode in ThemeMode::ALL {
@@ -1236,6 +1252,7 @@ fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
             {
                 app.settings.theme = mode;
                 app.mark_settings_dirty();
+                ui.close();
             }
         }
     });
@@ -1248,6 +1265,99 @@ fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
                 i18n::set_lang(candidate);
                 app.settings.lang = Some(candidate);
                 app.mark_settings_dirty();
+                ui.close();
+            }
+        }
+    });
+}
+
+/// The receive view's switches, grouped so every option is one click away.
+///
+/// Options with more than two states get a submenu of their own (display mode,
+/// HEX layout, line spacing); the full page remains at the bottom for fonts,
+/// colours and keyword rules.
+fn display_menu(app: &mut XcomApp, ui: &mut Ui) {
+    let mut display = app.settings.display;
+
+    ui.menu_button(tr("显示模式"), |ui| {
+        for (mode, label) in [(ViewMode::Text, "文本"), (ViewMode::Hex, "16进制显示")] {
+            if ui
+                .selectable_label(display.mode == mode, tr(label))
+                .clicked()
+            {
+                display.mode = mode;
+                ui.close();
+            }
+        }
+    });
+
+    if display.mode == ViewMode::Hex {
+        ui.menu_button(tr("HEX 布局"), |ui| {
+            for (style, label) in [(HexStyle::Stream, "连续"), (HexStyle::Dump, "16 字节/行")]
+            {
+                if ui
+                    .selectable_label(display.hex_style == style, tr(label))
+                    .clicked()
+                {
+                    display.hex_style = style;
+                    ui.close();
+                }
+            }
+            ui.separator();
+            let mut upper = display.upper_hex;
+            if ui.checkbox(&mut upper, tr("大写")).changed() {
+                display.upper_hex = upper;
+            }
+            if display.hex_style == HexStyle::Dump {
+                ui.horizontal(|ui| {
+                    ui.label(tr("每行字节"));
+                    let mut per_row = display.hex_bytes_per_row;
+                    if ui
+                        .add(egui::DragValue::new(&mut per_row).range(1..=64))
+                        .changed()
+                    {
+                        display.hex_bytes_per_row = per_row;
+                    }
+                });
+            }
+        });
+    }
+
+    let mut markers = display.markers;
+    if ui.checkbox(&mut markers, tr("方向标记")).changed() {
+        display.markers = markers;
+    }
+    let mut timestamp = display.timestamp;
+    if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
+        display.timestamp = timestamp;
+    }
+    let mut wrap = display.wrap;
+    if ui.checkbox(&mut wrap, tr("自动换行")).changed() {
+        display.wrap = wrap;
+    }
+    let mut auto_scroll = app.settings.auto_scroll;
+    if ui
+        .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
+        .changed()
+    {
+        app.set_auto_scroll(auto_scroll);
+    }
+    let mut echo = app.settings.echo_sent;
+    if ui.checkbox(&mut echo, tr("回显发送")).changed() {
+        app.settings.echo_sent = echo;
+        app.mark_settings_dirty();
+    }
+
+    ui.menu_button(tr("行距"), |ui| {
+        for spacing in [0.0, 2.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 40.0] {
+            let selected = (app.settings.line_spacing - spacing).abs() < 0.5;
+            if ui
+                .selectable_label(selected, format!("{spacing:.0} px"))
+                .clicked()
+            {
+                app.settings.line_spacing = spacing;
+                app.mark_settings_dirty();
+                ui.close();
             }
         }
     });
@@ -1256,6 +1366,8 @@ fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
     if menu_dialog_item_shortcut(ui, "显示设置", "Ctrl+,") {
         app.show_display_settings = true;
     }
+
+    app.set_display_options(display);
 }
 
 /// Receive and transmit encodings, as two short submenus.
@@ -1353,31 +1465,33 @@ pub(crate) fn display_settings_window(app: &mut XcomApp, ctx: &Context) {
     }
     let mut open = true;
     let mut close_requested = false;
-    egui::Window::new(tr("显示设置"))
+    let window = egui::Window::new(tr("显示设置"))
         .id(egui::Id::new("display_settings_dialog"))
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
-        .resizable(false)
-        .default_width(450.0)
+        .resizable(true)
+        .default_size([480.0, 480.0])
+        .min_size([360.0, 280.0])
         .show(ctx, |ui| {
             let header = dialog::header(ui, tr("显示设置"), None);
             if header.close_clicked {
                 close_requested = true;
             }
             ui.separator();
-            // Keep the page inside the window even when many keyword rules
-            // push it past the screen height.
-            let max_height = (ctx.content_rect().height() - 120.0).clamp(240.0, 600.0);
+            // The window is resizable; the page fills whatever height it has
+            // and scrolls inside instead of forcing the window to grow.
             egui::ScrollArea::vertical()
-                .max_height(max_height)
-                .auto_shrink([false, true])
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
                     display_settings_ui(app, ui);
                     ui.separator();
                     highlight_settings_ui(app, ui);
                 });
         });
+    if let Some(window) = window {
+        probe::set_display_window_rect(window.response.rect);
+    }
     if !open || close_requested {
         app.show_display_settings = false;
     }
@@ -1411,8 +1525,8 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
 
     // A manual table rather than `Grid`: Grid sizes its first column from the
     // header text, which left a long keyword field clamped to a short cell.
-    // The keyword column takes whatever the 450px page leaves after the two
-    // fixed columns, so the table never overflows its container.
+    // The keyword column takes whatever the page leaves after the fixed
+    // columns, so the table adapts to the resizable settings window.
     const COLOR_COL: f32 = 52.0;
     const ACTION_COL: f32 = 52.0;
     const COL_GAP: f32 = 8.0;
@@ -1948,9 +2062,10 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
     let popup = egui::Window::new(tr("自定义波特率"))
         .id(manager_id)
         .title_bar(false)
-        .default_width(288.0)
+        .default_size([320.0, 340.0])
+        .min_size([280.0, 220.0])
         .collapsible(false)
-        .resizable(false)
+        .resizable(true)
         .open(&mut manager_open)
         .show(&ctx, |ui| {
             ui.set_min_width(268.0);
@@ -3846,7 +3961,9 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
-        .resizable(false)
+        .resizable(true)
+        .default_size([480.0, 560.0])
+        .min_size([360.0, 240.0])
         .show(ctx, |ui| {
             let header = dialog::header(ui, tr("关于 XCOM"), None);
             probe::set_about_header_rect(header.rect);
@@ -3856,30 +3973,33 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
                 close_requested = true;
             }
             ui.separator();
-
-            ui.label(RichText::new(tr("XCOM 串口调试助手")).strong().size(16.0));
-            ui.label(crate::i18n::tr1("版本 {}", env!("CARGO_PKG_VERSION")));
-            ui.separator();
-            ui.label(tr(
-                "使用 Rust + egui 开发的跨平台串口调试工具，可在 Windows / Linux / macOS 上运行。",
-            ));
-            ui.add_space(4.0);
-            ui.label(tr("功能："));
-            for line in [
-                tr("• 串口参数全面可配（自定义波特率、1/1.5/2 停止位）"),
-                tr("• 十六进制 / 文本收发，时间戳断帧"),
-                tr("• 编码自动识别与手动指定"),
-                tr("• 单条 / 多条 / 协议传输三种发送方式"),
-                tr("• 黑色与白色主题"),
-            ] {
-                ui.label(line);
-            }
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(tr("本软件为开源实现，界面不含任何广告。"))
-                    .small()
-                    .color(ui.visuals().weak_text_color()),
-            );
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.label(RichText::new(tr("XCOM 串口调试助手")).strong().size(16.0));
+                    ui.label(crate::i18n::tr1("版本 {}", env!("CARGO_PKG_VERSION")));
+                    ui.separator();
+                    ui.label(tr(
+                        "使用 Rust + egui 开发的跨平台串口调试工具，可在 Windows / Linux / macOS 上运行。",
+                    ));
+                    ui.add_space(4.0);
+                    ui.label(tr("功能："));
+                    for line in [
+                        tr("• 串口参数全面可配（自定义波特率、1/1.5/2 停止位）"),
+                        tr("• 十六进制 / 文本收发，时间戳断帧"),
+                        tr("• 编码自动识别与手动指定"),
+                        tr("• 单条 / 多条 / 协议传输三种发送方式"),
+                        tr("• 黑色与白色主题"),
+                    ] {
+                        ui.label(line);
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(tr("本软件为开源实现，界面不含任何广告。"))
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                });
         });
     if let Some(window) = window {
         probe::set_about_window_rect(window.response.rect);
@@ -3909,87 +4029,91 @@ pub(crate) fn log_file_window(app: &mut XcomApp, ctx: &Context) {
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
-        .resizable(false)
-        .default_width(470.0)
+        .resizable(true)
+        .default_size([480.0, 420.0])
+        .min_size([360.0, 300.0])
         .show(ctx, |ui| {
             let header = dialog::header(ui, tr("日志文件"), None);
             if header.close_clicked {
                 close_requested = true;
             }
             ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let mut enabled = app.log_file.is_active();
+                    if ui
+                        .checkbox(&mut enabled, tr("启用实时保存（接收数据）"))
+                        .changed()
+                    {
+                        app.set_log_file_enabled(enabled);
+                    }
+                    match app.log_file.path() {
+                        Some(path) => {
+                            ui.label(
+                                RichText::new(crate::i18n::tr1("正在写入: {}", path.display()))
+                                    .small()
+                                    .color(level_color(Level::Success)),
+                            );
+                        }
+                        None => {
+                            ui.small(tr("未启用：不会创建文件。"));
+                        }
+                    }
 
-            let mut enabled = app.log_file.is_active();
-            if ui
-                .checkbox(&mut enabled, tr("启用实时保存（接收数据）"))
-                .changed()
-            {
-                app.set_log_file_enabled(enabled);
-            }
-            match app.log_file.path() {
-                Some(path) => {
-                    ui.label(
-                        RichText::new(crate::i18n::tr1("正在写入: {}", path.display()))
-                            .small()
-                            .color(level_color(Level::Success)),
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(tr("保存目录")).strong());
+                    ui.horizontal(|ui| {
+                        let mut directory = app.settings.log_file.directory.clone();
+                        let width = (ui.available_width() - 76.0).max(80.0);
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut directory)
+                                .hint_text(tr("留空则使用配置目录下的 logs"))
+                                .desired_width(width),
+                        );
+                        if response.changed() {
+                            app.settings.log_file.directory = directory;
+                            app.mark_settings_dirty();
+                        }
+                        if ui.button(tr("选择…")).clicked()
+                            && let Some(path) = rfd::FileDialog::new().pick_folder()
+                        {
+                            app.settings.log_file.directory = path.display().to_string();
+                            app.mark_settings_dirty();
+                        }
+                    });
+                    if app.settings.log_file.directory.trim().is_empty() {
+                        let directory = crate::logfile::resolve_directory("");
+                        ui.small(crate::i18n::tr1("默认目录: {}", directory.display()));
+                    }
+
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(tr("文件名格式")).strong());
+                    let mut pattern = app.settings.log_file.pattern.clone();
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut pattern)
+                            .hint_text(crate::logfile::DEFAULT_PATTERN)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace),
                     );
-                }
-                None => {
-                    ui.small(tr("未启用：不会创建文件。"));
-                }
-            }
-
-            ui.add_space(8.0);
-            ui.label(RichText::new(tr("保存目录")).strong());
-            ui.horizontal(|ui| {
-                let mut directory = app.settings.log_file.directory.clone();
-                let width = (ui.available_width() - 76.0).max(80.0);
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut directory)
-                        .hint_text(tr("留空则使用配置目录下的 logs"))
-                        .desired_width(width),
-                );
-                if response.changed() {
-                    app.settings.log_file.directory = directory;
-                    app.mark_settings_dirty();
-                }
-                if ui.button(tr("选择…")).clicked()
-                    && let Some(path) = rfd::FileDialog::new().pick_folder()
-                {
-                    app.settings.log_file.directory = path.display().to_string();
-                    app.mark_settings_dirty();
-                }
-            });
-            if app.settings.log_file.directory.trim().is_empty() {
-                let directory = crate::logfile::resolve_directory("");
-                ui.small(crate::i18n::tr1("默认目录: {}", directory.display()));
-            }
-
-            ui.add_space(8.0);
-            ui.label(RichText::new(tr("文件名格式")).strong());
-            let mut pattern = app.settings.log_file.pattern.clone();
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut pattern)
-                    .hint_text(crate::logfile::DEFAULT_PATTERN)
-                    .desired_width(f32::INFINITY)
-                    .font(egui::TextStyle::Monospace),
-            );
-            if response.changed() {
-                app.settings.log_file.pattern = pattern;
-                app.mark_settings_dirty();
-            }
-            let preview = crate::logfile::file_name_for(
-                &app.settings.log_file.pattern,
-                chrono::Local::now(),
-                &app.settings.serial.port,
-            );
-            ui.small(crate::i18n::tr1("文件名示例: {}", preview));
-            ui.add_space(4.0);
-            ui.small(tr(
-                "格式符：%Y 年（4 位）、%y 年（2 位）、%M 月、%D 日、%h 时、%m 分、%s/%S 秒、%f 毫秒、%H 串口名称、%% 百分号。",
-            ));
-            ui.small(tr(
-                "文件名在启用时展开一次；同名文件会追加写入；修改目录或格式在下次启用时生效。",
-            ));
+                    if response.changed() {
+                        app.settings.log_file.pattern = pattern;
+                        app.mark_settings_dirty();
+                    }
+                    let preview = crate::logfile::file_name_for(
+                        &app.settings.log_file.pattern,
+                        chrono::Local::now(),
+                        &app.settings.serial.port,
+                    );
+                    ui.small(crate::i18n::tr1("文件名示例: {}", preview));
+                    ui.add_space(4.0);
+                    ui.small(tr(
+                        "格式符：%Y 年（4 位）、%y 年（2 位）、%M 月、%D 日、%h 时、%m 分、%s/%S 秒、%f 毫秒、%H 串口名称、%% 百分号。",
+                    ));
+                    ui.small(tr(
+                        "文件名在启用时展开一次；同名文件会追加写入；修改目录或格式在下次启用时生效。",
+                    ));
+                });
         });
     if !open || close_requested {
         app.show_log_file = false;
@@ -4009,7 +4133,8 @@ pub(crate) fn reset_confirm_window(app: &mut XcomApp, ctx: &Context) {
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
-        .resizable(false)
+        .resizable(true)
+        .min_size([360.0, 200.0])
         .show(ctx, |ui| {
             let header = dialog::header(ui, tr("恢复默认设置"), None);
             if header.close_clicked {
@@ -4051,7 +4176,9 @@ pub(crate) fn shortcuts_window(app: &mut XcomApp, ctx: &Context) {
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
-        .resizable(false)
+        .resizable(true)
+        .default_size([420.0, 380.0])
+        .min_size([320.0, 240.0])
         .show(ctx, |ui| {
             let header = dialog::header(ui, tr("快捷键"), None);
             if header.close_clicked {
