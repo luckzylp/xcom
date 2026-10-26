@@ -12,6 +12,7 @@ mod fonts;
 mod hex;
 mod highlight;
 mod i18n;
+mod logfile;
 mod logstore;
 mod multi;
 mod protocol;

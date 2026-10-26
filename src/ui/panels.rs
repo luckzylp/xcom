@@ -1168,6 +1168,11 @@ fn file_menu(app: &mut XcomApp, ui: &mut Ui) {
     if menu_dialog_item_shortcut(ui, "保存原始数据", "Ctrl+Shift+S") {
         save_raw_log(app);
     }
+    ui.separator();
+    if menu_dialog_item(ui, "日志文件") {
+        app.show_log_file = true;
+    }
+    ui.separator();
     if menu_dialog_item(ui, "发送文件")
         && let Some(path) = pick_open_file(tr("选择要发送的文件"))
     {
@@ -3887,6 +3892,106 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
 // ---------------------------------------------------------------------------
 // Reset confirmation / keyboard shortcuts
 // ---------------------------------------------------------------------------
+
+/// Settings for writing the receive stream to disk while it arrives.
+///
+/// Logging itself is a session state (like timed send), so this dialog only
+/// owns the directory and the file-name pattern; the app never starts writing
+/// on launch.
+pub(crate) fn log_file_window(app: &mut XcomApp, ctx: &Context) {
+    if !app.show_log_file {
+        return;
+    }
+    let mut open = true;
+    let mut close_requested = false;
+    egui::Window::new(tr("日志文件"))
+        .id(egui::Id::new("log_file_dialog"))
+        .title_bar(false)
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(470.0)
+        .show(ctx, |ui| {
+            let header = dialog::header(ui, tr("日志文件"), None);
+            if header.close_clicked {
+                close_requested = true;
+            }
+            ui.separator();
+
+            let mut enabled = app.log_file.is_active();
+            if ui
+                .checkbox(&mut enabled, tr("启用实时保存（接收数据）"))
+                .changed()
+            {
+                app.set_log_file_enabled(enabled);
+            }
+            match app.log_file.path() {
+                Some(path) => {
+                    ui.label(
+                        RichText::new(crate::i18n::tr1("正在写入: {}", path.display()))
+                            .small()
+                            .color(level_color(Level::Success)),
+                    );
+                }
+                None => {
+                    ui.small(tr("未启用：不会创建文件。"));
+                }
+            }
+
+            ui.add_space(8.0);
+            ui.label(RichText::new(tr("保存目录")).strong());
+            ui.horizontal(|ui| {
+                let mut directory = app.settings.log_file.directory.clone();
+                let width = (ui.available_width() - 76.0).max(80.0);
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut directory)
+                        .hint_text(tr("留空则使用配置目录下的 logs"))
+                        .desired_width(width),
+                );
+                if response.changed() {
+                    app.settings.log_file.directory = directory;
+                    app.mark_settings_dirty();
+                }
+                if ui.button(tr("选择…")).clicked()
+                    && let Some(path) = rfd::FileDialog::new().pick_folder()
+                {
+                    app.settings.log_file.directory = path.display().to_string();
+                    app.mark_settings_dirty();
+                }
+            });
+            if app.settings.log_file.directory.trim().is_empty() {
+                let directory = crate::logfile::resolve_directory("");
+                ui.small(crate::i18n::tr1("默认目录: {}", directory.display()));
+            }
+
+            ui.add_space(8.0);
+            ui.label(RichText::new(tr("文件名格式")).strong());
+            let mut pattern = app.settings.log_file.pattern.clone();
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut pattern)
+                    .hint_text(crate::logfile::DEFAULT_PATTERN)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            );
+            if response.changed() {
+                app.settings.log_file.pattern = pattern;
+                app.mark_settings_dirty();
+            }
+            let preview =
+                crate::logfile::file_name_for(&app.settings.log_file.pattern, chrono::Local::now());
+            ui.small(crate::i18n::tr1("文件名示例: {}", preview));
+            ui.add_space(4.0);
+            ui.small(tr(
+                "格式符：%Y 年（4 位）、%y 年（2 位）、%M 月、%D/%d 日、%h/%H 时、%m 分、%s/%S 秒、%f 毫秒、%% 百分号。",
+            ));
+            ui.small(tr(
+                "文件名在启用时展开一次；同名文件会追加写入；修改目录或格式在下次启用时生效。",
+            ));
+        });
+    if !open || close_requested {
+        app.show_log_file = false;
+    }
+}
 
 /// "Restore defaults" is destructive and irreversible, so the menu item only
 /// asks; the reset itself happens after an explicit confirmation here.

@@ -47,6 +47,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Timestamps (frame-delimited by CR/LF) | ✅ | An incomplete frame is shown live at the end of the receive area with its current timestamp, which is fixed once CR/LF completes it |
 | Direction markers on every row | ✅ | Coloured `->` for received data, `<-` for sent data; toggle in Display settings or the receive area's right-click menu |
 | Save receive window as any format file | ✅ | Save as text or raw binary |
+| Live log file while receiving | ✅ | File → Log file…; the name pattern supports `%Y %M %D %h %m %s` and more, and an existing file is appended to |
 | Clear receive (also resets Tx/Rx counters) | ✅ | |
 | Single send: any characters / hex / auto-split bytes | ✅ | `0102`, `01 02`, `0x01,0x02`, `01-02` all accepted |
 | Send newline | ✅ | CR / LF can be individually checked |
@@ -74,6 +75,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Chinese/English UI toggle**: switchable at any time from **View → Language**; follows system `LANG` on first launch; choice is persisted.
 - **Receive area text selection**: drag-select with mouse, Ctrl+C copy, Ctrl+A select all (based on glyph metrics, CJK full-width characters select correctly).
 - **Keyword highlighting**: add keywords and colours under View → Display settings… → Keyword highlighting; each rule is a literal or, with the `.*` toggle, a regular expression (invalid patterns are flagged and skipped). Rules persist in the settings file, and longer matches win when they overlap.
+- **Live log files**: File → Log file… writes every received byte to disk while the session runs. The file name is expanded once from a pattern when logging starts, with `%Y %y %M %D %d %h %H %m %s %S %f %%` tokens; an existing file is appended to, and the folder and pattern persist.
 - **Virtualized log view**: Only visible lines are rendered, staying smooth during long high-speed reception.
 - **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off in Display settings or the receive area's right-click menu. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.

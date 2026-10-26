@@ -146,6 +146,40 @@ impl SendSettings {
     }
 }
 
+/// Where and under what name the receive stream is logged.
+///
+/// Whether logging is currently running is a session state, not a preference,
+/// so it is not stored here: the app never starts writing a file on launch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogFileSettings {
+    /// Directory for the log files; empty means the app's own `logs` directory.
+    pub directory: String,
+    /// File-name pattern, expanded once when logging starts.
+    pub pattern: String,
+}
+
+impl Default for LogFileSettings {
+    fn default() -> Self {
+        Self {
+            directory: String::new(),
+            pattern: crate::logfile::DEFAULT_PATTERN.to_owned(),
+        }
+    }
+}
+
+impl LogFileSettings {
+    pub(crate) fn normalize(&mut self) {
+        self.directory = self.directory.trim().to_owned();
+        self.pattern = self.pattern.trim().to_owned();
+        if self.pattern.is_empty() {
+            self.pattern = crate::logfile::DEFAULT_PATTERN.to_owned();
+        }
+        // A runaway paste must not become an impossible file name.
+        self.pattern = self.pattern.chars().take(200).collect();
+    }
+}
+
 /// The complete persisted state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -156,6 +190,8 @@ pub struct Settings {
     pub log_colors: LogColorOverride,
     /// Keyword highlighting for the receive view.
     pub highlights: HighlightSettings,
+    /// Where and how the receive stream is logged to disk.
+    pub log_file: LogFileSettings,
     pub serial: SerialConfig,
     pub display: DisplayOptions,
     /// Receive decoding: `None` means auto-detect.
@@ -218,6 +254,7 @@ impl Default for Settings {
             lang: None,
             log_colors: LogColorOverride::default(),
             highlights: HighlightSettings::default(),
+            log_file: LogFileSettings::default(),
             serial: SerialConfig::default(),
             display: DisplayOptions::default(),
             encoding: None,
@@ -257,6 +294,7 @@ impl Settings {
         self.multi.normalize();
         self.protocol.normalize();
         self.highlights.normalize();
+        self.log_file.normalize();
         self.left_panel_width = self.left_panel_width.clamp(
             crate::ui::panels::LEFT_PANEL_MIN,
             crate::ui::panels::LEFT_PANEL_MAX,
@@ -440,6 +478,34 @@ mod tests {
         )
         .unwrap();
         assert!(!legacy.highlights.rules[0].regex);
+    }
+
+    #[test]
+    fn log_file_settings_round_trip_and_fall_back() {
+        use crate::settings::LogFileSettings;
+
+        let mut settings = Settings::default();
+        assert_eq!(settings.log_file.pattern, crate::logfile::DEFAULT_PATTERN);
+        assert!(settings.log_file.directory.is_empty());
+
+        settings.log_file.directory = "/tmp/xcom-logs".to_owned();
+        settings.log_file.pattern = "run-%Y%M%D-%h%m%s.log".to_owned();
+        let text = serde_json::to_string(&settings).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.log_file, settings.log_file);
+
+        // A blank pattern must not silently become a hidden or empty name.
+        let mut blank = LogFileSettings {
+            directory: "  ".to_owned(),
+            pattern: "   ".to_owned(),
+        };
+        blank.normalize();
+        assert!(blank.directory.is_empty());
+        assert_eq!(blank.pattern, crate::logfile::DEFAULT_PATTERN);
+
+        // Older settings files get the default section.
+        let legacy: Settings = serde_json::from_str(r#"{"theme":"Light"}"#).unwrap();
+        assert_eq!(legacy.log_file, LogFileSettings::default());
     }
 
     #[test]

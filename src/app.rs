@@ -8,6 +8,7 @@ use encoding_rs::Encoding;
 
 use crate::encoding::{AutoDetector, EncodingId};
 use crate::i18n::tr;
+use crate::logfile::LogFile;
 use crate::logstore::LogStore;
 use crate::protocol::{ProtocolEngine, ProtocolEvent};
 use crate::serial::{PortWatcher, SerialEvent, SerialLink, Signals};
@@ -165,6 +166,10 @@ pub struct XcomApp {
     pub(crate) show_reset_confirm: bool,
     /// Whether the keyboard-shortcuts dialog is open.
     pub(crate) show_shortcuts: bool,
+    /// Whether the log-file settings dialog is open.
+    pub(crate) show_log_file: bool,
+    /// The receive stream's current log file, when logging is running.
+    pub(crate) log_file: LogFile,
     /// Set when the display settings page should scroll to the keyword rules.
     pub(crate) scroll_to_highlights: bool,
 
@@ -256,6 +261,8 @@ impl XcomApp {
             show_display_settings: false,
             show_reset_confirm: false,
             show_shortcuts: false,
+            show_log_file: false,
+            log_file: LogFile::default(),
             scroll_to_highlights: false,
             signals: Signals::default(),
             applied_theme: None,
@@ -612,6 +619,59 @@ impl XcomApp {
         self.info(tr("已清除接收区与收发计数"));
     }
 
+    // -- log file -----------------------------------------------------------
+
+    /// Open the receive log file named by the current settings.
+    pub(crate) fn start_log_file(&mut self) {
+        let settings = self.settings.log_file.clone();
+        let directory = crate::logfile::resolve_directory(&settings.directory);
+        let name = crate::logfile::file_name_for(&settings.pattern, chrono::Local::now());
+        match self.log_file.start(&directory, &name) {
+            Ok(path) => self.ok(crate::i18n::tr1("日志文件: {}", path.display())),
+            Err(err) => self.error(crate::i18n::tr1("无法创建日志文件: {}", err)),
+        }
+    }
+
+    /// Close the current log file, if one is open.
+    pub(crate) fn stop_log_file(&mut self) {
+        let Some(path) = self.log_file.path().map(PathBuf::from) else {
+            return;
+        };
+        let bytes = self.log_file.bytes();
+        self.log_file.stop();
+        self.info(crate::i18n::tr2(
+            "已停止日志记录（{} 字节）: {}",
+            bytes,
+            path.display(),
+        ));
+    }
+
+    /// Turn live logging on or off.
+    pub(crate) fn set_log_file_enabled(&mut self, enabled: bool) {
+        if enabled {
+            if !self.log_file.is_active() {
+                self.start_log_file();
+            }
+        } else {
+            self.stop_log_file();
+        }
+    }
+
+    /// Append received bytes to the log file, stopping on the first failure.
+    pub(crate) fn write_log_file(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() || !self.log_file.is_active() {
+            return;
+        }
+        if let Err(err) = self.log_file.write_all(bytes) {
+            let path = self.log_file.path().map(|path| path.display().to_string());
+            self.log_file.stop();
+            match path {
+                Some(path) => self.error(crate::i18n::tr2("写入日志文件失败: {}（{}）", err, path)),
+                None => self.error(crate::i18n::tr1("写入日志文件失败: {}", err)),
+            }
+        }
+    }
+
     // -- settings -----------------------------------------------------------
 
     /// Turn "auto-scroll to newest" on or off.
@@ -710,6 +770,9 @@ impl XcomApp {
         }
 
         if !rx_buf.is_empty() {
+            // Log every received byte, even while the display is paused: the
+            // file is meant to be a complete record of the session.
+            self.write_log_file(&rx_buf);
             if self.show_paused {
                 self.pending_rx.extend_from_slice(&rx_buf);
             } else {
@@ -1150,6 +1213,9 @@ impl XcomApp {
     /// Apply the factory defaults everywhere, including the parts that live
     /// outside `settings` (the live log options and the UI language).
     pub(crate) fn apply_default_settings(&mut self) {
+        // The pattern and directory are being reset, so stop writing through
+        // the old ones before they are forgotten.
+        self.log_file.stop();
         self.settings = crate::settings::Settings::default();
         self.log
             .set_limits(self.settings.max_rows, self.settings.max_raw);
@@ -1173,6 +1239,7 @@ impl eframe::App for XcomApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.log_file.stop();
         self.settings.window_size = None;
         if let Err(err) = self.settings.save() {
             log::error!("退出时保存设置失败: {err}");
@@ -1244,6 +1311,7 @@ impl XcomApp {
         panels::center_panel(self, ui);
         panels::apply_splitters(self, ui);
         panels::display_settings_window(self, ctx);
+        panels::log_file_window(self, ctx);
         panels::reset_confirm_window(self, ctx);
         panels::shortcuts_window(self, ctx);
         panels::about_window(self, ctx);
@@ -3004,6 +3072,45 @@ mod layout_tests {
             },
         ];
         render(&mut app, &ctx, "display settings");
+    }
+
+    /// The log-file dialog renders with a pattern and a resolved preview.
+    #[test]
+    fn renders_the_log_file_dialog() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.show_log_file = true;
+        app.settings.log_file.pattern = "run-%Y%M%D-%h%m%s.log".to_owned();
+        render(&mut app, &ctx, "log file");
+    }
+
+    /// Live logging appends the received bytes and closes on stop.
+    #[test]
+    fn live_log_file_writes_received_bytes() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("xcom-app-log-{}-{unique}", std::process::id()));
+        let mut app = XcomApp::headless(Settings {
+            log_file: crate::settings::LogFileSettings {
+                directory: dir.display().to_string(),
+                pattern: "capture-%s.log".to_owned(),
+            },
+            ..Settings::default()
+        });
+
+        app.set_log_file_enabled(true);
+        assert!(app.log_file.is_active(), "the log file did not open");
+        let path = app.log_file.path().unwrap().to_path_buf();
+        app.write_log_file(b"hello ");
+        app.write_log_file(b"world");
+        app.set_log_file_enabled(false);
+        assert!(!app.log_file.is_active());
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The reset confirmation dialog renders without applying anything: the
