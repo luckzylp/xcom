@@ -293,7 +293,6 @@ impl Settings {
         self.max_raw = self.max_raw.clamp(64 * 1024, 512 * 1024 * 1024);
         self.multi.normalize();
         self.protocol.normalize();
-        self.highlights.normalize();
         self.log_file.normalize();
         self.left_panel_width = self.left_panel_width.clamp(
             crate::ui::panels::LEFT_PANEL_MIN,
@@ -578,6 +577,20 @@ mod tests {
         );
         assert_eq!(settings.display.hex_bytes_per_row, 16);
         assert_eq!(settings.multi.entries.len(), crate::multi::TOTAL_ENTRIES);
+    }
+
+    #[test]
+    fn normalize_keeps_more_than_32_highlight_rules() {
+        let mut settings = Settings::default();
+        settings.highlights.rules = (0..100)
+            .map(|i| crate::highlight::HighlightRule {
+                text: format!("k{i}"),
+                regex: false,
+                color: [1, 2, 3],
+            })
+            .collect();
+        settings.normalize();
+        assert_eq!(settings.highlights.rules.len(), 100);
     }
 
     #[test]

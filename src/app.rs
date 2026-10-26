@@ -3070,6 +3070,34 @@ mod layout_tests {
         );
     }
 
+    /// A long keyword list scrolls inside its table instead of growing the
+    /// window: the Add row and the help text below it stay reachable.
+    #[test]
+    fn a_long_keyword_list_scrolls_instead_of_growing() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.show_highlight = true;
+        app.settings.highlights.enabled = true;
+        app.settings.highlights.rules = (0..80)
+            .map(|i| crate::highlight::HighlightRule {
+                text: format!("k{i}"),
+                regex: false,
+                color: [1, 2, 3],
+            })
+            .collect();
+        render(&mut app, &ctx, "keyword highlighting");
+
+        let table = panels::probe::highlight_table_rect();
+        assert!(table.height() > 0.0, "the keyword table was not laid out");
+        assert!(
+            table.height() < 420.0,
+            "the keyword table grew to {:.1}px instead of scrolling",
+            table.height()
+        );
+        let fields = panels::probe::highlight_keyword_rects();
+        assert_eq!(fields.len(), 80, "the rule list was truncated");
+    }
+
     /// Fonts, receive colours and keyword rules each have their own window.
     #[test]
     fn renders_the_font_colour_and_highlight_windows() {

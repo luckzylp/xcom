@@ -273,7 +273,7 @@ static EN: &[(&str, &str)] = &[
     ("操作",                 "Action"),
     ("暂无关键字",             "No keywords yet"),
     ("添加关键字",             "Add keyword"),
-    ("{} / {} 条规则",        "{} / {} rules"),
+    ("{} 条规则",             "{} rules"),
     ("正则表达式",             "Regular expression"),
     ("按正则表达式匹配",       "Match as a regular expression"),
     ("正则无效",               "Invalid regular expression"),

@@ -13,10 +13,6 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-/// Upper bound on configured rules, so a hand-edited settings file cannot turn
-/// every rendered row into an unbounded matching loop.
-pub const MAX_RULES: usize = 32;
-
 /// The colour new rules start with: a warm gold that reads on both themes.
 pub const DEFAULT_COLOR: [u8; 3] = [0xFF, 0xD1, 0x66];
 
@@ -60,13 +56,6 @@ pub struct HighlightMatch {
     pub end: usize,
     /// Index into [`HighlightSettings::rules`].
     pub rule: usize,
-}
-
-impl HighlightSettings {
-    /// Clamp anything a hand-edited settings file could exaggerate.
-    pub fn normalize(&mut self) {
-        self.rules.truncate(MAX_RULES);
-    }
 }
 
 /// Whether `pattern` is a regular expression the engine accepts.
@@ -300,18 +289,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_caps_the_rule_count() {
-        let mut settings = HighlightSettings {
-            enabled: true,
-            rules: (0..MAX_RULES + 10)
-                .map(|i| literal(&format!("k{i}"), [1, 2, 3]))
-                .collect(),
-        };
-        settings.normalize();
-        assert_eq!(settings.rules.len(), MAX_RULES);
-    }
-
-    #[test]
     fn regex_rules_find_every_non_overlapping_match() {
         let settings = highlighter(vec![pattern("ERR\\d+", [1, 2, 3])]);
         let matches = settings.matches("ERR1 ok ERR22 ERR333");
@@ -361,6 +338,16 @@ mod tests {
         assert_eq!(matches[0].rule, 1);
         assert!(validate_regex("(unclosed").is_err());
         assert!(validate_regex("ERR\\d+").is_ok());
+    }
+
+    #[test]
+    fn there_is_no_fixed_rule_limit() {
+        let settings = highlighter(
+            (0..100)
+                .map(|i| literal(&format!("k{i}"), [1, 2, 3]))
+                .collect(),
+        );
+        assert_eq!(settings.matches("k99").len(), 1);
     }
 
     #[test]

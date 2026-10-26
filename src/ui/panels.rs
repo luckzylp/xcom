@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use crate::app::{Level, SideTab, XcomApp, draw_log};
 use crate::encoding::EncodingId;
-use crate::highlight::{HighlightRule, MAX_RULES};
+use crate::highlight::HighlightRule;
 use crate::i18n::{self, Lang, tr};
 use crate::logstore::{HexStyle, ViewMode};
 use crate::protocol::{ChecksumKind, TaskKind};
@@ -1682,16 +1682,14 @@ pub(crate) fn highlight_window(app: &mut XcomApp, ctx: &Context) {
         .collapsible(false)
         .resizable(true)
         .default_size([480.0, 480.0])
-        .min_size([380.0, 300.0]);
+        .min_size([380.0, 320.0]);
     center_on_open(window, ctx, id).show(ctx, |ui| {
         let header = dialog::header(ui, tr("关键字高亮"), None);
         if header.close_clicked {
             close_requested = true;
         }
         ui.separator();
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| highlight_settings_ui(app, ui));
+        highlight_settings_ui(app, ui);
     });
     if !open || close_requested {
         app.show_highlight = false;
@@ -1755,69 +1753,77 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
         });
         ui.separator();
 
-        for (index, rule) in settings.rules.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = COL_GAP;
-                let keyword = ui.add_sized(
-                    [keyword_col, row_height],
-                    egui::TextEdit::singleline(&mut rule.text)
-                        .hint_text(if rule.regex {
-                            tr("正则表达式")
-                        } else {
-                            tr("关键字")
-                        })
-                        .font(egui::TextStyle::Monospace),
-                );
-                probe::push_highlight_keyword_rect(keyword.rect);
-                changed |= keyword.changed();
-                ui.allocate_ui_with_layout(
-                    egui::vec2(COLOR_COL, row_height),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        changed |= ui.color_edit_button_srgb(&mut rule.color).changed();
-                    },
-                );
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ACTION_COL, row_height),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        let toggle = ui
-                            .add_sized(
-                                [24.0, row_height],
-                                egui::Button::new(egui::RichText::new(".*").monospace())
-                                    .selected(rule.regex),
-                            )
-                            .on_hover_text(tr("按正则表达式匹配"));
-                        if toggle.clicked() {
-                            rule.regex = !rule.regex;
-                            changed = true;
-                        }
-                        if ui
-                            .add_sized([20.0, row_height], egui::Button::new("×"))
-                            .on_hover_text(tr("删除"))
-                            .clicked()
-                        {
-                            remove = Some(index);
-                        }
-                    },
-                );
+        // Leave room for the Add row and the help text below the table, so
+        // those stay visible while only the rule list scrolls.
+        let rows_height = (ui.available_height() - 96.0).max(row_height * 3.0);
+        egui::ScrollArea::vertical()
+            .max_height(rows_height)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for (index, rule) in settings.rules.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = COL_GAP;
+                        let keyword = ui.add_sized(
+                            [keyword_col, row_height],
+                            egui::TextEdit::singleline(&mut rule.text)
+                                .hint_text(if rule.regex {
+                                    tr("正则表达式")
+                                } else {
+                                    tr("关键字")
+                                })
+                                .font(egui::TextStyle::Monospace),
+                        );
+                        probe::push_highlight_keyword_rect(keyword.rect);
+                        changed |= keyword.changed();
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(COLOR_COL, row_height),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                changed |= ui.color_edit_button_srgb(&mut rule.color).changed();
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ACTION_COL, row_height),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                let toggle = ui
+                                    .add_sized(
+                                        [24.0, row_height],
+                                        egui::Button::new(egui::RichText::new(".*").monospace())
+                                            .selected(rule.regex),
+                                    )
+                                    .on_hover_text(tr("按正则表达式匹配"));
+                                if toggle.clicked() {
+                                    rule.regex = !rule.regex;
+                                    changed = true;
+                                }
+                                if ui
+                                    .add_sized([20.0, row_height], egui::Button::new("×"))
+                                    .on_hover_text(tr("删除"))
+                                    .clicked()
+                                {
+                                    remove = Some(index);
+                                }
+                            },
+                        );
+                    });
+                    if rule.regex
+                        && !rule.text.is_empty()
+                        && let Err(err) = crate::highlight::validate_regex(&rule.text)
+                    {
+                        ui.label(
+                            RichText::new(tr("正则无效"))
+                                .small()
+                                .color(level_color(Level::Error)),
+                        )
+                        .on_hover_text(err);
+                    }
+                    if index + 1 < rule_count {
+                        ui.separator();
+                    }
+                }
             });
-            if rule.regex
-                && !rule.text.is_empty()
-                && let Err(err) = crate::highlight::validate_regex(&rule.text)
-            {
-                ui.label(
-                    RichText::new(tr("正则无效"))
-                        .small()
-                        .color(level_color(Level::Error)),
-                )
-                .on_hover_text(err);
-            }
-            if index + 1 < rule_count {
-                ui.separator();
-            }
-        }
     });
     probe::set_highlight_table_rect(table.response.rect);
     if let Some(index) = remove {
@@ -1829,26 +1835,17 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
     }
 
     ui.horizontal(|ui| {
-        let full = settings.rules.len() >= MAX_RULES;
-        if ui
-            .add_enabled(!full, egui::Button::new(tr("添加关键字")))
-            .clicked()
-        {
+        if ui.button(tr("添加关键字")).clicked() {
             settings.rules.push(HighlightRule::default());
             changed = true;
         }
-        ui.weak(crate::i18n::tr2(
-            "{} / {} 条规则",
-            settings.rules.len(),
-            MAX_RULES,
-        ));
+        ui.weak(crate::i18n::tr1("{} 条规则", settings.rules.len()));
     });
     ui.small(tr(
         "默认按字面匹配，区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
     ));
 
     if changed {
-        settings.normalize();
         app.settings.highlights = settings;
         app.mark_settings_dirty();
     }
