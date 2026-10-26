@@ -71,6 +71,7 @@ pub(crate) mod probe {
         static TOOL_PANEL_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static BOTTOM_STATUS_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static FONT_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static HIGHLIGHT_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static ABOUT_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static ABOUT_HEADER_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static ABOUT_TITLE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
@@ -581,6 +582,20 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn font_window_rect() -> egui::Rect {
         FONT_WINDOW_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_highlight_window_rect(rect: egui::Rect) {
+        HIGHLIGHT_WINDOW_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_highlight_window_rect<R>(_rect: R) {}
+
+    /// Where the keyword-highlight window was laid out last.
+    #[cfg(test)]
+    pub(crate) fn highlight_window_rect() -> egui::Rect {
+        HIGHLIGHT_WINDOW_RECT.with(|cell| cell.get())
     }
 
     #[cfg(test)]
@@ -1681,11 +1696,9 @@ pub(crate) fn highlight_window(app: &mut XcomApp, ctx: &Context) {
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        // One third wider than the previous default (520 -> 693), so the
-        // keyword field and the extra enable/number columns have room.
-        .default_size([693.0, 480.0])
+        .default_size([600.0, 520.0])
         .min_size([420.0, 320.0]);
-    center_on_open(window, ctx, id).show(ctx, |ui| {
+    let window = center_on_open(window, ctx, id).show(ctx, |ui| {
         let header = dialog::header(ui, tr("关键字高亮"), None);
         if header.close_clicked {
             close_requested = true;
@@ -1693,6 +1706,9 @@ pub(crate) fn highlight_window(app: &mut XcomApp, ctx: &Context) {
         ui.separator();
         highlight_settings_ui(app, ui);
     });
+    if let Some(window) = window {
+        probe::set_highlight_window_rect(window.response.rect);
+    }
     if !open || close_requested {
         app.show_highlight = false;
     }
@@ -1768,8 +1784,11 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
         let rows_height = (ui.available_height() - 96.0).max(row_height * 3.0);
         egui::ScrollArea::vertical()
             .max_height(rows_height)
-            .auto_shrink([false, true])
+            .auto_shrink([false, false])
             .show(ui, |ui| {
+                if settings.rules.is_empty() {
+                    ui.weak(tr("暂无关键字"));
+                }
                 for (index, rule) in settings.rules.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = COL_GAP;
@@ -1858,10 +1877,6 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
         settings.rules.remove(index);
         changed = true;
     }
-    if settings.rules.is_empty() {
-        ui.weak(tr("暂无关键字"));
-    }
-
     ui.horizontal(|ui| {
         if ui.button(tr("添加关键字")).clicked() {
             settings.rules.push(HighlightRule::default());
@@ -1872,6 +1887,14 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
     ui.small(tr(
         "勾选行首的启用开关后规则才生效；默认按字面匹配、区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
     ));
+
+    // Fill the window: the footer's height depends on how the help text wraps,
+    // and without this the window would shrink or grow with the wrapped line
+    // count instead of keeping the size the user dragged it to.
+    let remaining = ui.available_height();
+    if remaining > 0.0 {
+        ui.add_space(remaining);
+    }
 
     if changed {
         app.settings.highlights = settings;

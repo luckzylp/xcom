@@ -3070,6 +3070,92 @@ mod layout_tests {
         );
     }
 
+    /// The keyword window keeps a fixed eight-row height whether it has zero
+    /// rules or many, and can be dragged both larger and smaller.
+    #[test]
+    fn the_keyword_window_keeps_its_height_and_resizes() {
+        let ctx = egui::Context::default();
+        crate::fonts::install_default_families(&ctx);
+        let mut app = seeded();
+        app.show_highlight = true;
+
+        let draw = |app: &mut XcomApp, events: Vec<egui::Event>| {
+            let mut raw = input();
+            raw.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 840.0),
+            ));
+            raw.events = events;
+            let mut output = ctx.run_ui(raw, |ui| app.draw(ui));
+            output.textures_delta.clear();
+        };
+        let press = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let drag = |app: &mut XcomApp, from: egui::Pos2, to: egui::Pos2| {
+            draw(app, vec![egui::Event::PointerMoved(from)]);
+            draw(
+                app,
+                vec![egui::Event::PointerMoved(from), press(from, true)],
+            );
+            draw(app, vec![egui::Event::PointerMoved(to)]);
+            draw(app, vec![egui::Event::PointerMoved(to)]);
+            draw(app, vec![press(to, false)]);
+            draw(app, Vec::new());
+        };
+
+        // Empty list: the table still fills its rows, so the window is not a
+        // thin sliver.
+        draw(&mut app, Vec::new());
+        draw(&mut app, Vec::new());
+        let empty = panels::probe::highlight_window_rect();
+        assert!(empty.width() >= 590.0, "unexpected width: {empty:?}");
+        assert!(
+            empty.height() >= 440.0,
+            "the empty window is tiny: {empty:?}"
+        );
+
+        // Eight rules: the height must stay the same.
+        app.settings.highlights.rules = (0..8)
+            .map(|i| crate::highlight::HighlightRule {
+                text: format!("k{i}"),
+                enabled: true,
+                regex: false,
+                color: [1, 2, 3],
+            })
+            .collect();
+        draw(&mut app, Vec::new());
+        draw(&mut app, Vec::new());
+        let eight = panels::probe::highlight_window_rect();
+        assert!(
+            (eight.height() - empty.height()).abs() < 1.0,
+            "the window height follows the rule count: {empty:?} -> {eight:?}"
+        );
+
+        // Drag the right edge outwards, then the bottom edge.
+        let from = egui::pos2(eight.right() - 2.0, eight.center().y);
+        drag(&mut app, from, from + egui::vec2(110.0, 0.0));
+        let wider = panels::probe::highlight_window_rect();
+        let from = egui::pos2(wider.center().x, wider.bottom() - 2.0);
+        drag(&mut app, from, from + egui::vec2(0.0, 80.0));
+        let bigger = panels::probe::highlight_window_rect();
+        assert!(
+            bigger.width() > eight.width() + 80.0 && bigger.height() > eight.height() + 50.0,
+            "the keyword window did not grow: {eight:?} -> {bigger:?}"
+        );
+
+        let from = bigger.max - egui::vec2(2.0, 2.0);
+        drag(&mut app, from, from - egui::vec2(120.0, 100.0));
+        let smaller = panels::probe::highlight_window_rect();
+        assert!(
+            smaller.width() < bigger.width() - 80.0 && smaller.height() < bigger.height() - 60.0,
+            "the keyword window did not shrink: {bigger:?} -> {smaller:?}"
+        );
+    }
+
     /// A long keyword list scrolls inside its table instead of growing the
     /// window: the Add row and the help text below it stay reachable.
     #[test]
@@ -3311,8 +3397,8 @@ mod layout_tests {
         let fields = panels::probe::highlight_keyword_rects();
         assert_eq!(fields.len(), 2, "the keyword rows were not laid out");
         assert!(
-            table.width() <= 693.5,
-            "the keyword table overflows the 693px page: {:.1}px",
+            table.width() <= 600.5,
+            "the keyword table overflows the 600px page: {:.1}px",
             table.width()
         );
         assert!(
