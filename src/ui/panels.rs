@@ -2086,8 +2086,7 @@ fn display_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
         .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
         .changed()
     {
-        app.settings.auto_scroll = auto_scroll;
-        app.mark_settings_dirty();
+        app.set_auto_scroll(auto_scroll);
     }
 
     let mut echo = app.settings.echo_sent;
@@ -2351,8 +2350,7 @@ pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
             app.mark_settings_dirty();
         }
         if output.toggle_auto_scroll {
-            app.settings.auto_scroll = !app.settings.auto_scroll;
-            app.mark_settings_dirty();
+            app.set_auto_scroll(!app.settings.auto_scroll);
         }
         if output.toggle_echo {
             app.settings.echo_sent = !app.settings.echo_sent;
@@ -3702,7 +3700,11 @@ fn start_protocol_file(app: &mut XcomApp, data: Vec<u8>, path: &std::path::Path)
 
 pub(crate) fn status_bar(app: &mut XcomApp, ui: &mut Ui) {
     let panel = egui::Panel::bottom("status_bar").show(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
+        // One row, never wrapping: the bar's height is part of the centre
+        // column's layout, so anything that can make it taller (a long hint,
+        // a growing counter) resizes the receive area underneath it.  Labels
+        // that do not fit are clipped instead.
+        ui.horizontal(|ui| {
             let open = app.link.is_open();
             led(ui, open, egui::Color32::from_rgb(0x4C, 0xAF, 0x50));
             if open {
@@ -3761,17 +3763,6 @@ pub(crate) fn status_bar(app: &mut XcomApp, ui: &mut Ui) {
                         app.pending_rx_len(),
                     ))
                     .color(level_color(Level::Warning)),
-                );
-            } else if app.settings.display.timestamp && !app.log.pending_line().is_empty() {
-                // Timestamp framing only emits a row once CR/LF arrives, so show
-                // the incomplete frame here instead of leaving the user staring
-                // at an apparently dead port.
-                let preview: String = app.log.pending_line().chars().take(60).collect();
-                ui.separator();
-                ui.label(
-                    RichText::new(crate::i18n::tr1("接收中: {}", preview))
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
                 );
             }
 

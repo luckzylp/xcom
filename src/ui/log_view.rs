@@ -53,6 +53,13 @@ pub struct LogViewState {
     selection: Option<Selection>,
     /// Caret captured when a drag started.
     drag_anchor: Option<Caret>,
+    /// Whether the view followed the newest row on the previous frame.
+    ///
+    /// `ScrollArea::stick_to_bottom` only re-enters sticky mode once the
+    /// offset touches the end, so switching the option on while the view is
+    /// scrolled up would otherwise do nothing at all.  Tracking the previous
+    /// frame lets the view notice that transition and jump once.
+    following: bool,
 }
 
 impl LogViewState {
@@ -305,6 +312,12 @@ pub fn show(
 
     let mut output = LogViewOutput::default();
 
+    // Following is suspended while text is selected, so the selection is not
+    // dragged out from under the pointer.
+    let follow = options.auto_scroll && !state.has_selection();
+    let jump_to_bottom = follow && !state.following;
+    state.following = follow;
+
     if total_rows == 0 {
         // Still draw the (empty) background so the theme colour shows through.
         let (rect, response) =
@@ -333,9 +346,21 @@ pub fn show(
     let backdrop = ui.interact(viewport, ui.id().with("log_context"), Sense::click());
     let mut context_actions = context_menu(backdrop, store, state, options);
 
-    let scroll = ScrollArea::both()
+    let mut scroll = ScrollArea::both()
         .auto_shrink([false, false])
-        .stick_to_bottom(options.auto_scroll && !state.has_selection());
+        .stick_to_bottom(follow);
+
+    // Re-entering follow mode (the option was switched on, or a selection was
+    // dropped) has to ask for the end position explicitly.  The target is
+    // rounded up by one scroll-bar width because the exact viewport is only
+    // known after the content is laid out; the scroll area clamps it to the
+    // real end, which is also what re-arms `stick_to_bottom`.
+    if jump_to_bottom && total_rows > 0 {
+        let content_height = total_rows as f32 * row_height;
+        let scroll_bar = ui.spacing().scroll.allocated_width();
+        let viewport_height = (ui.available_height() - scroll_bar).max(1.0);
+        scroll = scroll.vertical_scroll_offset((content_height - viewport_height).max(0.0));
+    }
 
     let clip_rect = ui.clip_rect();
     let result = scroll.show(ui, |ui| {
@@ -485,8 +510,33 @@ pub fn show(
     output.toggle_auto_scroll |= context_actions.toggle_auto_scroll;
     output.open_highlight_settings |= context_actions.open_highlight_settings;
     output.clear_received |= context_actions.clear_received;
+    #[cfg(test)]
+    probe::record(&result);
     let _ = result;
     output
+}
+
+/// Test-only observations of the scroll area, so layout tests can assert that
+/// the view really follows the newest row.
+#[cfg(test)]
+pub(crate) mod probe {
+    use std::cell::Cell;
+
+    use eframe::egui::Vec2;
+
+    thread_local! {
+        /// `(offset, content size, viewport size)`
+        static SCROLL: Cell<(Vec2, Vec2, Vec2)> =
+            const { Cell::new((Vec2::ZERO, Vec2::ZERO, Vec2::ZERO)) };
+    }
+
+    pub(crate) fn record(out: &eframe::egui::scroll_area::ScrollAreaOutput<()>) {
+        SCROLL.with(|cell| cell.set((out.state.offset, out.content_size, out.inner_rect.size())));
+    }
+
+    pub(crate) fn scroll() -> (Vec2, Vec2, Vec2) {
+        SCROLL.with(|cell| cell.get())
+    }
 }
 
 /// Lay out one row: the direction marker, the timestamp and the data, each in

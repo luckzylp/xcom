@@ -472,7 +472,6 @@ static EN: &[(&str, &str)] = &[
     ("编码 {}",                "Encoding {}"),
     ("发送: {}  接收: {}", "Sent: {}  Received: {}"),
     ("已暂停（缓存 {} 字节）", "Paused ({} bytes buffered)"),
-    ("接收中: {}",            "Receiving: {}"),
     ("版本 {}",                "Version {}"),
     ("已保存 {} 字节到 {}", "Saved {} bytes to {}"),
     ("保存失败: {}",          "Save failed: {}"),

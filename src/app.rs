@@ -614,6 +614,22 @@ impl XcomApp {
 
     // -- settings -----------------------------------------------------------
 
+    /// Turn "auto-scroll to newest" on or off.
+    ///
+    /// Enabling it also drops the text selection: a selection suspends
+    /// following so it is not dragged away from the pointer, and keeping it
+    /// would make the switch appear to do nothing.
+    pub(crate) fn set_auto_scroll(&mut self, on: bool) {
+        if self.settings.auto_scroll == on {
+            return;
+        }
+        self.settings.auto_scroll = on;
+        if on {
+            self.log_view.clear_selection();
+        }
+        self.mark_settings_dirty();
+    }
+
     pub(crate) fn mark_settings_dirty(&mut self) {
         self.settings_dirty = true;
     }
@@ -3904,5 +3920,122 @@ mod layout_tests {
             heights.iter().all(|height| (height - first).abs() < 0.5),
             "the bar changes height with the run, which moves the table: {heights:?}"
         );
+    }
+
+    /// A pending frame must not resize the window.
+    ///
+    /// The status bar used to append a live "receiving" preview after RI.
+    /// Whenever a burst left a frame incomplete, that label wrapped the bar
+    /// onto a second row, the centre column lost 15px, and the receive area
+    /// visibly jumped on every burst.  The bar now stays one row; the live
+    /// line itself is already painted at the end of the log.
+    #[test]
+    fn a_pending_frame_does_not_move_the_receive_area() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.serial.port = "/dev/ttyUSB0".to_owned();
+        app.settings.display.timestamp = true;
+        let display = app.settings.display;
+        app.log.set_options(display);
+        app.ingest(b"hello\r\nworld\r\n", 0);
+
+        // 900x640 is narrow enough that the old preview wrapped the bar.
+        let mut bars = Vec::new();
+        let mut centre = Vec::new();
+        for pending in [false, true, false, true] {
+            if pending {
+                // No terminator: this chunk stays as the live row.
+                app.ingest(&[b'x'; 60], 0);
+            } else {
+                app.ingest(b"\r\n", 0);
+            }
+            let mut slot = egui::Rect::NOTHING;
+            // Two passes: panels remember their size from the previous frame,
+            // so a one-frame growth would only be visible on the second.
+            for _ in 0..2 {
+                let mut raw = input();
+                raw.screen_rect = Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 640.0),
+                ));
+                slot = full_frame(&ctx, &mut app, raw);
+            }
+            bars.push(panels::probe::bottom_status_rect().height());
+            centre.push(slot.height());
+        }
+        assert!(
+            bars.iter().all(|h| (h - bars[0]).abs() < 0.5),
+            "the status bar changes height when a frame is incomplete: {bars:?}"
+        );
+        assert!(
+            centre.iter().all(|h| (h - centre[0]).abs() < 0.5),
+            "the receive area moves when a frame is incomplete: {centre:?}"
+        );
+    }
+
+    /// Switching auto-scroll on must actually go to the newest row.
+    ///
+    /// `ScrollArea::stick_to_bottom` only follows once the offset already
+    /// touches the end, so a view that had been left at the top kept ignoring
+    /// the option no matter how much data arrived.
+    #[test]
+    fn enabling_auto_scroll_jumps_to_the_newest_row() {
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.auto_scroll = false;
+        for i in 0..80 {
+            app.log.append(format!("line {i}\r\n").as_bytes(), 0);
+        }
+        frame_at(&ctx, &mut app, (1000.0, 700.0));
+
+        let (off, content, viewport) = crate::ui::log_view::probe::scroll();
+        assert_eq!(off.y, 0.0, "the option is off, yet the view scrolled");
+        let bottom = (content.y - viewport.y).max(0.0);
+        assert!(bottom > 0.0, "the fixture needs more rows than fit");
+
+        app.set_auto_scroll(true);
+        app.log.append(b"newest\r\n", 0);
+        // One frame only: the jump must not wait for a second pass.
+        let mut raw = input();
+        raw.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1000.0, 700.0),
+        ));
+        full_frame(&ctx, &mut app, raw);
+
+        let (off, content, viewport) = crate::ui::log_view::probe::scroll();
+        let bottom = (content.y - viewport.y).max(0.0);
+        assert!(
+            (off.y - bottom).abs() < 0.5,
+            "enabling auto-scroll left the view at {:.1}, not the newest row at {:.1}",
+            off.y,
+            bottom
+        );
+
+        // And it keeps following from there.
+        app.log.append(b"another\r\n", 0);
+        frame_at(&ctx, &mut app, (1000.0, 700.0));
+        let (off, content, viewport) = crate::ui::log_view::probe::scroll();
+        let bottom = (content.y - viewport.y).max(0.0);
+        assert!(
+            (off.y - bottom).abs() < 0.5,
+            "auto-scroll stopped following at {:.1} (end is {:.1})",
+            off.y,
+            bottom
+        );
+    }
+
+    /// Enabling auto-scroll drops a selection, since a selection is what
+    /// suspends following; otherwise the switch would look broken.
+    #[test]
+    fn enabling_auto_scroll_releases_the_selection() {
+        let mut app = seeded();
+        app.settings.auto_scroll = false;
+        app.log_view.select_all(&app.log);
+        assert!(app.log_view.has_selection());
+
+        app.set_auto_scroll(true);
+        assert!(!app.log_view.has_selection());
+        assert!(app.settings.auto_scroll);
     }
 }

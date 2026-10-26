@@ -384,11 +384,6 @@ impl LogStore {
         self.max_columns
     }
 
-    /// The line currently being received, for a live preview.
-    pub fn pending_line(&self) -> &str {
-        &self.cur_line
-    }
-
     /// Render the whole retained buffer as text (used when saving a log).
     pub fn render_all(&self) -> String {
         let mut out = String::new();
@@ -893,7 +888,7 @@ mod tests {
         for b in bytes.iter() {
             s.append(&[*b], 0);
         }
-        assert_eq!(s.pending_line(), "中文");
+        assert_eq!(s.cur_line.as_str(), "中文");
     }
 
     #[test]
@@ -904,7 +899,7 @@ mod tests {
             ..Default::default()
         });
         s.append(&[0x01, 0xab, 0xff], 0);
-        assert_eq!(s.pending_line(), "01 AB FF");
+        assert_eq!(s.cur_line.as_str(), "01 AB FF");
         assert_eq!(rows(&s), marked(&["01 AB FF"]));
     }
 
@@ -917,7 +912,7 @@ mod tests {
         });
         s.append(&[0x01], 0);
         s.append(&[0x02], 0);
-        assert_eq!(s.pending_line(), "01 02");
+        assert_eq!(s.cur_line.as_str(), "01 02");
     }
 
     #[test]
@@ -934,7 +929,7 @@ mod tests {
         assert!(s.row(0).ends_with("01 02"), "{}", s.row(0));
         // The live line is received data, so it carries the marker too.
         assert_eq!(s.row(1), format!("{MARK_RECEIVED}03 04"));
-        assert_eq!(s.pending_line(), "03 04");
+        assert_eq!(s.cur_line.as_str(), "03 04");
     }
 
     #[test]
@@ -1131,9 +1126,9 @@ mod tests {
     fn live_line_preview_tracks_input_without_terminator() {
         let mut s = store();
         s.append(b"partial", 0);
-        assert_eq!(s.pending_line(), "partial");
+        assert_eq!(s.cur_line.as_str(), "partial");
         s.append(b"-more", 0);
-        assert_eq!(s.pending_line(), "partial-more");
+        assert_eq!(s.cur_line.as_str(), "partial-more");
         assert_eq!(s.row_count(), 1);
     }
 
