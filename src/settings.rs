@@ -449,15 +449,16 @@ mod tests {
         use crate::highlight::HighlightRule;
 
         let mut settings = Settings::default();
-        settings.highlights.enabled = true;
         settings.highlights.rules = vec![
             HighlightRule {
                 text: "OK".to_owned(),
+                enabled: true,
                 regex: false,
                 color: [0x4C, 0xAF, 0x50],
             },
             HighlightRule {
                 text: "ERR\\d+".to_owned(),
+                enabled: true,
                 regex: true,
                 color: [0xE5, 0x53, 0x53],
             },
@@ -477,6 +478,7 @@ mod tests {
         )
         .unwrap();
         assert!(!legacy.highlights.rules[0].regex);
+        assert!(!legacy.highlights.rules[0].enabled);
     }
 
     #[test]
@@ -585,6 +587,7 @@ mod tests {
         settings.highlights.rules = (0..100)
             .map(|i| crate::highlight::HighlightRule {
                 text: format!("k{i}"),
+                enabled: true,
                 regex: false,
                 color: [1, 2, 3],
             })

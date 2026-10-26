@@ -3077,10 +3077,10 @@ mod layout_tests {
         let ctx = egui::Context::default();
         let mut app = seeded();
         app.show_highlight = true;
-        app.settings.highlights.enabled = true;
         app.settings.highlights.rules = (0..80)
             .map(|i| crate::highlight::HighlightRule {
                 text: format!("k{i}"),
+                enabled: true,
                 regex: false,
                 color: [1, 2, 3],
             })
@@ -3107,9 +3107,9 @@ mod layout_tests {
         app.show_log_colors = true;
         app.show_highlight = true;
         app.settings.log_colors.enabled = true;
-        app.settings.highlights.enabled = true;
         app.settings.highlights.rules = vec![crate::highlight::HighlightRule {
             text: "OK".to_owned(),
+            enabled: true,
             regex: false,
             color: [0x4C, 0xAF, 0x50],
         }];
@@ -3291,15 +3291,16 @@ mod layout_tests {
         let ctx = egui::Context::default();
         let mut app = seeded();
         app.show_highlight = true;
-        app.settings.highlights.enabled = true;
         app.settings.highlights.rules = vec![
             crate::highlight::HighlightRule {
                 text: "ERROR".to_owned(),
+                enabled: true,
                 regex: false,
                 color: [0xE5, 0x53, 0x53],
             },
             crate::highlight::HighlightRule {
                 text: "OK".to_owned(),
+                enabled: true,
                 regex: false,
                 color: [0x4C, 0xAF, 0x50],
             },
@@ -3310,8 +3311,8 @@ mod layout_tests {
         let fields = panels::probe::highlight_keyword_rects();
         assert_eq!(fields.len(), 2, "the keyword rows were not laid out");
         assert!(
-            table.width() <= 480.5,
-            "the keyword table overflows the 480px page: {:.1}px",
+            table.width() <= 520.5,
+            "the keyword table overflows the 520px page: {:.1}px",
             table.width()
         );
         assert!(

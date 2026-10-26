@@ -23,6 +23,9 @@ pub struct HighlightRule {
     /// Text or pattern to look for.  Empty rules are ignored but kept in the
     /// editor so a half-typed rule is not silently deleted.
     pub text: String,
+    /// Whether this rule participates in matching.  New rules start off, so
+    /// adding a half-typed keyword does not immediately repaint the log.
+    pub enabled: bool,
     /// Treat `text` as a regular expression instead of a literal substring.
     pub regex: bool,
     /// RGB colour used for the match.
@@ -33,6 +36,7 @@ impl Default for HighlightRule {
     fn default() -> Self {
         Self {
             text: String::new(),
+            enabled: false,
             regex: false,
             color: DEFAULT_COLOR,
         }
@@ -43,7 +47,6 @@ impl Default for HighlightRule {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HighlightSettings {
-    pub enabled: bool,
     pub rules: Vec<HighlightRule>,
 }
 
@@ -95,32 +98,30 @@ impl Highlighter {
     /// hand-edited settings file must never stop the receive view from drawing.
     pub fn new(settings: &HighlightSettings) -> Self {
         let mut rules = Vec::new();
-        if settings.enabled {
-            for (index, rule) in settings.rules.iter().enumerate() {
-                if rule.text.is_empty() {
-                    continue;
-                }
-                let regex = if rule.regex {
-                    match Regex::new(&rule.text) {
-                        Ok(regex) => Some(regex),
-                        Err(err) => {
-                            log::warn!("关键字正则无效（{}）：{err}", rule.text);
-                            continue;
-                        }
-                    }
-                } else {
-                    None
-                };
-                rules.push(CompiledRule {
-                    text: rule.text.clone(),
-                    regex,
-                    rule: index,
-                    color: rule.color,
-                });
+        for (index, rule) in settings.rules.iter().enumerate() {
+            if !rule.enabled || rule.text.is_empty() {
+                continue;
             }
+            let regex = if rule.regex {
+                match Regex::new(&rule.text) {
+                    Ok(regex) => Some(regex),
+                    Err(err) => {
+                        log::warn!("关键字正则无效（{}）：{err}", rule.text);
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            rules.push(CompiledRule {
+                text: rule.text.clone(),
+                regex,
+                rule: index,
+                color: rule.color,
+            });
         }
         Self {
-            active: settings.enabled && !rules.is_empty(),
+            active: !rules.is_empty(),
             rules,
             settings: settings.clone(),
         }
@@ -206,6 +207,7 @@ mod tests {
     fn literal(text: &str, color: [u8; 3]) -> HighlightRule {
         HighlightRule {
             text: text.to_owned(),
+            enabled: true,
             regex: false,
             color,
         }
@@ -214,16 +216,14 @@ mod tests {
     fn pattern(text: &str, color: [u8; 3]) -> HighlightRule {
         HighlightRule {
             text: text.to_owned(),
+            enabled: true,
             regex: true,
             color,
         }
     }
 
     fn highlighter(rules: Vec<HighlightRule>) -> Highlighter {
-        Highlighter::new(&HighlightSettings {
-            enabled: true,
-            rules,
-        })
+        Highlighter::new(&HighlightSettings { rules })
     }
 
     #[test]
@@ -274,14 +274,15 @@ mod tests {
     #[test]
     fn empty_rules_and_disabled_settings_do_nothing() {
         let disabled = HighlightSettings {
-            enabled: false,
-            rules: vec![literal("OK", [1, 2, 3])],
+            rules: vec![HighlightRule {
+                enabled: false,
+                ..literal("OK", [1, 2, 3])
+            }],
         };
         assert!(!Highlighter::new(&disabled).is_active());
         assert!(Highlighter::new(&disabled).matches("OK").is_empty());
 
         let empty = HighlightSettings {
-            enabled: true,
             rules: vec![literal("", [1, 2, 3])],
         };
         assert!(!Highlighter::new(&empty).is_active());
@@ -329,7 +330,6 @@ mod tests {
     #[test]
     fn an_invalid_regex_is_skipped_but_other_rules_still_work() {
         let settings = Highlighter::new(&HighlightSettings {
-            enabled: true,
             rules: vec![pattern("(unclosed", [1, 2, 3]), literal("OK", [4, 5, 6])],
         });
         assert!(settings.is_active());
@@ -338,6 +338,11 @@ mod tests {
         assert_eq!(matches[0].rule, 1);
         assert!(validate_regex("(unclosed").is_err());
         assert!(validate_regex("ERR\\d+").is_ok());
+    }
+
+    #[test]
+    fn new_rules_start_disabled() {
+        assert!(!HighlightRule::default().enabled);
     }
 
     #[test]
@@ -356,7 +361,6 @@ mod tests {
         assert!(!highlighter.is_active());
 
         let settings = HighlightSettings {
-            enabled: true,
             rules: vec![pattern("\\d+", [1, 2, 3])],
         };
         highlighter.sync(&settings);

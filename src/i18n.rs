@@ -267,7 +267,6 @@ static EN: &[(&str, &str)] = &[
     ("接收区配色",            "Receive colours"),
     ("编码",                 "Encoding"),
     ("关键字高亮",             "Keyword highlighting"),
-    ("启用关键字高亮",         "Enable keyword highlighting"),
     ("关键字",               "Keyword"),
     ("颜色",                 "Colour"),
     ("操作",                 "Action"),
@@ -277,8 +276,9 @@ static EN: &[(&str, &str)] = &[
     ("正则表达式",             "Regular expression"),
     ("按正则表达式匹配",       "Match as a regular expression"),
     ("正则无效",               "Invalid regular expression"),
-    ("默认按字面匹配，区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
-                              "Literal, case-sensitive matches by default; tick .* for a regular expression ((?i) ignores case), and longer matches win when they overlap."),
+    ("启用此规则",             "Enable this rule"),
+    ("勾选行首的启用开关后规则才生效；默认按字面匹配、区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
+                              "Tick the switch at the start of a row to activate it; matching is literal and case-sensitive by default; press .* for a regular expression ((?i) ignores case), and longer matches win when they overlap."),
 
     // -- top bar ------------------------------------------------------------
     ("主题",                 "Theme"),

@@ -1681,8 +1681,8 @@ pub(crate) fn highlight_window(app: &mut XcomApp, ctx: &Context) {
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_size([480.0, 480.0])
-        .min_size([380.0, 320.0]);
+        .default_size([520.0, 480.0])
+        .min_size([420.0, 320.0]);
     center_on_open(window, ctx, id).show(ctx, |ui| {
         let header = dialog::header(ui, tr("关键字高亮"), None);
         if header.close_clicked {
@@ -1711,14 +1711,12 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
     let mut settings = app.settings.highlights.clone();
     let mut changed = false;
 
-    changed |= ui
-        .checkbox(&mut settings.enabled, tr("启用关键字高亮"))
-        .changed();
-
     // A manual table rather than `Grid`: Grid sizes its first column from the
     // header text, which left a long keyword field clamped to a short cell.
     // The keyword column takes whatever the page leaves after the fixed
     // columns, so the table adapts to the resizable settings window.
+    const INDEX_COL: f32 = 30.0;
+    const ENABLE_COL: f32 = 34.0;
     const COLOR_COL: f32 = 52.0;
     const ACTION_COL: f32 = 52.0;
     const COL_GAP: f32 = 8.0;
@@ -1733,11 +1731,21 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
     let mut remove = None;
     let table = egui::Frame::group(ui.style()).show(ui, |ui| {
         let table_width = ui.available_width();
-        let keyword_col = (table_width - COLOR_COL - ACTION_COL - COL_GAP * 2.0).max(200.0);
+        let keyword_col =
+            (table_width - INDEX_COL - ENABLE_COL - COLOR_COL - ACTION_COL - COL_GAP * 4.0)
+                .max(200.0);
         ui.set_width(table_width);
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = COL_GAP;
+            ui.add_sized(
+                [INDEX_COL, row_height],
+                egui::Label::new(RichText::new("#").strong().monospace()),
+            );
+            ui.add_sized(
+                [ENABLE_COL, row_height],
+                egui::Label::new(RichText::new(tr("启用")).strong()),
+            );
             ui.add_sized(
                 [keyword_col, row_height],
                 egui::Label::new(RichText::new(tr("关键字")).strong()),
@@ -1763,6 +1771,24 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
                 for (index, rule) in settings.rules.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = COL_GAP;
+                        ui.add_sized(
+                            [INDEX_COL, row_height],
+                            egui::Label::new(
+                                RichText::new(format!("#{}", index + 1))
+                                    .monospace()
+                                    .color(ui.visuals().weak_text_color()),
+                            ),
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ENABLE_COL, row_height),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                changed |= ui
+                                    .add(egui::Checkbox::without_text(&mut rule.enabled))
+                                    .on_hover_text(tr("启用此规则"))
+                                    .changed();
+                            },
+                        );
                         let keyword = ui.add_sized(
                             [keyword_col, row_height],
                             egui::TextEdit::singleline(&mut rule.text)
@@ -1842,7 +1868,7 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
         ui.weak(crate::i18n::tr1("{} 条规则", settings.rules.len()));
     });
     ui.small(tr(
-        "默认按字面匹配，区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
+        "勾选行首的启用开关后规则才生效；默认按字面匹配、区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
     ));
 
     if changed {

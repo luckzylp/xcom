@@ -1015,15 +1015,16 @@ mod tests {
     fn row_job_paints_keywords_without_changing_the_text() {
         let font = FontId::monospace(12.0);
         let highlights = HighlightSettings {
-            enabled: true,
             rules: vec![
                 crate::highlight::HighlightRule {
                     text: "OK".to_owned(),
+                    enabled: true,
                     regex: false,
                     color: [1, 2, 3],
                 },
                 crate::highlight::HighlightRule {
                     text: "ERROR".to_owned(),
+                    enabled: true,
                     regex: false,
                     color: [4, 5, 6],
                 },
