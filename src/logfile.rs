@@ -7,10 +7,10 @@
 //! | token | meaning | token | meaning |
 //! |-------|---------|-------|---------|
 //! | `%Y`  | 4-digit year | `%M` | month |
-//! | `%y`  | 2-digit year | `%D` / `%d` | day |
-//! | `%h` / `%H` | hour | `%m` | minute |
+//! | `%y`  | 2-digit year | `%D` | day |
+//! | `%h`  | hour | `%m` | minute |
 //! | `%s` / `%S` | second | `%f` | milliseconds |
-//! | `%%`  | a literal `%` | | |
+//! | `%H`  | serial port name (`ttyUSB0`, `COM2`) | `%%` | a literal `%` |
 //!
 //! Unknown tokens are left alone (`%q` stays `%q`) so a typo is visible in the
 //! preview instead of silently disappearing.  The expanded name is stripped of
@@ -32,8 +32,22 @@ const FALLBACK_NAME: &str = "xcom.log";
 /// Longest expanded name we try to create.
 const MAX_NAME_CHARS: usize = 180;
 
-/// Expand a name pattern with the time in `now`.
-pub fn format_file_name(pattern: &str, now: DateTime<Local>) -> String {
+/// The bare port name used by `%H`: `/dev/ttyUSB0` becomes `ttyUSB0`,
+/// `COM2` stays `COM2`, and an empty selection becomes `noport`.
+pub fn port_name(port: &str) -> String {
+    let port = port.trim();
+    if port.is_empty() {
+        return "noport".to_owned();
+    }
+    Path::new(port)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(port)
+        .to_owned()
+}
+
+/// Expand a name pattern with the time in `now` and the selected `port`.
+pub fn format_file_name(pattern: &str, now: DateTime<Local>, port: &str) -> String {
     let mut out = String::with_capacity(pattern.len() + 16);
     let mut chars = pattern.chars();
     while let Some(ch) = chars.next() {
@@ -45,11 +59,12 @@ pub fn format_file_name(pattern: &str, now: DateTime<Local>) -> String {
             Some('Y') => out.push_str(&format!("{:04}", now.year())),
             Some('y') => out.push_str(&format!("{:02}", now.year().rem_euclid(100))),
             Some('M') => out.push_str(&format!("{:02}", now.month())),
-            Some('D' | 'd') => out.push_str(&format!("{:02}", now.day())),
-            Some('h' | 'H') => out.push_str(&format!("{:02}", now.hour())),
+            Some('D') => out.push_str(&format!("{:02}", now.day())),
+            Some('h') => out.push_str(&format!("{:02}", now.hour())),
             Some('m') => out.push_str(&format!("{:02}", now.minute())),
             Some('s' | 'S') => out.push_str(&format!("{:02}", now.second())),
             Some('f') => out.push_str(&format!("{:03}", now.timestamp_subsec_millis())),
+            Some('H') => out.push_str(&port_name(port)),
             Some('%') => out.push('%'),
             Some(other) => {
                 out.push('%');
@@ -80,8 +95,8 @@ pub fn sanitize_file_name(name: &str) -> String {
 }
 
 /// Expand and sanitize `pattern` into the file name to create.
-pub fn file_name_for(pattern: &str, now: DateTime<Local>) -> String {
-    sanitize_file_name(&format_file_name(pattern, now))
+pub fn file_name_for(pattern: &str, now: DateTime<Local>, port: &str) -> String {
+    sanitize_file_name(&format_file_name(pattern, now, port))
 }
 
 /// Directory a log goes to when the setting is left empty.
@@ -203,20 +218,23 @@ mod tests {
     fn expands_the_documented_tokens() {
         let now = at(2026, 10, 26, 14, 30, 5);
         assert_eq!(
-            format_file_name("xcom-%Y%M%D-%h%m%s.log", now),
+            format_file_name("xcom-%Y%M%D-%h%m%s.log", now, "/dev/ttyUSB0"),
             "xcom-20261026-143005.log"
         );
         assert_eq!(
-            format_file_name("%Y-%y-%M-%D_%d %h:%H %m %s:%S", now),
-            "2026-26-10-26_26 14:14 30 05:05"
+            format_file_name("%Y-%y-%M-%D_%h %m %s:%S", now, "COM2"),
+            "2026-26-10-26_14 30 05:05"
         );
-        assert_eq!(format_file_name("ms-%f", now), "ms-000");
+        assert_eq!(format_file_name("ms-%f", now, "COM2"), "ms-000");
     }
 
     #[test]
     fn escapes_percent_and_keeps_unknown_tokens() {
         let now = at(2026, 10, 26, 14, 30, 5);
-        assert_eq!(format_file_name("100%%-%q-%", now), "100%-%q-%");
+        assert_eq!(
+            format_file_name("100%%-%q-%d-%", now, "COM2"),
+            "100%-%q-%d-%"
+        );
     }
 
     #[test]
@@ -232,9 +250,22 @@ mod tests {
     }
 
     #[test]
+    fn the_port_token_uses_the_bare_device_name() {
+        let now = at(2026, 10, 26, 14, 30, 5);
+        assert_eq!(
+            format_file_name("%H-%Y%M%D", now, "/dev/ttyUSB0"),
+            "ttyUSB0-20261026"
+        );
+        assert_eq!(format_file_name("%H-%h", now, "COM2"), "COM2-14");
+        assert_eq!(format_file_name("%H", now, "  "), "noport");
+        // `%H` is no longer the hour, and `%d` is no longer a day alias.
+        assert_eq!(format_file_name("%H%d", now, "COM7"), "COM7%d");
+    }
+
+    #[test]
     fn a_pattern_never_escapes_its_directory() {
         let now = at(2026, 10, 26, 14, 30, 5);
-        let name = file_name_for("%Y/../../etc/passwd", now);
+        let name = file_name_for("%Y/../../etc/passwd", now, "COM2");
         assert!(!name.contains('/') && !name.contains('\\'), "{name}");
         assert_ne!(name, "..");
         assert_ne!(name, ".");

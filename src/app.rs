@@ -625,7 +625,11 @@ impl XcomApp {
     pub(crate) fn start_log_file(&mut self) {
         let settings = self.settings.log_file.clone();
         let directory = crate::logfile::resolve_directory(&settings.directory);
-        let name = crate::logfile::file_name_for(&settings.pattern, chrono::Local::now());
+        let name = crate::logfile::file_name_for(
+            &settings.pattern,
+            chrono::Local::now(),
+            &self.settings.serial.port,
+        );
         match self.log_file.start(&directory, &name) {
             Ok(path) => self.ok(crate::i18n::tr1("日志文件: {}", path.display())),
             Err(err) => self.error(crate::i18n::tr1("无法创建日志文件: {}", err)),

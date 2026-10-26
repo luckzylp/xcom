@@ -3977,12 +3977,15 @@ pub(crate) fn log_file_window(app: &mut XcomApp, ctx: &Context) {
                 app.settings.log_file.pattern = pattern;
                 app.mark_settings_dirty();
             }
-            let preview =
-                crate::logfile::file_name_for(&app.settings.log_file.pattern, chrono::Local::now());
+            let preview = crate::logfile::file_name_for(
+                &app.settings.log_file.pattern,
+                chrono::Local::now(),
+                &app.settings.serial.port,
+            );
             ui.small(crate::i18n::tr1("文件名示例: {}", preview));
             ui.add_space(4.0);
             ui.small(tr(
-                "格式符：%Y 年（4 位）、%y 年（2 位）、%M 月、%D/%d 日、%h/%H 时、%m 分、%s/%S 秒、%f 毫秒、%% 百分号。",
+                "格式符：%Y 年（4 位）、%y 年（2 位）、%M 月、%D 日、%h 时、%m 分、%s/%S 秒、%f 毫秒、%H 串口名称、%% 百分号。",
             ));
             ui.small(tr(
                 "文件名在启用时展开一次；同名文件会追加写入；修改目录或格式在下次启用时生效。",
