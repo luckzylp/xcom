@@ -56,9 +56,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Ctrl+Enter shortcut to send | ✅ | |
 | Clear sent (also resets Tx/Rx counters) | ✅ | |
 | Status bar: Tx/Rx byte counts, CTS/DSR/DCD, system time | ✅ | Also shows RI indicator |
-| Multi-send: fixed pool of 100 slots | ✅ | Page size follows the tool panel height and the page count is derived; entry numbers are global and continuous across pages; entries have note, enable, HEX, newline toggles |
-| Multi-send: first/prev/next/last page | ✅ | |
-| Multi-send: link to numeric keypad 0–9 | ✅ | |
+| Multi-send: on-demand list | ✅ | Add entries as needed (no fixed slot count) with the **Add entry** button, remove a row with **×**, and drag the `#` cell to reorder; entries have note, enable, HEX, newline toggles; the table scrolls when the list is longer than the panel |
 | Multi-send: auto loop send | ✅ | Sends only checked entries; supports **infinite loop** or **specified loop count**; a round is paced entirely by each entry's own delay, with no separate round gap |
 | Multi-send: send all checked entries at once | ✅ | "Send Checked" button, each sent once in order |
 | Multi-send: import/export entries | ✅ | JSON format, easy to edit and version-control |
@@ -84,7 +82,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.
 - **Adjustable receive area line spacing** (in the font settings window); auto-wrap width follows window resize and the selected font.
 - **Collapsible side panels**: drag the configuration panel's splitter all the way left (or the tool panel's all the way right) and it snaps shut, handing the width to the receive area. A hairline stays at the edge, with a chevron on hover to open it again; the "Configuration panel / Tool panel" items under **View** are the same state. The centre column keeps a 320px floor, so each panel's maximum is a *soft* one that only applies when the window can spare the room.
-- **The multi-send panel marks the entry being sent**: during "send checked" or looping, the entry in flight is highlighted with a leading colour bar, and the send status bar below the table shows `Sending #3 (3 / 7)` using the same global number as the table's `#` column (the run spans the whole pool, not just the current page, and the mark appears only on the page currently showing that entry). The mark clears when the run ends, is stopped, the port closes, or the app restarts. "Loop sending" is a run state rather than a saved preference, so it never survives into a state where it claims to be looping but isn't.
+- **The multi-send panel marks the entry being sent**: during "send checked" or looping, the entry in flight is highlighted with a leading colour bar, and the send status bar below the table shows `Sending #3 (3 / 7)` using the same number as the table's `#` column (the run spans the whole list). The mark clears when the run ends, is stopped, the port closes, or the app restarts. "Loop sending" is a run state rather than a saved preference, so it never survives into a state where it claims to be looping but isn't. Adding, deleting and reordering are disabled while a run is in flight.
 - Configuration file persistence; restores last serial and display options after restart.
 
 ---
@@ -221,7 +219,6 @@ The frame period **must be greater than the response frame-delimiting time**, ot
 | `Ctrl + Q` | Quit |
 | `Ctrl + C` | Copy selected content in receive area |
 | `Ctrl + A` | Select all in receive area |
-| `1`–`9`, `0` | Send corresponding entry when "link numeric keypad" is checked in multi-send panel |
 
 Right-click inside the receive area for Copy selection, Select all, Pause/Resume display, HEX display, Echo sent, Direction markers, Timestamps, Wrap long lines, Auto-scroll to newest, Keyword highlighting… and Clear receive.
 
@@ -322,8 +319,8 @@ Test coverage:
 - **Splitter drag**: simulating real pointer event sequences, asserting all three splitters can be dragged both ways, content changes accordingly, overflow is clamped, and sizes persist;
 - **Panel collapse**: driving the same real pointer sequences to assert a panel dragged off the window edge folds away while keeping the width to restore, that the edge strip reopens it by click and by drag, that the menu checkbox agrees, and that the centre column keeps its minimum width;
 - **Dialog title bars**: asserting both app-drawn dialogs put the close button where the desktop's `button-layout` says, plus parser unit tests (close on the left only when the left group names it; a value with no colon counts as unset and stays right);
-- **Entry pool and pagination**: asserting the fixed pool of 100 global slots, that the page size derives the page count and the current page is clamped, that sparse storage is padded back to the full pool on load, and that the legacy page format still imports;
-- **Multi-send marker**: asserting the mark lands on the right row, that the status line names the entry and its place in the round, that the mark appears only on the page showing the entry, and that ending the run or closing the port clears both the mark and the loop switch — including that `loop_enabled` and the page number are never written to, nor read back from, the config file;
+- **On-demand multi-send list**: adding and removing entries, drag-reorder arithmetic, clearing the legacy fixed pool on load, JSON round-trip, and importing the legacy page format;
+- **Multi-send marker**: asserting the mark lands on the right row, that the status line names the entry and its place in the round, and that ending the run or closing the port clears both the mark and the loop switch — including that `loop_enabled` is never written to, nor read back from, the config file;
 - **Real serial send/receive**: opening a port with PTY, driving timed send and asserting the peer receives repeated payloads, and that send echo indeed enters the receive area without polluting the receive stream;
 - **Config backward compatibility**: asserting that old configs missing new fields still load.
 
@@ -336,7 +333,7 @@ src/
   logstore.rs      Receive log: byte stream → display lines (incremental, bounded, re-renderable)
   encoding.rs      Encoding table, auto-detector, streaming decoder
   hex.rs           Lenient hex parsing and formatting
-  multi.rs         Multi-send entry pool, pagination and import/export
+  multi.rs         Multi-send entry list, reordering and import/export
   settings.rs      Config persistence
   theme.rs         Dark/light themes and receive area colors
   fonts.rs         CJK font discovery

@@ -1,52 +1,20 @@
-//! The multi-send panel: a flat pool of preset commands with optional notes.
+//! The multi-send panel: an on-demand list of preset commands with notes.
 //!
-//! The pool holds [`TOTAL_ENTRIES`] globally numbered slots.  The panel browses
-//! them a page at a time, where the page size follows the height the table has
-//! available, so the number of pages is derived rather than fixed.  Each entry
-//! may be sent with a newline and/or as hex, carry a delay applied after it,
-//! and be included when looping; the first ten of the current page can be bound
-//! to the numeric keypad.
+//! Entries are added by the user and can be removed or dragged into a new
+//! order; there is no fixed slot count.  Each entry carries its own options: it
+//! may be sent with a newline and/or as hex, carry a delay after it, and be
+//! included when looping.  "Send checked" and looping span the whole list, and
+//! the entries are numbered by their current position in it.
 
 use serde::{Deserialize, Serialize};
 
-/// Total number of slots in the send pool.
+/// Format version written by this build.
 ///
-/// Fixed: the settings file cannot change it, and the page count is derived by
-/// dividing it by whatever fits on a page.
-pub const TOTAL_ENTRIES: usize = 100;
-
-/// Page size assumed before the panel has measured itself.
-const DEFAULT_PAGE_SIZE: usize = 10;
-
-/// Sparse storage for the pool: trailing empty entries are not written.
-mod entries_serde {
-    use super::{MultiEntry, TOTAL_ENTRIES};
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(
-        entries: &[MultiEntry],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        let used = entries
-            .iter()
-            .rposition(|entry| *entry != MultiEntry::default())
-            .map_or(0, |index| index + 1);
-        entries[..used].serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<MultiEntry>, D::Error> {
-        let mut entries = Vec::<MultiEntry>::deserialize(deserializer)?;
-        entries.resize(TOTAL_ENTRIES, MultiEntry::default());
-        Ok(entries)
-    }
-}
-
-/// A fresh, empty pool.
-fn default_entries() -> Vec<MultiEntry> {
-    vec![MultiEntry::default(); TOTAL_ENTRIES]
-}
+/// The list used to be a fixed 100-slot pool.  Files without a version predate
+/// that change, so their entries are discarded on load: keeping 100 mostly
+/// empty slots would defeat the on-demand model, and the slot order meant
+/// nothing outside the old paging UI.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// One preset command.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,19 +46,10 @@ impl MultiEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MultiSend {
-    /// The pool, always [`TOTAL_ENTRIES`] long after [`MultiSend::normalize`].
-    #[serde(default = "default_entries", with = "entries_serde")]
+    /// Format marker; see [`FORMAT_VERSION`].
+    pub version: u32,
+    /// The entries, in display and send order.
     pub entries: Vec<MultiEntry>,
-    /// Currently displayed page.
-    ///
-    /// A view state, so it is not persisted: the page count follows the window
-    /// height, and a remembered page number would not mean the same thing next
-    /// time.
-    #[serde(skip)]
-    pub page: usize,
-    /// How many rows fit on a page.  The panel measures this every frame.
-    #[serde(skip)]
-    pub page_size: usize,
     /// Loop through all enabled entries.
     ///
     /// This is a *run* state, not a preference, so it is deliberately not
@@ -100,8 +59,6 @@ pub struct MultiSend {
     pub loop_enabled: bool,
     /// How many full passes the loop makes.  `None` means loop forever.
     pub loop_count: Option<u32>,
-    /// Bind the current page's first ten entries to the numeric keypad.
-    pub keypad_enabled: bool,
     /// Append CR/LF to entries that request it (CRLF by default).
     pub newline_cr: bool,
     pub newline_lf: bool,
@@ -110,12 +67,10 @@ pub struct MultiSend {
 impl Default for MultiSend {
     fn default() -> Self {
         Self {
-            entries: default_entries(),
-            page: 0,
-            page_size: DEFAULT_PAGE_SIZE,
+            version: FORMAT_VERSION,
+            entries: Vec::new(),
             loop_enabled: false,
             loop_count: None,
-            keypad_enabled: false,
             newline_cr: true,
             newline_lf: true,
         }
@@ -123,24 +78,59 @@ impl Default for MultiSend {
 }
 
 impl MultiSend {
-    /// Ensure the pool has the expected shape after loading old settings.
+    /// Repair a loaded document and apply the on-demand-list migration.
     pub fn normalize(&mut self) {
-        self.entries.resize(TOTAL_ENTRIES, MultiEntry::default());
+        if self.version < FORMAT_VERSION {
+            // Pre-on-demand files held a fixed pool of 100 slots; the blank
+            // ones are noise and the filled positions were only meaningful in
+            // the old paging UI. Start the new list empty as agreed.
+            self.entries.clear();
+            self.version = FORMAT_VERSION;
+        }
         for entry in &mut self.entries {
             entry.delay_ms = entry.delay_ms.min(3_600_000);
         }
         // Zero passes would look like a loop that silently does nothing.
         self.loop_count = self.loop_count.map(|n| n.clamp(1, 1_000_000));
-        self.page_size = self.page_size.max(1);
-        self.clamp_page();
     }
 
-    /// Borrow one entry by its global index.
+    /// Append a blank entry and return its index.
+    pub fn add_entry(&mut self) -> usize {
+        self.entries.push(MultiEntry::default());
+        self.entries.len() - 1
+    }
+
+    /// Remove the entry at `index`, if it exists.
+    pub fn remove_entry(&mut self, index: usize) -> Option<MultiEntry> {
+        (index < self.entries.len()).then(|| self.entries.remove(index))
+    }
+
+    /// Move `from` so it lands before the entry currently at `insertion`.
+    ///
+    /// `insertion` is an index into the list *before* the move, so dropping
+    /// below the last entry is `len`.  Moving an entry onto itself, or just
+    /// after itself, is a no-op.
+    pub fn move_entry(&mut self, from: usize, insertion: usize) {
+        if from >= self.entries.len() {
+            return;
+        }
+        let mut target = insertion.min(self.entries.len());
+        if target > from {
+            target -= 1;
+        }
+        if target == from || target >= self.entries.len() {
+            return;
+        }
+        let entry = self.entries.remove(from);
+        self.entries.insert(target, entry);
+    }
+
+    /// Borrow one entry by its current index.
     pub fn entry(&self, index: usize) -> Option<&MultiEntry> {
         self.entries.get(index)
     }
 
-    /// Mutably borrow one entry by its global index.
+    /// Mutably borrow one entry by its current index.
     pub fn entry_mut(&mut self, index: usize) -> Option<&mut MultiEntry> {
         self.entries.get_mut(index)
     }
@@ -148,44 +138,6 @@ impl MultiSend {
     /// The delay to apply after sending `index`.
     pub fn delay_after(&self, index: usize) -> u64 {
         self.entry(index).map_or(0, |entry| entry.delay_ms)
-    }
-
-    /// How many entries fit on one page.
-    pub fn page_size(&self) -> usize {
-        self.page_size.max(1)
-    }
-
-    /// The number of pages the pool spans at the current page size.
-    pub fn page_count(&self) -> usize {
-        TOTAL_ENTRIES.div_ceil(self.page_size())
-    }
-
-    /// The global indices shown on the current page.
-    pub fn page_range(&self) -> std::ops::Range<usize> {
-        let start = self.page * self.page_size();
-        let end = (start + self.page_size()).min(TOTAL_ENTRIES);
-        start..end
-    }
-
-    /// Keep the current page inside the range the window now allows.
-    pub fn clamp_page(&mut self) {
-        self.page = self.page.min(self.page_count() - 1);
-    }
-
-    pub fn first_page(&mut self) {
-        self.page = 0;
-    }
-
-    pub fn previous_page(&mut self) {
-        self.page = self.page.saturating_sub(1);
-    }
-
-    pub fn next_page(&mut self) {
-        self.page = (self.page + 1).min(self.page_count() - 1);
-    }
-
-    pub fn last_page(&mut self) {
-        self.page = self.page_count() - 1;
     }
 
     /// The newline suffix for multi-send entries, in byte form.
@@ -216,10 +168,9 @@ impl MultiSend {
         Ok(bytes)
     }
 
-    /// Global indices of the checked, non-empty entries, in order.
+    /// Indices of the checked, non-empty entries, in list order.
     ///
-    /// Drives both the loop and the one-shot "send checked" action, and spans
-    /// the whole pool rather than the current page.
+    /// Drives both the loop and the one-shot "send checked" action.
     pub fn enabled_indices(&self) -> Vec<usize> {
         self.entries
             .iter()
@@ -229,21 +180,16 @@ impl MultiSend {
             .collect()
     }
 
-    /// Serialise the pool to a portable JSON document.
+    /// Serialise the list to a portable JSON document.
     pub fn export_json(&self) -> Result<String, String> {
         #[derive(Serialize)]
         struct Doc<'a> {
             version: u32,
             entries: &'a [MultiEntry],
         }
-        let used = self
-            .entries
-            .iter()
-            .rposition(|entry| *entry != MultiEntry::default())
-            .map_or(0, |index| index + 1);
         serde_json::to_string_pretty(&Doc {
-            version: 2,
-            entries: &self.entries[..used],
+            version: FORMAT_VERSION,
+            entries: &self.entries,
         })
         .map_err(|e| e.to_string())
     }
@@ -262,7 +208,7 @@ impl MultiSend {
         }
         let doc: Doc =
             serde_json::from_str(text).map_err(|e| crate::i18n::tr1("解析失败: {}", e))?;
-        let imported = if doc.entries.is_empty() {
+        let imported: Vec<MultiEntry> = if doc.entries.is_empty() {
             doc.pages.into_iter().flatten().collect()
         } else {
             doc.entries
@@ -272,8 +218,8 @@ impl MultiSend {
         }
         let count = imported.iter().filter(|entry| entry.is_sendable()).count();
         self.entries = imported;
+        self.version = FORMAT_VERSION;
         self.normalize();
-        self.page = 0;
         Ok(count)
     }
 }
@@ -282,57 +228,96 @@ impl MultiSend {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_pool_holds_the_fixed_slot_count() {
-        let m = MultiSend::default();
-        assert_eq!(m.entries.len(), TOTAL_ENTRIES);
-    }
-
-    #[test]
-    fn paging_clamps_at_both_ends() {
-        let mut m = MultiSend {
-            page_size: 10,
+    fn entry(text: &str) -> MultiEntry {
+        MultiEntry {
+            text: text.to_owned(),
             ..Default::default()
-        };
-        m.previous_page();
-        assert_eq!(m.page, 0);
-        m.first_page();
-        assert_eq!(m.page, 0);
-        for _ in 0..50 {
-            m.next_page();
         }
-        assert_eq!(m.page, m.page_count() - 1);
-        m.last_page();
-        assert_eq!(m.page, m.page_count() - 1);
     }
 
     #[test]
-    fn page_count_divides_the_pool_rounding_up() {
-        let m = MultiSend {
-            page_size: 25,
-            ..Default::default()
-        };
-        assert_eq!(m.page_count(), 4, "100 / 25");
-        let m = MultiSend {
-            page_size: 30,
-            ..Default::default()
-        };
-        assert_eq!(m.page_count(), 4, "the last page is partial");
-        let m = MultiSend {
-            page_size: 200,
-            ..Default::default()
-        };
-        assert_eq!(m.page_count(), 1);
+    fn a_new_list_starts_empty_and_current() {
+        let m = MultiSend::default();
+        assert!(m.entries.is_empty());
+        assert_eq!(m.version, FORMAT_VERSION);
     }
 
     #[test]
-    fn the_page_range_stays_inside_the_pool() {
-        let m = MultiSend {
-            page: 3,
-            page_size: 30,
+    fn adding_and_removing_entries_renumbers_them() {
+        let mut m = MultiSend {
+            entries: vec![entry("a"), entry("b"), entry("c")],
             ..Default::default()
         };
-        assert_eq!(m.page_range(), 90..100);
+        let added = m.add_entry();
+        assert_eq!(added, 3);
+        assert_eq!(m.entries.len(), 4);
+
+        assert_eq!(m.remove_entry(1).map(|e| e.text), Some("b".to_owned()));
+        assert_eq!(m.entries.len(), 3);
+        assert_eq!(m.entries[1].text, "c");
+        assert!(m.remove_entry(99).is_none());
+    }
+
+    #[test]
+    fn reordering_moves_entries_to_the_insertion_point() {
+        let mut m = MultiSend {
+            entries: vec![entry("a"), entry("b"), entry("c"), entry("d")],
+            ..Default::default()
+        };
+
+        // Drop "a" between "c" and "d".
+        m.move_entry(0, 3);
+        assert_eq!(
+            m.entries
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c", "a", "d"]
+        );
+
+        // Drop "d" at the very top.
+        m.move_entry(3, 0);
+        assert_eq!(
+            m.entries
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["d", "b", "c", "a"]
+        );
+
+        // Dropping an entry onto itself, or just after itself, changes nothing.
+        m.move_entry(1, 1);
+        m.move_entry(1, 2);
+        assert_eq!(
+            m.entries
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["d", "b", "c", "a"]
+        );
+    }
+
+    #[test]
+    fn legacy_settings_are_cleared() {
+        let mut m = MultiSend {
+            version: 0,
+            entries: vec![entry("old"), entry("older")],
+            ..Default::default()
+        };
+        m.normalize();
+        assert!(m.entries.is_empty(), "the old fixed pool must be discarded");
+        assert_eq!(m.version, FORMAT_VERSION);
+    }
+
+    #[test]
+    fn current_settings_keep_their_entries() {
+        let mut m = MultiSend {
+            version: FORMAT_VERSION,
+            entries: vec![entry("a")],
+            ..Default::default()
+        };
+        m.normalize();
+        assert_eq!(m.entries, vec![entry("a")]);
     }
 
     #[test]
@@ -370,56 +355,47 @@ mod tests {
     }
 
     #[test]
-    fn enabled_indices_span_the_whole_pool() {
-        let mut m = MultiSend::default();
-        for (index, (text, enabled)) in [("a", true), ("b", false), ("", true), ("c", true)]
-            .into_iter()
-            .enumerate()
-        {
-            let entry = m.entry_mut(index).expect("entry exists");
-            entry.text = text.to_owned();
-            entry.enabled = enabled;
-        }
-        // And one far away, to prove the pool is not page-limited.
-        let far = m.entry_mut(TOTAL_ENTRIES - 1).expect("entry exists");
-        far.text = "z".to_owned();
-        far.enabled = true;
-        assert_eq!(m.enabled_indices(), vec![0, 3, TOTAL_ENTRIES - 1]);
+    fn enabled_indices_span_the_whole_list() {
+        let mut m = MultiSend {
+            entries: vec![entry("a"), entry("b"), entry(""), entry("c")],
+            ..Default::default()
+        };
+        m.entries[0].enabled = true;
+        m.entries[1].enabled = false;
+        m.entries[2].enabled = true;
+        m.entries[3].enabled = true;
+        assert_eq!(m.enabled_indices(), vec![0, 3]);
     }
 
     #[test]
     fn json_round_trip_preserves_entries() {
-        let mut m = MultiSend::default();
-        *m.entry_mut(3).expect("entry exists") = MultiEntry {
-            text: "0A0B".to_owned(),
-            hex: true,
-            newline: true,
-            note: "备注".to_owned(),
-            delay_ms: 0,
-            enabled: true,
+        let mut m = MultiSend {
+            entries: vec![entry("one"), entry("two")],
+            ..Default::default()
         };
+        m.entries[1].hex = true;
+        m.entries[1].note = "备注".to_owned();
+        m.entries[1].enabled = true;
         let json = m.export_json().unwrap();
         let mut loaded = MultiSend::default();
         let count = loaded.import_json(&json).unwrap();
-        assert_eq!(count, 1, "only the one non-empty entry is counted");
-        assert_eq!(loaded.entries[3], m.entries[3]);
+        assert_eq!(count, 2);
+        assert_eq!(loaded.entries, m.entries);
     }
 
     #[test]
-    fn storage_is_sparse_and_padded_back_on_load() {
-        let mut m = MultiSend::default();
-        m.entry_mut(3).expect("entry").text = "A".to_owned();
+    fn storage_writes_only_existing_entries() {
+        // An empty list stays empty instead of writing a hundred blank slots.
+        let empty = serde_json::to_string(&MultiSend::default()).unwrap();
+        assert!(empty.contains("\"entries\":[]"), "{empty}");
+
+        let m = MultiSend {
+            entries: vec![entry("a"), entry("b")],
+            ..Default::default()
+        };
         let json = serde_json::to_string(&m).unwrap();
         let back: MultiSend = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.entries.len(), TOTAL_ENTRIES, "padded back to full");
-        assert_eq!(back.entries[3].text, "A");
-
-        // A default pool writes no trailing empties at all.
-        let empty = serde_json::to_string(&MultiSend::default()).unwrap();
-        assert!(
-            empty.contains("\"entries\":[]"),
-            "an empty pool must not write a hundred blank entries: {empty}"
-        );
+        assert_eq!(back.entries, m.entries);
     }
 
     /// Run states are not written and cannot be resurrected from an old file.
@@ -427,18 +403,13 @@ mod tests {
     fn run_states_are_not_persisted() {
         let m = MultiSend {
             loop_enabled: true,
-            page: 4,
             ..Default::default()
         };
         let json = serde_json::to_string(&m).unwrap();
-        assert!(
-            !json.contains("loop_enabled") && !json.contains("\"page\""),
-            "run/view states must not be written: {json}"
-        );
+        assert!(!json.contains("loop_enabled"), "{json}");
 
         let back: MultiSend = serde_json::from_str(&json).unwrap();
         assert!(!back.loop_enabled);
-        assert_eq!(back.page, 0);
 
         // A file written by an older build still carries the field; it must not
         // resurrect a stale tick either.
@@ -453,10 +424,10 @@ mod tests {
         let mut m = MultiSend::default();
         let count = m.import_json(json).unwrap();
         assert_eq!(count, 3);
+        assert_eq!(m.entries.len(), 3);
         assert_eq!(m.entries[0].text, "a");
         assert_eq!(m.entries[1].text, "b");
         assert_eq!(m.entries[2].text, "c");
-        assert_eq!(m.entries.len(), TOTAL_ENTRIES);
     }
 
     #[test]
@@ -467,29 +438,12 @@ mod tests {
     }
 
     #[test]
-    fn normalize_repairs_a_short_or_oversized_pool() {
-        let mut m = MultiSend {
-            entries: vec![MultiEntry::default(); 2],
-            page: 99,
-            page_size: 0,
-            ..Default::default()
-        };
-        m.normalize();
-        assert_eq!(m.entries.len(), TOTAL_ENTRIES);
-        assert_eq!(m.page_size(), 1);
-        assert_eq!(m.page, TOTAL_ENTRIES - 1);
-
-        m.entries = vec![MultiEntry::default(); TOTAL_ENTRIES + 50];
-        m.normalize();
-        assert_eq!(m.entries.len(), TOTAL_ENTRIES);
-    }
-
-    #[test]
     fn per_entry_delay_defaults_to_zero_and_is_reported() {
         let mut m = MultiSend::default();
         assert_eq!(m.delay_after(0), 0);
-        m.entry_mut(3).expect("entry").delay_ms = 250;
-        assert_eq!(m.delay_after(3), 250);
+        m.entries = vec![entry("a")];
+        m.entries[0].delay_ms = 250;
+        assert_eq!(m.delay_after(0), 250);
     }
 
     #[test]

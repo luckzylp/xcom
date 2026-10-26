@@ -58,6 +58,13 @@ pub(crate) mod probe {
             const { RefCell::new(Vec::new()) };
         static MULTI_HEADER_RECTS: RefCell<Vec<egui::Rect>> = const { RefCell::new(Vec::new()) };
         static MULTI_ACTIVE_ROW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static MULTI_ADD_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static MULTI_DELETE_RECTS: RefCell<Vec<(usize, egui::Rect)>> =
+            const { RefCell::new(Vec::new()) };
+        static MULTI_HANDLE_RECTS: RefCell<Vec<(usize, egui::Rect)>> =
+            const { RefCell::new(Vec::new()) };
+        static MULTI_ROW_RECTS: RefCell<Vec<(usize, egui::Rect)>> =
+            const { RefCell::new(Vec::new()) };
         static MULTI_STATUS_TEXT: RefCell<String> = const { RefCell::new(String::new()) };
         /// Where the table's scroll area actually ended up, and how tall its
         /// content is.  A bigger content height means the user must scroll.
@@ -438,6 +445,10 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn begin_multi_panel() {
         MULTI_ACTIVE_ROW_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
+        MULTI_ADD_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
+        MULTI_DELETE_RECTS.with(|rects| rects.borrow_mut().clear());
+        MULTI_HANDLE_RECTS.with(|rects| rects.borrow_mut().clear());
+        MULTI_ROW_RECTS.with(|rects| rects.borrow_mut().clear());
         MULTI_STATUS_TEXT.with(|text| text.borrow_mut().clear());
         MULTI_TABLE_VIEWPORT.with(|rect| rect.set(egui::Rect::NOTHING));
         MULTI_TABLE_CONTENT.with(|size| size.set(egui::Vec2::ZERO));
@@ -474,6 +485,58 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn multi_active_row_rect() -> egui::Rect {
         MULTI_ACTIVE_ROW_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_multi_add_rect(rect: egui::Rect) {
+        MULTI_ADD_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_multi_add_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn multi_add_rect() -> egui::Rect {
+        MULTI_ADD_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_multi_delete_rect(index: usize, rect: egui::Rect) {
+        MULTI_DELETE_RECTS.with(|rects| rects.borrow_mut().push((index, rect)));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_multi_delete_rect<R>(_index: usize, _rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn multi_delete_rects() -> Vec<(usize, egui::Rect)> {
+        MULTI_DELETE_RECTS.with(|rects| rects.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_multi_handle_rect(index: usize, rect: egui::Rect) {
+        MULTI_HANDLE_RECTS.with(|rects| rects.borrow_mut().push((index, rect)));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_multi_handle_rect<R>(_index: usize, _rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn multi_handle_rects() -> Vec<(usize, egui::Rect)> {
+        MULTI_HANDLE_RECTS.with(|rects| rects.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_multi_row_rect(index: usize, rect: egui::Rect) {
+        MULTI_ROW_RECTS.with(|rects| rects.borrow_mut().push((index, rect)));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_multi_row_rect<R>(_index: usize, _rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn multi_row_rects() -> Vec<(usize, egui::Rect)> {
+        MULTI_ROW_RECTS.with(|rects| rects.borrow().clone())
     }
 
     #[cfg(test)]
@@ -2974,20 +3037,21 @@ fn status_row<R>(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R 
     add(&mut row)
 }
 
-/// How wide the six columns that do not grow would like to be, and how narrow
-/// the widget inside each may get.
+/// How wide the seven columns that do not grow would like to be, and how
+/// narrow the widget inside each may get.
 ///
 /// The floors are not taste: egui refuses to lay a text field out narrower than
 /// 24 points, and a delay field with its unit needs room of its own.  A column
 /// also has to hold its header, which is text and is measured — see
 /// [`multi_column_widths`].
-const MULTI_FIXED_COLUMNS: [(f32, f32); 6] = [
+const MULTI_FIXED_COLUMNS: [(f32, f32); 7] = [
     (30.0, 16.0), // 启用
     (24.0, 18.0), // #
     (30.0, 16.0), // HEX
     (32.0, 16.0), // 新行
     (58.0, 42.0), // 延迟
     (52.0, 38.0), // 发送
+    (24.0, 20.0), // 删除
 ];
 
 /// The narrowest a text column may get, header text aside.
@@ -3009,11 +3073,11 @@ const MULTI_COLUMN_END_GUTTER: f32 = 1.0;
 /// The columns of the multi-send table, in one place.
 ///
 /// The order a row lays them out is 启用, `#`, 内容, 备注, HEX, 新行, 延迟, 发送,
-/// and the fixed columns are at `0, 1, 4, 5, 6, 7` of it.
-const MULTI_FIXED_AT: [usize; 6] = [0, 1, 4, 5, 6, 7];
+/// 删除, and the fixed columns are at `0, 1, 4, 5, 6, 7, 8` of it.
+const MULTI_FIXED_AT: [usize; 7] = [0, 1, 4, 5, 6, 7, 8];
 
 /// The header text above each column, in row order.
-const MULTI_HEADERS: [&str; 8] = ["启用", "#", "内容", "备注", "HEX", "新行", "延迟", ""];
+const MULTI_HEADERS: [&str; 9] = ["启用", "#", "内容", "备注", "HEX", "新行", "延迟", "", ""];
 
 /// What each header measures at the interface font in use, in row order.
 ///
@@ -3021,12 +3085,12 @@ const MULTI_HEADERS: [&str; 8] = ["启用", "#", "内容", "备注", "HEX", "新
 /// clipped, and what a header measures depends on the interface font and on the
 /// language — “Content” is twice the width of 内容 — so it cannot be a
 /// constant.
-fn multi_header_widths(ctx: &egui::Context, ui_size: f32) -> [f32; 8] {
+fn multi_header_widths(ctx: &egui::Context, ui_size: f32) -> [f32; 9] {
     multi_header_widths_in(ctx, ui_size, i18n::lang())
 }
 
 /// What each header measures in one explicit language.
-fn multi_header_widths_in(ctx: &egui::Context, ui_size: f32, language: Lang) -> [f32; 8] {
+fn multi_header_widths_in(ctx: &egui::Context, ui_size: f32, language: Lang) -> [f32; 9] {
     let font = egui::FontId::proportional(ui_size);
     MULTI_HEADERS.map(|header| {
         ctx.fonts_mut(|fonts| {
@@ -3043,11 +3107,11 @@ fn multi_header_widths_in(ctx: &egui::Context, ui_size: f32, language: Lang) -> 
 }
 
 /// The narrowest each column may be: the widget inside it and the header above.
-fn multi_column_floors(headers: [f32; 8]) -> [f32; 8] {
+fn multi_column_floors(headers: [f32; 9]) -> [f32; 9] {
     // A header sits flush in its cell, so it needs a point of its own on top of
     // its text: the cell is as wide as the label and would otherwise round over.
     let header_room = |index: usize| headers[index].ceil() + 1.0;
-    let mut floor = [0.0_f32; 8];
+    let mut floor = [0.0_f32; 9];
     for (slot, index) in MULTI_FIXED_AT.into_iter().enumerate() {
         floor[index] = MULTI_FIXED_COLUMNS[slot].1.max(header_room(index));
     }
@@ -3058,10 +3122,10 @@ fn multi_column_floors(headers: [f32; 8]) -> [f32; 8] {
 }
 
 /// The narrowest the multi-send table's row can be made.
-fn multi_row_floor(headers: [f32; 8]) -> f32 {
+fn multi_row_floor(headers: [f32; 9]) -> f32 {
     let floor = multi_column_floors(headers);
     let fixed: f32 = MULTI_FIXED_AT.iter().map(|index| floor[*index]).sum();
-    fixed + floor[2].max(floor[3]) * 2.0 + MULTI_COLUMN_GAP * 7.0 + MULTI_COLUMN_END_GUTTER
+    fixed + floor[2].max(floor[3]) * 2.0 + MULTI_COLUMN_GAP * 8.0 + MULTI_COLUMN_END_GUTTER
 }
 
 /// The narrowest the tool panel can be and still show the whole multi-send
@@ -3086,7 +3150,7 @@ pub(crate) fn multi_table_min_width(ui: &Ui, ui_size: f32) -> f32 {
     let headers = Lang::ALL
         .into_iter()
         .map(|language| multi_header_widths_in(ui.ctx(), ui_size, language))
-        .fold([0.0_f32; 8], |widest, widths| {
+        .fold([0.0_f32; 9], |widest, widths| {
             std::array::from_fn(|index| widest[index].max(widths[index]))
         });
     multi_row_floor(headers) + insets
@@ -3095,10 +3159,10 @@ pub(crate) fn multi_table_min_width(ui: &Ui, ui_size: f32) -> f32 {
 /// Widths for the multi-send table's columns, in the order a row lays them out:
 /// 启用, `#`, 内容, 备注, HEX, 新行, 延迟, 发送.
 ///
-/// The eight columns and the seven gaps between them must add up to the table's
+/// The nine columns and the eight gaps between them must add up to the table's
 /// width and no more: one point over and the table grows a horizontal scroll
 /// bar, which puts the send buttons and the delay fields out of reach.  So the
-/// two text columns take what the six fixed ones leave, 62/38 and never below
+/// two text columns take what the seven fixed ones leave, 62/38 and never below
 /// [`MULTI_TEXT_MIN`]; when that is not enough for two usable text fields the
 /// fixed columns give up room in proportion to what each can spare.
 ///
@@ -3110,8 +3174,8 @@ pub(crate) fn multi_table_min_width(ui: &Ui, ui_size: f32) -> f32 {
 /// The flag is `true` when even the floors are too wide, so the panel is
 /// narrower than the table can ever be and a horizontal scroll bar is the
 /// honest answer.
-fn multi_column_widths(viewport: f32, gap: f32, headers: [f32; 8]) -> ([f32; 8], bool) {
-    let gaps = gap * 7.0;
+fn multi_column_widths(viewport: f32, gap: f32, headers: [f32; 9]) -> ([f32; 9], bool) {
+    let gaps = gap * 8.0;
     let floor = multi_column_floors(headers);
     let mut ideal = floor;
     for (slot, index) in MULTI_FIXED_AT.into_iter().enumerate() {
@@ -3159,47 +3223,24 @@ fn multi_column_widths(viewport: f32, gap: f32, headers: [f32; 8]) -> ([f32; 8],
     (widths, overflows)
 }
 
-/// Number of entries the table *looks* like it can hold from its allotted
-/// height, before egui has laid it out. Used only as the seed on the first
-/// frame (or right after a resize); the real count is then read back from the
-/// `ScrollArea` viewport and corrects this in one frame (see `multi_panel`).
-/// The table has one header row, then `count` entry rows, with `row_gap`
-/// between each pair of rows. Shared by production code and tests.
-fn multi_page_size(table_height: f32, row_height: f32, row_gap: f32) -> usize {
-    if !table_height.is_finite() || !row_height.is_finite() || !row_gap.is_finite() {
-        return 1;
-    }
-    let row_height = row_height.max(1.0);
-    let pitch = row_height + row_gap.max(0.0);
-    (((table_height.max(row_height) - row_height) / pitch).floor() as usize).max(1)
-}
-
 fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     probe::begin_multi_panel();
-
-    // ---- paging -----------------------------------------------------------
-    ui.horizontal_wrapped(|ui| {
-        if ui.button(tr("首页")).clicked() {
-            app.settings.multi.first_page();
-        }
-        if ui.button(tr("上一页")).clicked() {
-            app.settings.multi.previous_page();
-        }
-        ui.label(crate::i18n::tr2(
-            "第 {} / {} 页",
-            app.settings.multi.page + 1,
-            app.settings.multi.page_count(),
-        ));
-        if ui.button(tr("下一页")).clicked() {
-            app.settings.multi.next_page();
-        }
-        if ui.button(tr("尾页")).clicked() {
-            app.settings.multi.last_page();
-        }
-    });
+    let running = app.multi_run_active();
+    let scroll_to_last_id = egui::Id::new("xcom_multi_scroll_to_last");
 
     ui.horizontal_wrapped(|ui| {
-        if ui.button(tr("导入条目")).clicked()
+        let add = ui
+            .add_enabled(!running, egui::Button::new(tr("添加条目")))
+            .on_hover_text(tr("在列表末尾添加一条空条目"));
+        probe::set_multi_add_rect(add.rect);
+        if add.clicked() {
+            app.settings.multi.add_entry();
+            app.mark_settings_dirty();
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(scroll_to_last_id, true));
+        }
+        let import = ui.add_enabled(!running, egui::Button::new(tr("导入条目")));
+        if import.clicked()
             && let Some(path) = pick_open_file(tr("导入发送条目"))
         {
             match std::fs::read_to_string(&path) {
@@ -3228,10 +3269,10 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                 Err(err) => app.error(err),
             }
         }
-        let can_send = app.link.is_open() && !app.multi_run_active();
+        let can_send = app.link.is_open() && !running;
         if ui
             .add_enabled(can_send, egui::Button::new(tr("发送已勾选")))
-            .on_hover_text(tr("按顺序发送整个发送池里所有已勾选且非空的条目"))
+            .on_hover_text(tr("按顺序发送整个列表里所有已勾选且非空的条目"))
             .clicked()
         {
             app.start_multi_run(false, std::time::Instant::now());
@@ -3291,14 +3332,6 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     });
 
     ui.horizontal_wrapped(|ui| {
-        let mut keypad = app.settings.multi.keypad_enabled;
-        if ui
-            .checkbox(&mut keypad, tr("关联数字键盘 (1-9,0)"))
-            .changed()
-        {
-            app.settings.multi.keypad_enabled = keypad;
-            app.mark_settings_dirty();
-        }
         let mut cr = app.settings.multi.newline_cr;
         let mut lf = app.settings.multi.newline_lf;
         let a = ui.checkbox(&mut cr, tr("新行 CR")).changed();
@@ -3313,6 +3346,9 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     ui.separator();
 
     // ---- entries ----------------------------------------------------------
+    // Re-read the run state: the loop checkbox above may just have started one,
+    // and structural edits must be off from that frame onward.
+    let running = app.multi_run_active();
     let active_colours = theme::active_entry_colors(ui.ctx(), app.settings.theme);
     let mut send_request: Option<usize> = None;
     let mut dirty = false;
@@ -3331,7 +3367,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         }) + 4.0,
     );
 
-    // The whole row -- eight columns and the seven gaps between them -- has to
+    // The whole row -- nine columns and the eight gaps between them -- has to
     // fit the table.  A row one point wider grows a horizontal scroll bar,
     // which takes the send buttons out of reach and eats into the bottom of the
     // table, hiding the very entry the bar was scrolled to show.
@@ -3348,201 +3384,238 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         newline_w,
         delay_w,
         send_w,
+        delete_w,
     ] = columns;
 
     // The send status bar is pinned under the table: a rule and one line
     // carrying the loop state, the loop count and the entry in flight.  Its
-    // height is fixed, so the table's height -- and the page boundary with it
-    // -- does not move when a run starts or stops; text that does not fit is
-    // truncated rather than allowed to wrap into a second line.
+    // height is fixed, so the table's height does not move when a run starts or
+    // stops; text that does not fit is truncated rather than allowed to wrap
+    // into a second line.
     let bar_height = row_height + ROW_GAP;
     let status_height = bar_height + ui.spacing().item_spacing.y;
 
-    // The pool is a fixed 100-slot list, so a page is a window onto it.
-    // `table_height` is only the upper bound passed to ScrollArea. It is NOT
-    // necessarily the final visible viewport height: egui can further constrain
-    // the scroll area to the panel's actual clip rect and scrollbar geometry.
-    // Therefore the page size is calibrated from `ScrollAreaOutput.inner_rect`
-    // below, rather than trusting this pre-layout estimate.
     let mut table_height = (ui.available_height() - status_height).max(row_height);
     if columns_overflow {
         // Reserve the horizontal scrollbar's thickness when it is non-floating.
         table_height = (table_height - ui.spacing().scroll.allocated_width()).max(row_height);
     }
 
-    let page_size_id = egui::Id::new("xcom_multi_page_size");
-    // Last frame's page size, measured from the real `ScrollArea` viewport.
-    // The panel re-measures every frame and writes the corrected value back, so
-    // the count tracks the available height both ways — it grows when there is
-    // room for more rows and shrinks when the window or splitter is pulled in.
-    let cached_page_size = ui.ctx().data(|data| data.get_temp::<usize>(page_size_id));
-    let page_size =
-        cached_page_size.unwrap_or_else(|| multi_page_size(table_height, row_height, ROW_GAP));
-    app.settings.multi.page_size = page_size;
-    app.settings.multi.clamp_page();
-    let page = app.settings.multi.page;
-    let range = app.settings.multi.page_range();
+    let entries_len = app.settings.multi.entries.len();
+    let active_index = app.multi_run_sent().map(|sent| sent.index);
+    let scroll_to_last = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(scroll_to_last_id).unwrap_or(false));
+    let mut remove: Option<usize> = None;
+    let mut reorder: Option<(usize, usize)> = None;
 
-    // A run spans the whole pool, so its marker belongs on whichever page the
-    // entry is currently shown on — and nowhere else, which is why the index
-    // must fall inside the visible range.
-    let active_index = app
-        .multi_run_sent()
-        .map(|sent| sent.index)
-        .filter(|index| range.contains(index));
+    let table = egui::ScrollArea::both()
+        .auto_shrink([false, false])
+        .max_height(table_height)
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(MULTI_COLUMN_GAP, ROW_GAP);
+            probe::begin_multi_headers();
 
-    let table =
-        egui::ScrollArea::both()
-            .auto_shrink([false, false])
-            .max_height(table_height)
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(MULTI_COLUMN_GAP, ROW_GAP);
-                probe::begin_multi_headers();
-
-                ui.horizontal(|ui| {
-                    for (width, header) in columns.into_iter().zip(MULTI_HEADERS) {
-                        let header = ui.add_sized(
-                            [width, row_height],
-                            egui::Label::new(RichText::new(tr(header)).strong()),
-                        );
-                        probe::push_multi_header_rect(header.rect);
-                    }
-                });
-
-                for index in range.clone() {
-                    let Some(entry) = app.settings.multi.entry_mut(index) else {
-                        continue;
-                    };
-                    let active = active_index == Some(index);
-                    let stripe = index % 2 == 1;
-                    let mut row_rect = egui::Rect::NOTHING;
-                    ui.horizontal(|ui| {
-                        let row = egui::Rect::from_min_size(
-                            ui.cursor().min,
-                            egui::vec2(ui.available_width(), row_height),
-                        );
-                        row_rect = row;
-                        if stripe {
-                            ui.painter().rect_filled(
-                                row,
-                                egui::CornerRadius::ZERO,
-                                ui.visuals().faint_bg_color,
-                            );
-                        }
-                        if active {
-                            // Painted over the zebra stripe, so the marker reads the
-                            // same on both: a wash for the row, and a solid bar on
-                            // its leading edge.
-                            ui.painter().rect_filled(
-                                row,
-                                egui::CornerRadius::ZERO,
-                                active_colours.wash,
-                            );
-                            ui.painter().rect_filled(
-                                egui::Rect::from_min_max(
-                                    row.min,
-                                    egui::pos2(row.min.x + 3.0, row.max.y),
-                                ),
-                                egui::CornerRadius::ZERO,
-                                active_colours.bar,
-                            );
-                        }
-                        let mut row_changed = false;
-                        row_changed |= ui
-                            .add_sized(
-                                [enable_w, row_height],
-                                egui::Checkbox::new(&mut entry.enabled, ""),
-                            )
-                            .changed();
-                        ui.add_sized([index_w, row_height], egui::Label::new(format!("{index}")));
-                        row_changed |= ui
-                            .add_sized(
-                                [text_width, row_height],
-                                egui::TextEdit::singleline(&mut entry.text)
-                                    .hint_text(if entry.hex { "01 02 0A" } else { tr("指令") }),
-                            )
-                            .changed();
-                        row_changed |= ui
-                            .add_sized(
-                                [note_width, row_height],
-                                egui::TextEdit::singleline(&mut entry.note).hint_text(tr("备注")),
-                            )
-                            .changed();
-                        row_changed |= ui
-                            .add_sized([hex_w, row_height], egui::Checkbox::new(&mut entry.hex, ""))
-                            .changed();
-                        row_changed |= ui
-                            .add_sized(
-                                [newline_w, row_height],
-                                egui::Checkbox::new(&mut entry.newline, ""),
-                            )
-                            .changed();
-                        let mut delay = entry.delay_ms;
-                        if ui
-                            .add_sized(
-                                [delay_w, row_height],
-                                egui::DragValue::new(&mut delay)
-                                    .speed(5.0)
-                                    .range(0..=3_600_000)
-                                    .suffix(" ms"),
-                            )
-                            .changed()
-                        {
-                            entry.delay_ms = delay;
-                            dirty = true;
-                        }
-                        if ui
-                            .add_sized([send_w, row_height], egui::Button::new(tr("发送")))
-                            .clicked()
-                        {
-                            send_request = Some(index);
-                        }
-                        if row_changed {
-                            dirty = true;
-                        }
-                    });
-                    if active {
-                        probe::set_multi_active_row_rect(row_rect);
-                    }
-                    probe::set_multi_last_row_rect(row_rect);
+            ui.horizontal(|ui| {
+                for (width, header) in columns.into_iter().zip(MULTI_HEADERS) {
+                    let header = ui.add_sized(
+                        [width, row_height],
+                        egui::Label::new(RichText::new(tr(header)).strong()),
+                    );
+                    probe::push_multi_header_rect(header.rect);
                 }
             });
 
-    // `inner_rect` is the real viewport after egui has applied clipping and
-    // scrollbar layout, and `content_size` is what the rows actually took up.
-    // Together they let the page size track the available height exactly,
-    // without a hardcoded cap or a platform-specific "maximized" flag: if the
-    // rows overflowed the viewport, drop as many as spilled; if room for more
-    // remains, claim every whole row that fits. Both directions converge in a
-    // single frame, so the page neither scrolls unnecessarily nor wastes a row.
-    let pitch = row_height + ROW_GAP;
-    let viewport_h = table.inner_rect.height();
-    let content_h = table.content_size.y;
-    let next_page_size = if content_h > viewport_h + 0.5 {
-        let spilled = ((content_h - viewport_h) / pitch).ceil() as usize;
-        page_size.saturating_sub(spilled.max(1)).max(1)
-    } else {
-        let room = (viewport_h - content_h).max(0.0);
-        page_size + ((room / pitch).floor() as usize)
-    };
-    ui.ctx()
-        .data_mut(|data| data.insert_temp(page_size_id, next_page_size));
-    if next_page_size != page_size {
-        app.settings.multi.page_size = next_page_size;
-        app.settings.multi.clamp_page();
-        ui.ctx().request_repaint();
-    }
+            if entries_len == 0 {
+                ui.weak(tr("暂无条目，点击上方“添加条目”"));
+            }
+
+            for index in 0..entries_len {
+                let Some(entry) = app.settings.multi.entry_mut(index) else {
+                    continue;
+                };
+                let active = active_index == Some(index);
+                let stripe = index % 2 == 1;
+                let mut row_rect = egui::Rect::NOTHING;
+                let row = ui.horizontal(|ui| {
+                    let row = egui::Rect::from_min_size(
+                        ui.cursor().min,
+                        egui::vec2(ui.available_width(), row_height),
+                    );
+                    row_rect = row;
+                    if stripe {
+                        ui.painter().rect_filled(
+                            row,
+                            egui::CornerRadius::ZERO,
+                            ui.visuals().faint_bg_color,
+                        );
+                    }
+                    if active {
+                        // Painted over the zebra stripe, so the marker reads the
+                        // same on both: a wash for the row, and a solid bar on
+                        // its leading edge.
+                        ui.painter().rect_filled(
+                            row,
+                            egui::CornerRadius::ZERO,
+                            active_colours.wash,
+                        );
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(
+                                row.min,
+                                egui::pos2(row.min.x + 3.0, row.max.y),
+                            ),
+                            egui::CornerRadius::ZERO,
+                            active_colours.bar,
+                        );
+                    }
+                    let mut row_changed = false;
+                    row_changed |= ui
+                        .add_sized(
+                            [enable_w, row_height],
+                            egui::Checkbox::new(&mut entry.enabled, ""),
+                        )
+                        .changed();
+
+                    // The number is also the drag handle: dragging it moves
+                    // the entry.  Structural edits are off while a run is in
+                    // flight, so the queue's indices cannot shift under it.
+                    let number = format!("{index}");
+                    let handle = if running {
+                        ui.add_sized([index_w, row_height], egui::Label::new(number))
+                    } else {
+                        ui.dnd_drag_source(egui::Id::new(("xcom_multi_drag", index)), index, |ui| {
+                            ui.add_sized([index_w, row_height], egui::Label::new(number))
+                        })
+                        .response
+                        .on_hover_text(tr("拖动调整顺序"))
+                    };
+                    probe::push_multi_handle_rect(index, handle.rect);
+
+                    row_changed |= ui
+                        .add_sized(
+                            [text_width, row_height],
+                            egui::TextEdit::singleline(&mut entry.text).hint_text(if entry.hex {
+                                "01 02 0A"
+                            } else {
+                                tr("指令")
+                            }),
+                        )
+                        .changed();
+                    row_changed |= ui
+                        .add_sized(
+                            [note_width, row_height],
+                            egui::TextEdit::singleline(&mut entry.note).hint_text(tr("备注")),
+                        )
+                        .changed();
+                    row_changed |= ui
+                        .add_sized([hex_w, row_height], egui::Checkbox::new(&mut entry.hex, ""))
+                        .changed();
+                    row_changed |= ui
+                        .add_sized(
+                            [newline_w, row_height],
+                            egui::Checkbox::new(&mut entry.newline, ""),
+                        )
+                        .changed();
+                    let mut delay = entry.delay_ms;
+                    if ui
+                        .add_sized(
+                            [delay_w, row_height],
+                            egui::DragValue::new(&mut delay)
+                                .speed(5.0)
+                                .range(0..=3_600_000)
+                                .suffix(" ms"),
+                        )
+                        .changed()
+                    {
+                        entry.delay_ms = delay;
+                        dirty = true;
+                    }
+                    if ui
+                        .add_sized([send_w, row_height], egui::Button::new(tr("发送")))
+                        .clicked()
+                    {
+                        send_request = Some(index);
+                    }
+                    let delete = ui
+                        .add_enabled_ui(!running, |ui| {
+                            ui.add_sized([delete_w, row_height], egui::Button::new("×"))
+                        })
+                        .inner
+                        .on_hover_text(tr("删除条目"));
+                    probe::push_multi_delete_rect(index, delete.rect);
+                    if delete.clicked() {
+                        remove = Some(index);
+                    }
+                    if row_changed {
+                        dirty = true;
+                    }
+                });
+
+                // Reorder by dragging the number: the pointer's half of the
+                // hovered row decides whether the entry lands above or below
+                // it.
+                if let Some(payload) = row.response.dnd_hover_payload::<usize>() {
+                    let after = ui.input(|input| {
+                        input
+                            .pointer
+                            .interact_pos()
+                            .is_some_and(|pos| pos.y > row.response.rect.center().y)
+                    });
+                    let y = if after {
+                        row.response.rect.bottom()
+                    } else {
+                        row.response.rect.top()
+                    };
+                    ui.painter().hline(
+                        row.response.rect.x_range(),
+                        y,
+                        egui::Stroke::new(2.0, active_colours.bar),
+                    );
+                    let _ = payload;
+                }
+                if let Some(payload) = row.response.dnd_release_payload::<usize>() {
+                    let after = ui.input(|input| {
+                        input
+                            .pointer
+                            .interact_pos()
+                            .is_some_and(|pos| pos.y > row.response.rect.center().y)
+                    });
+                    reorder = Some((*payload, index + usize::from(after)));
+                }
+
+                probe::push_multi_row_rect(index, row_rect);
+                if scroll_to_last && index + 1 == entries_len {
+                    row.response.scroll_to_me(Some(egui::Align::Max));
+                }
+                if active {
+                    probe::set_multi_active_row_rect(row_rect);
+                }
+                probe::set_multi_last_row_rect(row_rect);
+            }
+        });
 
     let scrollbars = [
         ui.ctx().read_response(table.id.with(0)).is_some(),
         ui.ctx().read_response(table.id.with(1)).is_some(),
     ];
     probe::set_multi_table(table.inner_rect, table.content_size, scrollbars);
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(scroll_to_last_id, false));
+
+    if let Some((from, insertion)) = reorder {
+        app.settings.multi.move_entry(from, insertion);
+        dirty = true;
+    }
+    if let Some(index) = remove {
+        app.settings.multi.remove_entry(index);
+        dirty = true;
+    }
+
     // ---- send status bar --------------------------------------------------
     // Pinned under the table and always visible, so the table keeps its height
     // as a run starts and stops.  The bar is one row whatever the run: the
     // fixed height is what the table's height is derived from, and a bar that
-    // wrapped would move the page boundary under a running loop.  Only
+    // wrapped would move the table boundary under a running loop.  Only
     // read-only state lives here; the loop count is edited with the controls
     // above.
     let status = ui.allocate_ui_with_layout(
@@ -3636,32 +3709,6 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     }
     if let Some(index) = send_request {
         app.send_multi_entry(index, false);
-    }
-
-    // ---- numeric keypad shortcuts ----------------------------------------
-    if app.settings.multi.keypad_enabled && !ui.ctx().egui_wants_keyboard_input() {
-        let base = page * page_size;
-        let pressed = ui.input(|i| {
-            use egui::Key::*;
-            [
-                (Num1, 0),
-                (Num2, 1),
-                (Num3, 2),
-                (Num4, 3),
-                (Num5, 4),
-                (Num6, 5),
-                (Num7, 6),
-                (Num8, 7),
-                (Num9, 8),
-                (Num0, 9),
-            ]
-            .into_iter()
-            .find(|(key, _)| i.key_pressed(*key))
-            .map(|(_, index)| index)
-        });
-        if let Some(index) = pressed {
-            app.send_multi_entry(base + index, false);
-        }
     }
 }
 
@@ -4313,17 +4360,17 @@ pub(crate) fn save_log(app: &mut XcomApp) {
 mod column_tests {
     use super::{
         MULTI_COLUMN_GAP, MULTI_FIXED_AT, MULTI_FIXED_COLUMNS, MULTI_TEXT_MIN, multi_column_floors,
-        multi_column_widths, multi_page_size, multi_row_floor,
+        multi_column_widths, multi_row_floor,
     };
 
     /// What the headers measure at the default interface font, in 中文.
-    const ZH_HEADERS: [f32; 8] = [26.8, 7.0, 26.8, 26.8, 24.1, 26.8, 26.8, 0.0];
+    const ZH_HEADERS: [f32; 9] = [26.8, 7.0, 26.8, 26.8, 24.1, 26.8, 26.8, 0.0, 0.0];
     /// The same in English, which is a great deal wider.
-    const EN_HEADERS: [f32; 8] = [39.0, 7.0, 49.0, 30.0, 24.1, 47.0, 34.0, 0.0];
+    const EN_HEADERS: [f32; 9] = [39.0, 7.0, 49.0, 30.0, 24.1, 47.0, 34.0, 0.0, 0.0];
 
-    /// Everything a row lays out: the eight columns and the seven gaps.
-    fn row_width(widths: [f32; 8]) -> f32 {
-        widths.iter().sum::<f32>() + MULTI_COLUMN_GAP * 7.0
+    /// Everything a row lays out: the nine columns and the eight gaps.
+    fn row_width(widths: [f32; 9]) -> f32 {
+        widths.iter().sum::<f32>() + MULTI_COLUMN_GAP * 8.0
     }
 
     #[test]
@@ -4331,7 +4378,8 @@ mod column_tests {
         // The whole point: a row one point wider than the table grows the
         // horizontal scroll bar that hides the send buttons.
         for headers in [ZH_HEADERS, EN_HEADERS] {
-            for viewport in [363.0f32, 420.0, 560.0, 700.0, 1200.0] {
+            let floor = multi_row_floor(headers).ceil();
+            for viewport in [floor, floor + 40.0, 560.0, 700.0, 1200.0] {
                 let (widths, overflows) = multi_column_widths(viewport, MULTI_COLUMN_GAP, headers);
                 assert!(!overflows, "{viewport}: the table should still fit");
                 let used = row_width(widths);
@@ -4348,8 +4396,9 @@ mod column_tests {
     #[test]
     fn every_column_holds_its_header() {
         for headers in [ZH_HEADERS, EN_HEADERS] {
-            let (widths, _) = multi_column_widths(363.0, MULTI_COLUMN_GAP, headers);
-            for index in 0..8 {
+            let floor = multi_row_floor(headers).ceil();
+            let (widths, _) = multi_column_widths(floor, MULTI_COLUMN_GAP, headers);
+            for index in 0..9 {
                 assert!(
                     widths[index] + 1.0 >= headers[index],
                     "column {index} is {} wide, its header needs {}",
@@ -4364,8 +4413,9 @@ mod column_tests {
     /// than pushing the row past the panel.
     #[test]
     fn the_headers_come_out_of_the_text_columns() {
-        let (zh, _) = multi_column_widths(363.0, MULTI_COLUMN_GAP, ZH_HEADERS);
-        let (en, _) = multi_column_widths(363.0, MULTI_COLUMN_GAP, EN_HEADERS);
+        let viewport = 560.0;
+        let (zh, _) = multi_column_widths(viewport, MULTI_COLUMN_GAP, ZH_HEADERS);
+        let (en, _) = multi_column_widths(viewport, MULTI_COLUMN_GAP, EN_HEADERS);
         assert!(
             en[2] < zh[2],
             "the English 内容 column should be narrower: {en:?} vs {zh:?}"
@@ -4375,7 +4425,8 @@ mod column_tests {
 
     #[test]
     fn the_text_columns_grow_with_the_panel() {
-        let (narrow, _) = multi_column_widths(340.0, MULTI_COLUMN_GAP, ZH_HEADERS);
+        let floor = multi_row_floor(ZH_HEADERS).ceil();
+        let (narrow, _) = multi_column_widths(floor, MULTI_COLUMN_GAP, ZH_HEADERS);
         let (wide, _) = multi_column_widths(700.0, MULTI_COLUMN_GAP, ZH_HEADERS);
         assert!(wide[2] > narrow[2], "narrow {narrow:?} wide {wide:?}");
         assert!(wide[3] > narrow[3], "narrow {narrow:?} wide {wide:?}");
@@ -4422,7 +4473,7 @@ mod column_tests {
     fn the_floor_holds_every_header() {
         for headers in [ZH_HEADERS, EN_HEADERS] {
             let floors = multi_column_floors(headers);
-            for index in 0..8 {
+            for index in 0..9 {
                 assert!(
                     floors[index] >= headers[index].ceil(),
                     "column {index} floor {} is below its header {}",
@@ -4456,29 +4507,5 @@ mod column_tests {
                 "{viewport}: {widths:?}"
             );
         }
-    }
-    #[test]
-    fn page_size_fits_header_and_all_rows_without_rounding_up() {
-        let row = 24.0;
-        let gap = 4.0;
-        // Header + three rows + three gaps fits exactly; a fourth row does not.
-        assert_eq!(multi_page_size(row + 3.0 * (row + gap), row, gap), 3);
-        assert_eq!(multi_page_size(row + 3.0 * (row + gap) - 0.1, row, gap), 2);
-    }
-
-    #[test]
-    fn page_size_never_becomes_zero_for_tiny_or_invalid_viewports() {
-        assert_eq!(multi_page_size(0.0, 24.0, 4.0), 1);
-        assert_eq!(multi_page_size(f32::NAN, 24.0, 4.0), 1);
-        assert_eq!(multi_page_size(100.0, f32::INFINITY, 4.0), 1);
-    }
-
-    #[test]
-    fn page_size_follows_the_viewport_with_no_hard_cap() {
-        // No fixed ceiling: a viewport tall enough for forty rows reports
-        // forty, so a tall window never wastes vertical space. A window tall
-        // enough for the whole pool reports all one hundred at once.
-        assert_eq!(multi_page_size(24.0 + 40.0 * 28.0, 24.0, 4.0), 40);
-        assert_eq!(multi_page_size(24.0 + 100.0 * 28.0, 24.0, 4.0), 100);
     }
 }

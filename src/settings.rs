@@ -422,7 +422,7 @@ mod tests {
             settings.fonts.receive_size,
             Settings::default().fonts.receive_size
         );
-        assert_eq!(settings.multi.entries.len(), crate::multi::TOTAL_ENTRIES);
+        assert!(settings.multi.entries.is_empty());
     }
 
     #[test]
@@ -578,7 +578,7 @@ mod tests {
             crate::protocol::ProtocolConfig::default().max_retries
         );
         assert_eq!(settings.display.hex_bytes_per_row, 16);
-        assert_eq!(settings.multi.entries.len(), crate::multi::TOTAL_ENTRIES);
+        assert!(settings.multi.entries.is_empty());
     }
 
     #[test]

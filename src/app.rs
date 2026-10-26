@@ -2231,7 +2231,7 @@ mod layout_tests {
         full_frame(&ctx, &mut app, input());
 
         let headers = panels::probe::multi_header_rects();
-        assert_eq!(headers.len(), 8, "every table column must have a header");
+        assert_eq!(headers.len(), 9, "every table column must have a header");
         let first_centre = headers[0].center().y;
         for (index, rect) in headers.iter().enumerate() {
             assert!(
@@ -3607,21 +3607,18 @@ mod layout_tests {
     }
 
     #[test]
-    fn renders_the_multi_send_pages() {
+    fn renders_the_multi_send_list() {
         let ctx = egui::Context::default();
         let mut app = seeded();
-        for index in 0..crate::multi::TOTAL_ENTRIES {
-            if let Some(entry) = app.settings.multi.entry_mut(index) {
-                entry.text = format!("CMD{index}");
-                entry.note = "备注".to_owned();
-                entry.enabled = index % 2 == 0;
-                entry.hex = index % 3 == 0;
-            }
+        for index in 0..12 {
+            let added = app.settings.multi.add_entry();
+            let entry = app.settings.multi.entry_mut(added).expect("entry");
+            entry.text = format!("CMD{added}");
+            entry.note = "备注".to_owned();
+            entry.enabled = index % 2 == 0;
+            entry.hex = index % 3 == 0;
         }
-        for page in 0..app.settings.multi.page_count() {
-            app.settings.multi.page = page;
-            render(&mut app, &ctx, "multi page");
-        }
+        render(&mut app, &ctx, "multi list");
     }
 
     #[test]
@@ -3717,9 +3714,11 @@ mod layout_tests {
         }
     }
 
-    /// Put `entries` (text, delay_ms) on page 0, all checked.
+    /// Put `entries` (text, delay_ms) at the start of the list, all checked.
     fn arm(app: &mut XcomApp, entries: &[(&str, u64)]) {
-        for (index, (text, delay)) in entries.iter().enumerate() {
+        app.settings.multi.entries.clear();
+        for (text, delay) in entries {
+            let index = app.settings.multi.add_entry();
             let entry = app.settings.multi.entry_mut(index).expect("entry");
             entry.text = (*text).to_owned();
             entry.enabled = true;
@@ -3842,48 +3841,6 @@ mod layout_tests {
         );
     }
 
-    /// A run spans the whole pool, but the marker only appears on the page
-    /// that currently shows the entry in flight.
-    #[test]
-    #[cfg(unix)]
-    fn the_marker_follows_the_entry_onto_whatever_page_shows_it() {
-        let Some(pty) = TestPty::open() else {
-            eprintln!("skipping: openpty unavailable");
-            return;
-        };
-        let ctx = egui::Context::default();
-        let mut app = XcomApp::headless(crate::settings::Settings::default());
-        app.settings.show_tool_panel = true;
-        app.settings.serial.port = pty.slave_path.clone();
-        if let Err(e) = app.link.open(&app.settings.serial) {
-            eprintln!("skipping: cannot open serial port: {e}");
-            return;
-        }
-        arm(&mut app, &[("A", 1000), ("B", 1000)]);
-        app.settings.multi.page = 0;
-
-        let start = Instant::now();
-        app.start_multi_run(false, start);
-        app.pump_multi(&ctx, start);
-        full_frame(&ctx, &mut app, input());
-        assert_ne!(panels::probe::multi_active_row_rect(), egui::Rect::NOTHING);
-
-        // Paging away does not stop the run, and the mark stays with the entry
-        // rather than the page.
-        app.settings.multi.page = 1;
-        full_frame(&ctx, &mut app, input());
-        assert_eq!(
-            panels::probe::multi_active_row_rect(),
-            egui::Rect::NOTHING,
-            "another page's row must not be marked"
-        );
-        assert!(
-            panels::probe::multi_status_text().contains('1'),
-            "the status line is about the run, not the page"
-        );
-        assert!(app.multi_run_active(), "paging must not stop the run");
-    }
-
     #[test]
     #[cfg(unix)]
     fn the_sequence_waits_each_entry_delay_before_the_next() {
@@ -3960,10 +3917,8 @@ mod layout_tests {
     #[test]
     fn enabled_indices_skip_unchecked_and_empty_entries() {
         let mut app = XcomApp::headless(crate::settings::Settings::default());
-        for (index, (text, enabled)) in [("a", true), ("b", false), ("", true), ("c", true)]
-            .into_iter()
-            .enumerate()
-        {
+        for (text, enabled) in [("a", true), ("b", false), ("", true), ("c", true)] {
+            let index = app.settings.multi.add_entry();
             let entry = app.settings.multi.entry_mut(index).expect("entry");
             entry.text = text.to_owned();
             entry.enabled = enabled;
@@ -4040,6 +3995,7 @@ mod layout_tests {
     /// Built by hand rather than driven through a port: these are layout tests,
     /// and it is the run in flight that the panel has to lay out around.
     fn looping(app: &mut XcomApp) {
+        populate_multi(app, 3);
         app.settings.multi.loop_enabled = true;
         app.settings.multi.loop_count = Some(10);
         app.multi_cycles = 3;
@@ -4047,24 +4003,34 @@ mod layout_tests {
             queue: vec![0, 1, 2],
             position: 1,
             last_sent: Some(SentEntry {
-                index: 12,
-                ordinal: 3,
-                round_len: 10,
+                index: 1,
+                ordinal: 2,
+                round_len: 3,
             }),
             next_at: Instant::now(),
             looping: true,
         });
     }
 
-    /// The multi-send table fits its panel: every column of the row and every
-    /// entry on the page, with no scroll bar to reach them.
+    /// Give the multi-send list `count` checked entries.
+    fn populate_multi(app: &mut XcomApp, count: usize) {
+        app.settings.multi.entries.clear();
+        for index in 0..count {
+            let added = app.settings.multi.add_entry();
+            let entry = app.settings.multi.entry_mut(added).expect("entry");
+            entry.text = format!("CMD{index}");
+            entry.note = "备注".to_owned();
+            entry.enabled = true;
+        }
+    }
+
+    /// The multi-send table's columns fit its panel: no horizontal scroll bar
+    /// hides the send/delete buttons or the delay fields.
     ///
-    /// The row is eight columns wide, and a row that overflows the panel grows a
-    /// horizontal scroll bar.  That bar takes the send buttons and the delay
-    /// fields out of reach, and with a solid scroll style it also eats a row's
-    /// height off the bottom of the table, so the last entry needs scrolling to.
+    /// The list itself may scroll vertically when it has more rows than fit;
+    /// that is the point of the scrollable on-demand list.
     #[test]
-    fn the_multi_send_table_fits_without_scrolling() {
+    fn the_multi_send_table_fits_its_width() {
         let _guard = crate::i18n::test_lock();
         crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
         for (w, h) in [
@@ -4084,16 +4050,16 @@ mod layout_tests {
                 app.settings.fonts.ui_size = 13.0;
                 if running {
                     looping(&mut app);
+                } else {
+                    populate_multi(&mut app, 6);
                 }
                 frame_at(&ctx, &mut app, (w, h));
 
                 let (viewport, content, scrollbars) = panels::probe::multi_table();
                 assert!(
-                    !scrollbars[0] && !scrollbars[1],
-                    "{w}x{h} (looping: {running}): egui laid out a scrollbar \
-                     (horizontal={}, vertical={})",
-                    scrollbars[0],
-                    scrollbars[1]
+                    !scrollbars[0],
+                    "{w}x{h} (looping: {running}): egui laid out a horizontal \
+                     scrollbar"
                 );
                 assert!(
                     viewport.height() > 0.0,
@@ -4106,57 +4072,13 @@ mod layout_tests {
                     content.x,
                     viewport.width()
                 );
-                assert!(
-                    content.y <= viewport.height() + 0.5,
-                    "{w}x{h} (looping: {running}): the table is {:.1} tall where it has \
-                     {:.1}, so the last entry needs scrolling into view",
-                    content.y,
-                    viewport.height()
-                );
                 let last_row = panels::probe::multi_last_row_rect();
                 assert!(
-                    last_row.min.y >= viewport.min.y - 0.5
-                        && last_row.max.y <= viewport.max.y + 0.5,
-                    "{w}x{h} (looping: {running}): last row is outside the visible \
-                     table viewport: row={last_row:?}, viewport={viewport:?}"
+                    last_row.min.y >= viewport.min.y - 0.5,
+                    "{w}x{h} (looping: {running}): the first rows start above the \
+                     visible table viewport: row={last_row:?}, viewport={viewport:?}"
                 );
             }
-        }
-    }
-
-    /// The entries a page holds are the ones that fit: one more row would not.
-    ///
-    /// Asking for more is what leaves the last entry half out of the table;
-    /// asking for fewer wastes a row.
-    #[test]
-    fn the_page_holds_every_entry_that_fits() {
-        let _guard = crate::i18n::test_lock();
-        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
-        for (w, h) in [(1200.0, 780.0), (1280.0, 840.0), (1920.0, 1080.0)] {
-            let ctx = egui::Context::default();
-            let mut app = seeded();
-            app.side_tab = SideTab::Multi;
-            frame_at(&ctx, &mut app, (w, h));
-
-            let (viewport, content, scrollbars) = panels::probe::multi_table();
-            assert!(
-                !scrollbars[0] && !scrollbars[1],
-                "{w}x{h}: egui laid out a scrollbar (horizontal={}, vertical={})",
-                scrollbars[0],
-                scrollbars[1]
-            );
-            let row_height = 20.0_f32.max(
-                ctx.fonts_mut(|fonts| {
-                    fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
-                }) + 4.0,
-            );
-            let pitch = row_height + 4.0;
-            assert!(
-                viewport.height() - content.y < pitch,
-                "{w}x{h}: {:.1} of the table is left empty below the last entry, \
-                 which is room for another row",
-                viewport.height() - content.y
-            );
         }
     }
 
@@ -4170,14 +4092,13 @@ mod layout_tests {
         let mut app = seeded();
         app.settings.show_tool_panel = true;
         app.side_tab = SideTab::Multi;
+        populate_multi(&mut app, 5);
         frame_at(&ctx, &mut app, (w, h));
 
         let (viewport, content, scrollbars) = panels::probe::multi_table();
         assert!(
-            !scrollbars[0] && !scrollbars[1],
-            "{w}x{h}: egui laid out a scrollbar (horizontal={}, vertical={})",
-            scrollbars[0],
-            scrollbars[1]
+            !scrollbars[0],
+            "{w}x{h}: egui laid out a horizontal scrollbar"
         );
         assert!(
             content.x <= viewport.width() + 0.5,
@@ -4188,13 +4109,127 @@ mod layout_tests {
         );
     }
 
+    /// The panel adds and deletes on demand, and renumbers after a delete.
+    #[test]
+    fn the_multi_panel_adds_and_deletes_entries() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.show_tool_panel = true;
+        app.side_tab = SideTab::Multi;
+
+        frame_at(&ctx, &mut app, (1280.0, 840.0));
+        let add = panels::probe::multi_add_rect();
+        assert!(add.width() > 0.0, "the add button was not laid out");
+        click(&ctx, &mut app, add.center());
+        assert_eq!(app.settings.multi.entries.len(), 1);
+        app.settings.multi.entries[0].text = "A".to_owned();
+
+        frame_at(&ctx, &mut app, (1280.0, 840.0));
+        click(&ctx, &mut app, panels::probe::multi_add_rect().center());
+        assert_eq!(app.settings.multi.entries.len(), 2);
+        app.settings.multi.entries[1].text = "B".to_owned();
+
+        frame_at(&ctx, &mut app, (1280.0, 840.0));
+        let delete = panels::probe::multi_delete_rects()
+            .into_iter()
+            .find(|(index, _)| *index == 0)
+            .map(|(_, rect)| rect)
+            .expect("the first row needs a delete button");
+        click(&ctx, &mut app, delete.center());
+        assert_eq!(app.settings.multi.entries.len(), 1);
+        assert_eq!(
+            app.settings.multi.entries[0].text, "B",
+            "the remaining entry must be renumbered to #0"
+        );
+
+        // While a run is in flight, adding and deleting are disabled.
+        looping(&mut app);
+        frame_at(&ctx, &mut app, (1280.0, 840.0));
+        let before = app.settings.multi.entries.len();
+        click(&ctx, &mut app, panels::probe::multi_add_rect().center());
+        assert_eq!(
+            app.settings.multi.entries.len(),
+            before,
+            "a running loop must not accept new entries"
+        );
+    }
+
+    /// Dragging the `#` cell onto another row reorders the list.
+    #[test]
+    fn the_multi_panel_reorders_by_dragging_the_number() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.show_tool_panel = true;
+        app.side_tab = SideTab::Multi;
+        for text in ["A", "B", "C"] {
+            let added = app.settings.multi.add_entry();
+            app.settings.multi.entry_mut(added).expect("entry").text = text.to_owned();
+        }
+
+        let draw = |app: &mut XcomApp, events: Vec<egui::Event>| {
+            let mut raw = input();
+            raw.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 840.0),
+            ));
+            raw.events = events;
+            full_frame(&ctx, app, raw);
+        };
+        draw(&mut app, Vec::new());
+        draw(&mut app, Vec::new());
+
+        let handles = panels::probe::multi_handle_rects();
+        let rows = panels::probe::multi_row_rects();
+        let from = handles
+            .iter()
+            .find(|(index, _)| *index == 0)
+            .map(|(_, rect)| rect.center())
+            .expect("row 0 needs a number handle");
+        let row2 = rows
+            .iter()
+            .find(|(index, _)| *index == 2)
+            .map(|(_, rect)| *rect)
+            .expect("row 2 was not laid out");
+        // Drop in the upper half of row 2: insertion point 2.
+        let to = egui::pos2(from.x, row2.center().y - 2.0);
+
+        let press = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        draw(&mut app, vec![egui::Event::PointerMoved(from)]);
+        draw(
+            &mut app,
+            vec![egui::Event::PointerMoved(from), press(from, true)],
+        );
+        draw(&mut app, vec![egui::Event::PointerMoved(to)]);
+        draw(&mut app, vec![egui::Event::PointerMoved(to)]);
+        draw(&mut app, vec![press(to, false)]);
+        draw(&mut app, Vec::new());
+
+        let order: Vec<&str> = app
+            .settings
+            .multi
+            .entries
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect();
+        assert_eq!(order, vec!["B", "A", "C"]);
+    }
+
     /// The send status bar keeps its place under the table, whatever the run.
     ///
     /// Laid out as one wrapping row it was three rows tall while looping, and a
     /// panel that had reserved one clipped the rest: the loop state and the
     /// entry in flight ended up behind the window's status bar.  One fixed
-    /// row, with overflow truncated, so the table's height — and the page
-    /// boundary with it — does not move when a run starts or stops.
+    /// row, with overflow truncated, so the table's height does not move when a
+    /// run starts or stops.
     #[test]
     fn the_send_status_bar_keeps_its_place() {
         let _guard = crate::i18n::test_lock();
