@@ -144,9 +144,7 @@ fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
 /// window background is painted in this colour.
 pub fn panel_background(dark: bool) -> Color32 {
     if dark {
-        // The dark theme is the classic terminal look: pure black behind the
-        // panels, with lifted widget surfaces for contrast.
-        Color32::BLACK
+        Color32::from_rgb(0x1E, 0x1E, 0x1E)
     } else {
         Color32::from_rgb(0xF3, 0xF3, 0xF3)
     }
@@ -221,11 +219,9 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
 /// A slightly calmer dark theme than egui's default, closer to a native tool.
 fn tuned_dark() -> Visuals {
     let mut v = Visuals::dark();
-    // The panel/backdrop is pure black; menus, dialogs and input fields sit a
-    // few steps above it so they still read as raised surfaces.
-    let panel = Color32::BLACK;
-    let surface = Color32::from_rgb(0x0A, 0x0A, 0x0A);
-    let field = Color32::from_rgb(0x0A, 0x0A, 0x0A);
+    let panel = Color32::from_rgb(0x1E, 0x1E, 0x1E);
+    let surface = Color32::from_rgb(0x25, 0x25, 0x26);
+    let field = Color32::from_rgb(0x14, 0x14, 0x14);
     let accent = Color32::from_rgb(0x2E, 0x86, 0xDE);
 
     // When the application paints its own rounded window background, the
@@ -237,15 +233,15 @@ fn tuned_dark() -> Visuals {
     };
     v.window_fill = surface;
     v.extreme_bg_color = field;
-    v.faint_bg_color = Color32::from_rgb(0x12, 0x12, 0x12);
+    v.faint_bg_color = Color32::from_rgb(0x2A, 0x2A, 0x2B);
     v.code_bg_color = field;
     v.selection.bg_fill = accent.gamma_multiply(0.45);
     v.selection.stroke = Stroke::new(1.0, Color32::from_rgb(0xC8, 0xDC, 0xF0));
     v.hyperlink_color = Color32::from_rgb(0x54, 0xA6, 0xF0);
     v.window_stroke = Stroke::new(1.0, Color32::from_rgb(0x3A, 0x3A, 0x3C));
     v.widgets.noninteractive.bg_fill = panel;
-    v.widgets.inactive.bg_fill = Color32::from_rgb(0x1C, 0x1C, 0x1D);
-    v.widgets.hovered.bg_fill = Color32::from_rgb(0x2A, 0x2A, 0x2C);
+    v.widgets.inactive.bg_fill = Color32::from_rgb(0x33, 0x33, 0x35);
+    v.widgets.hovered.bg_fill = Color32::from_rgb(0x3E, 0x3E, 0x41);
     v.widgets.active.bg_fill = accent.gamma_multiply(0.7);
 
     v.widgets.noninteractive.corner_radius = egui::CornerRadius::same(4);
@@ -299,26 +295,6 @@ mod tests {
             luminance(DARK_LOG.foreground) > 0.5,
             "the default dark-theme text must be light, got {:?}",
             DARK_LOG.foreground
-        );
-    }
-
-    #[test]
-    fn the_dark_theme_uses_a_pure_black_background() {
-        assert_eq!(panel_background(true), Color32::BLACK);
-        assert_eq!(DARK_LOG.background, Color32::BLACK);
-        // Where the app paints its own rounded backdrop the panel is
-        // transparent and the backdrop (black) shows through; elsewhere the
-        // panel fill itself must be black.
-        let visuals = tuned_dark();
-        if crate::ui::window::PAINTS_OWN_BACKGROUND {
-            assert_eq!(visuals.panel_fill, Color32::TRANSPARENT);
-        } else {
-            assert_eq!(visuals.panel_fill, Color32::BLACK);
-        }
-        assert_ne!(
-            visuals.window_fill,
-            Color32::BLACK,
-            "menus and dialogs keep a slightly lifted surface"
         );
     }
 
