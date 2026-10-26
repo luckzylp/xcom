@@ -306,7 +306,15 @@ pub fn show(
     options: &LogViewOptions<'_>,
 ) -> LogViewOutput {
     let font = options.font.clone();
-    let row_height = ui.ctx().fonts_mut(|f| f.row_height(&font)) + options.line_spacing;
+    let pixels_per_point = ui.ctx().pixels_per_point();
+    let ideal_row_height = ui.ctx().fonts_mut(|f| f.row_height(&font)) + options.line_spacing;
+    // Snap the row pitch to whole physical pixels.  The scroll area rounds the
+    // content origin to a pixel, so a fractional pitch (egui's font row height
+    // is e.g. 15.125px) makes that rounding drift against the rows as content
+    // grows: the whole log shimmers by one pixel in a wave every few rows.
+    let row_height = (ideal_row_height * pixels_per_point).round().max(1.0) / pixels_per_point;
+    #[cfg(test)]
+    probe::record_row_pitch(row_height, pixels_per_point);
     let char_width = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'M'));
     let total_rows = store.row_count();
 
@@ -536,6 +544,19 @@ pub(crate) mod probe {
 
     pub(crate) fn scroll() -> (Vec2, Vec2, Vec2) {
         SCROLL.with(|cell| cell.get())
+    }
+
+    thread_local! {
+        /// `(row pitch, pixels per point)` as actually laid out.
+        static ROW_PITCH: Cell<(f32, f32)> = const { Cell::new((0.0, 1.0)) };
+    }
+
+    pub(crate) fn record_row_pitch(row_height: f32, pixels_per_point: f32) {
+        ROW_PITCH.with(|cell| cell.set((row_height, pixels_per_point)));
+    }
+
+    pub(crate) fn row_pitch() -> (f32, f32) {
+        ROW_PITCH.with(|cell| cell.get())
     }
 }
 

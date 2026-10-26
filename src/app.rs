@@ -4038,4 +4038,34 @@ mod layout_tests {
         assert!(!app.log_view.has_selection());
         assert!(app.settings.auto_scroll);
     }
+
+    /// The receive view's row pitch must be a whole number of physical pixels.
+    ///
+    /// A `ScrollArea` rounds its content origin to a pixel.  With a fractional
+    /// pitch (egui's row height is e.g. 15.125px) that rounding drifts against
+    /// the rows as content grows, so every visible line wobbles by one pixel in
+    /// a slow wave while the log scrolls.  Snapping the pitch removes the
+    /// drift, and the text stays put on the same pixels.
+    #[test]
+    fn the_receive_row_pitch_is_pixel_aligned() {
+        for ppp in [1.0, 1.25, 1.5, 2.0] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(ppp);
+            let mut app = seeded();
+            // Exercise the extra-spacing path too: pitch = font height + spacing.
+            app.settings.line_spacing = 1.3;
+            full_frame(&ctx, &mut app, input());
+
+            let (row_height, recorded_ppp) = crate::ui::log_view::probe::row_pitch();
+            assert!(
+                row_height > 0.0,
+                "ppp={ppp}: the receive view was not laid out"
+            );
+            let pixels = row_height * recorded_ppp;
+            assert!(
+                (pixels - pixels.round()).abs() < 1e-3,
+                "ppp={ppp}: the row pitch is {pixels}px, not a whole number of pixels"
+            );
+        }
+    }
 }
