@@ -1409,7 +1409,7 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
     // The keyword column takes whatever the 450px page leaves after the two
     // fixed columns, so the table never overflows its container.
     const COLOR_COL: f32 = 52.0;
-    const ACTION_COL: f32 = 44.0;
+    const ACTION_COL: f32 = 52.0;
     const COL_GAP: f32 = 8.0;
     let body_font = egui::TextStyle::Body.resolve(ui.style());
     let row_height = ui
@@ -1447,7 +1447,13 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
                 ui.spacing_mut().item_spacing.x = COL_GAP;
                 let keyword = ui.add_sized(
                     [keyword_col, row_height],
-                    egui::TextEdit::singleline(&mut rule.text).hint_text(tr("关键字")),
+                    egui::TextEdit::singleline(&mut rule.text)
+                        .hint_text(if rule.regex {
+                            tr("正则表达式")
+                        } else {
+                            tr("关键字")
+                        })
+                        .font(egui::TextStyle::Monospace),
                 );
                 probe::push_highlight_keyword_rect(keyword.rect);
                 changed |= keyword.changed();
@@ -1458,14 +1464,43 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
                         changed |= ui.color_edit_button_srgb(&mut rule.color).changed();
                     },
                 );
-                if ui
-                    .add_sized([ACTION_COL, row_height], egui::Button::new("×"))
-                    .on_hover_text(tr("删除"))
-                    .clicked()
-                {
-                    remove = Some(index);
-                }
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ACTION_COL, row_height),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let toggle = ui
+                            .add_sized(
+                                [24.0, row_height],
+                                egui::Button::new(egui::RichText::new(".*").monospace())
+                                    .selected(rule.regex),
+                            )
+                            .on_hover_text(tr("按正则表达式匹配"));
+                        if toggle.clicked() {
+                            rule.regex = !rule.regex;
+                            changed = true;
+                        }
+                        if ui
+                            .add_sized([20.0, row_height], egui::Button::new("×"))
+                            .on_hover_text(tr("删除"))
+                            .clicked()
+                        {
+                            remove = Some(index);
+                        }
+                    },
+                );
             });
+            if rule.regex
+                && !rule.text.is_empty()
+                && let Err(err) = crate::highlight::validate_regex(&rule.text)
+            {
+                ui.label(
+                    RichText::new(tr("正则无效"))
+                        .small()
+                        .color(level_color(Level::Error)),
+                )
+                .on_hover_text(err);
+            }
             if index + 1 < rule_count {
                 ui.separator();
             }
@@ -1495,7 +1530,9 @@ fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
             MAX_RULES,
         ));
     });
-    ui.small(tr("按字面匹配，区分大小写；重叠时较长关键字优先。"));
+    ui.small(tr(
+        "默认按字面匹配，区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
+    ));
 
     if changed {
         settings.normalize();

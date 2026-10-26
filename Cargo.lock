@@ -3508,7 +3508,7 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
 name = "xcom"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "chardetng",
  "chrono",
@@ -3520,6 +3520,7 @@ dependencies = [
  "fontdb",
  "libc",
  "log",
+ "regex",
  "rfd",
  "serde",
  "serde_json",

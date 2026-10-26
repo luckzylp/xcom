@@ -416,10 +416,12 @@ mod tests {
         settings.highlights.rules = vec![
             HighlightRule {
                 text: "OK".to_owned(),
+                regex: false,
                 color: [0x4C, 0xAF, 0x50],
             },
             HighlightRule {
-                text: "ERROR".to_owned(),
+                text: "ERR\\d+".to_owned(),
+                regex: true,
                 color: [0xE5, 0x53, 0x53],
             },
         ];
@@ -431,6 +433,13 @@ mod tests {
         // A file written before the feature existed still loads.
         let legacy: Settings = serde_json::from_str(r#"{"theme":"Light"}"#).unwrap();
         assert_eq!(legacy.highlights, HighlightSettings::default());
+
+        // A rule written before regular expressions existed stays literal.
+        let legacy: Settings = serde_json::from_str(
+            r#"{"highlights":{"enabled":true,"rules":[{"text":"OK","color":[1,2,3]}]}}"#,
+        )
+        .unwrap();
+        assert!(!legacy.highlights.rules[0].regex);
     }
 
     #[test]

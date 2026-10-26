@@ -2994,10 +2994,12 @@ mod layout_tests {
         app.settings.highlights.rules = vec![
             crate::highlight::HighlightRule {
                 text: "OK".to_owned(),
+                regex: false,
                 color: [0x4C, 0xAF, 0x50],
             },
             crate::highlight::HighlightRule {
                 text: "ERROR".to_owned(),
+                regex: false,
                 color: [0xE5, 0x53, 0x53],
             },
         ];
@@ -3039,10 +3041,12 @@ mod layout_tests {
         app.settings.highlights.rules = vec![
             crate::highlight::HighlightRule {
                 text: "ERROR".to_owned(),
+                regex: false,
                 color: [0xE5, 0x53, 0x53],
             },
             crate::highlight::HighlightRule {
                 text: "OK".to_owned(),
+                regex: false,
                 color: [0x4C, 0xAF, 0x50],
             },
         ];

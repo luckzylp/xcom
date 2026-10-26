@@ -73,7 +73,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Dark + Light themes** (can also follow the system).
 - **Chinese/English UI toggle**: switchable at any time from **View → Language**; follows system `LANG` on first launch; choice is persisted.
 - **Receive area text selection**: drag-select with mouse, Ctrl+C copy, Ctrl+A select all (based on glyph metrics, CJK full-width characters select correctly).
-- **Keyword highlighting**: add literal keywords and colours under View → Display settings… → Keyword highlighting; the rules persist in the settings file, and longer keywords win when matches overlap.
+- **Keyword highlighting**: add keywords and colours under View → Display settings… → Keyword highlighting; each rule is a literal or, with the `.*` toggle, a regular expression (invalid patterns are flagged and skipped). Rules persist in the settings file, and longer matches win when they overlap.
 - **Virtualized log view**: Only visible lines are rendered, staying smooth during long high-speed reception.
 - **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off in Display settings or the receive area's right-click menu. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.

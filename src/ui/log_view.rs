@@ -12,7 +12,7 @@ use eframe::egui::{
     self, Color32, FontId, Galley, Pos2, Rect, ScrollArea, Sense, TextFormat, Ui, Vec2,
 };
 
-use crate::highlight::HighlightSettings;
+use crate::highlight::{HighlightSettings, Highlighter};
 use crate::i18n::tr;
 use crate::logstore::{DisplayOptions, LogStore, RowKind, ViewMode};
 use crate::theme::LogPalette;
@@ -60,6 +60,8 @@ pub struct LogViewState {
     /// scrolled up would otherwise do nothing at all.  Tracking the previous
     /// frame lets the view notice that transition and jump once.
     following: bool,
+    /// Compiled keyword rules, rebuilt only when the settings change.
+    highlighter: Highlighter,
 }
 
 impl LogViewState {
@@ -325,6 +327,7 @@ pub fn show(
     let follow = options.auto_scroll && !state.has_selection();
     let jump_to_bottom = follow && !state.following;
     state.following = follow;
+    state.highlighter.sync(options.highlights);
 
     if total_rows == 0 {
         // Still draw the (empty) background so the theme colour shows through.
@@ -411,7 +414,7 @@ pub fn show(
                     &font,
                     color,
                     palette,
-                    options.highlights,
+                    &state.highlighter,
                 ))
             });
             let origin = Pos2::new(rect.left(), rect.top() + index as f32 * row_height);
@@ -572,7 +575,7 @@ fn row_job(
     font: &FontId,
     color: Color32,
     palette: LogPalette,
-    highlights: &HighlightSettings,
+    highlights: &Highlighter,
 ) -> LayoutJob {
     let (mark_len, stamp_len) = prefix;
     let mark_len = clamp_to_boundary(text, mark_len);
@@ -606,10 +609,10 @@ fn row_job(
             if found.start > last {
                 push(&data[last..found.start], color);
             }
-            let rule = &highlights.rules[found.rule];
+            let color = highlights.color(found.rule);
             push(
                 &data[found.start..found.end],
-                Color32::from_rgb(rule.color[0], rule.color[1], rule.color[2]),
+                Color32::from_rgb(color[0], color[1], color[2]),
             );
             last = found.end;
         }
@@ -930,7 +933,7 @@ mod tests {
             &font,
             DARK_LOG.foreground,
             DARK_LOG,
-            &HighlightSettings::default(),
+            &Highlighter::default(),
         );
         // The galley text must stay identical to the row, or caret columns
         // would drift away from the stored text.
@@ -962,7 +965,7 @@ mod tests {
             &font,
             DARK_LOG.foreground,
             DARK_LOG,
-            &HighlightSettings::default(),
+            &Highlighter::default(),
         );
         let section = |i: usize| &job.text[byte_range(&job, i)];
         assert_eq!(job.sections[0].format.color, DARK_LOG.sent_marker);
@@ -982,7 +985,7 @@ mod tests {
             &font,
             DARK_LOG.foreground,
             DARK_LOG,
-            &HighlightSettings::default(),
+            &Highlighter::default(),
         );
         assert_eq!(job.sections.len(), 1);
         assert_eq!(byte_range(&job, 0), 0..5);
@@ -1001,7 +1004,7 @@ mod tests {
             &font,
             DARK_LOG.foreground,
             DARK_LOG,
-            &HighlightSettings::default(),
+            &Highlighter::default(),
         );
         assert_eq!(job.text, "中");
         assert_eq!(job.sections.len(), 1);
@@ -1016,10 +1019,12 @@ mod tests {
             rules: vec![
                 crate::highlight::HighlightRule {
                     text: "OK".to_owned(),
+                    regex: false,
                     color: [1, 2, 3],
                 },
                 crate::highlight::HighlightRule {
                     text: "ERROR".to_owned(),
+                    regex: false,
                     color: [4, 5, 6],
                 },
             ],
@@ -1032,7 +1037,7 @@ mod tests {
             &font,
             DARK_LOG.foreground,
             DARK_LOG,
-            &highlights,
+            &Highlighter::new(&highlights),
         );
         assert_eq!(job.text, text, "highlighting must not alter the row text");
         let sections: Vec<(&str, Color32)> = job

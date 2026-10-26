@@ -269,8 +269,11 @@ static EN: &[(&str, &str)] = &[
     ("暂无关键字",             "No keywords yet"),
     ("添加关键字",             "Add keyword"),
     ("{} / {} 条规则",        "{} / {} rules"),
-    ("按字面匹配，区分大小写；重叠时较长关键字优先。",
-                              "Literal, case-sensitive matches; longer keywords win when they overlap."),
+    ("正则表达式",             "Regular expression"),
+    ("按正则表达式匹配",       "Match as a regular expression"),
+    ("正则无效",               "Invalid regular expression"),
+    ("默认按字面匹配，区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
+                              "Literal, case-sensitive matches by default; tick .* for a regular expression ((?i) ignores case), and longer matches win when they overlap."),
 
     // -- top bar ------------------------------------------------------------
     ("主题",                 "Theme"),

@@ -1,6 +1,6 @@
 [package]
 name = "xcom"
-version = "0.7.2"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.90.0"
 description = "ATK-XCOM 风格串口调试助手 — 跨平台串口工具 (Rust + egui)"
@@ -31,6 +31,7 @@ eframe = { version = "0.36", default-features = false, features = [
 # Only affects Linux: winit gates it behind a non-macOS Unix cfg.
 winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita"] }
 serialport = "4.10"
+regex = "1"
 encoding_rs = "0.8"
 chardetng = "1.0"
 crossbeam-channel = "0.5"
