@@ -2072,7 +2072,7 @@ fn display_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
         changed = true;
     }
     if display.timestamp {
-        ui.small(tr("以回车换行断帧；数据中若不含回车换行则不会显示时间戳"));
+        ui.small(tr("以回车换行断帧；未收全的一帧先显示当前时间，收全后定帧"));
     }
 
     let mut wrap = display.wrap;

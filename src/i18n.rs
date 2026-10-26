@@ -450,8 +450,8 @@ static EN: &[(&str, &str)] = &[
     ("• 黑色与白色主题", "• Dark and white themes"),
     ("本软件为开源实现，界面不含任何广告。", "Open source, with no advertising in the interface."),
 
-    ("以回车换行断帧；数据中若不含回车换行则不会显示时间戳",
-     "Frames on CR/LF; without them no timestamp is shown"),
+    ("以回车换行断帧；未收全的一帧先显示当前时间，收全后定帧",
+     "Frames on CR/LF; an incomplete frame shows its current time until it completes"),
 
     ("设置 DTR 失败: {}", "Failed to set DTR: {}"),
     ("设置 RTS 失败: {}", "Failed to set RTS: {}"),

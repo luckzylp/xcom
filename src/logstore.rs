@@ -155,6 +155,8 @@ pub struct LogStore {
     cur_rows: Vec<String>,
     /// Bytes at the start of `cur_rows[0]` taken by the direction marker.
     cur_mark_len: usize,
+    /// Bytes after the marker taken by the live row's timestamp.
+    cur_stamp_len: usize,
     /// Streaming decoder for the live line, tolerant of split sequences.
     tail_decoder: StreamDecoder,
     /// Index into `raw` of the next byte not yet consumed into rows.
@@ -183,6 +185,7 @@ impl LogStore {
             cur_line: String::new(),
             cur_rows: Vec::new(),
             cur_mark_len: 0,
+            cur_stamp_len: 0,
             tail_decoder: StreamDecoder::new(encoding),
             cursor: 0,
             dump_row_start: 0,
@@ -314,6 +317,7 @@ impl LogStore {
         self.cur_line.clear();
         self.cur_rows.clear();
         self.cur_mark_len = 0;
+        self.cur_stamp_len = 0;
         self.tail_decoder = StreamDecoder::new(self.encoding);
         self.cursor = 0;
         self.dump_row_start = 0;
@@ -357,10 +361,9 @@ impl LogStore {
         if let Some(row) = self.rows.get(index) {
             return (row.mark_len, row.stamp_len);
         }
-        // The live line is always received data.  It carries no timestamp yet:
-        // that is attached when a terminator frames it.
+        // The live line is always received data.
         if index == committed {
-            (self.cur_mark_len, 0)
+            (self.cur_mark_len, self.cur_stamp_len)
         } else {
             (0, 0)
         }
@@ -422,6 +425,7 @@ impl LogStore {
         self.cur_line.clear();
         self.cur_rows.clear();
         self.cur_mark_len = 0;
+        self.cur_stamp_len = 0;
         self.cursor = 0;
         self.dump_row_start = 0;
         self.dump_filled = 0;
@@ -463,7 +467,10 @@ impl LogStore {
                 self.feed_tail(self.cursor, end);
                 self.cursor = end;
                 if self.cur_line.len() >= MAX_LIVE_LINE {
-                    self.commit_line(None);
+                    // Keep the timestamp the live row was showing: dropping it
+                    // here would shift the row sideways on the forced break.
+                    let stamp = self.opts.timestamp.then(|| self.live_time()).flatten();
+                    self.commit_line(stamp);
                     self.tail_decoder = StreamDecoder::new(self.encoding);
                     continue;
                 }
@@ -600,13 +607,18 @@ impl LogStore {
         if self.cur_line.is_empty() {
             self.cur_rows.clear();
             self.cur_mark_len = 0;
+            self.cur_stamp_len = 0;
             return;
         }
-        // The live line shows the marker but no timestamp: an arrival time is
-        // attached when a terminator frames it.
-        let prefix = self.prefix_for(RowKind::Received, None);
+        // The live line carries the timestamp it will keep when a terminator
+        // commits it.  Leaving the timestamp until then changed the prefix
+        // width under the text: the row jumped sideways, and when wrapping it
+        // could gain a row, so the view moved the moment a frame completed.
+        let stamp = self.opts.timestamp.then(|| self.live_time()).flatten();
+        let prefix = self.prefix_for(RowKind::Received, stamp);
         self.cur_rows = wrap_text(&self.cur_line, Some(&prefix.text), self.effective_cols());
         self.cur_mark_len = prefix.mark_len;
+        self.cur_stamp_len = prefix.stamp_len;
         let widest = self
             .cur_rows
             .iter()
@@ -614,6 +626,18 @@ impl LogStore {
             .max()
             .unwrap_or(0);
         self.max_columns = self.max_columns.max(widest);
+    }
+
+    /// Arrival time of the newest byte held in the live line.
+    ///
+    /// This is the same mark `pump_framed` uses when a terminator commits the
+    /// line, so the visible timestamp does not change at that moment.
+    fn live_time(&self) -> Option<i64> {
+        let end = self.cursor.min(self.raw.len());
+        if end == 0 {
+            return None;
+        }
+        Some(self.time_at(self.raw_base + (end - 1) as u64))
     }
 
     fn push_row_kind(&mut self, row: String, kind: RowKind, mark_len: usize, stamp_len: usize) {
@@ -927,8 +951,14 @@ mod tests {
         // One committed frame plus the live (unterminated) line.
         assert_eq!(s.row_count(), 2);
         assert!(s.row(0).ends_with("01 02"), "{}", s.row(0));
-        // The live line is received data, so it carries the marker too.
-        assert_eq!(s.row(1), format!("{MARK_RECEIVED}03 04"));
+        // The live line is received data, so it carries the same prefix as a
+        // committed frame: marker, timestamp, then the data.
+        assert!(
+            s.row(1).starts_with(&format!("{MARK_RECEIVED}[")),
+            "{}",
+            s.row(1)
+        );
+        assert!(s.row(1).ends_with("03 04"), "{}", s.row(1));
         assert_eq!(s.cur_line.as_str(), "03 04");
     }
 
@@ -1040,15 +1070,55 @@ mod tests {
     }
 
     #[test]
-    fn the_live_line_carries_the_marker_but_no_timestamp() {
+    fn the_live_line_keeps_the_timestamp_it_commits_with() {
         let mut s = store();
         s.set_options(DisplayOptions {
             timestamp: true,
             ..Default::default()
         });
-        s.append(b"partial", 0);
-        assert_eq!(rows(&s), marked(&["partial"]));
-        assert_eq!(s.row_prefix(0), (MARK_RECEIVED.len(), 0));
+        s.append(b"partial", 1_000);
+        let live = s.row(0).to_owned();
+        let stamp = "[16:00:01.000] ".len();
+        assert!(live.starts_with(&format!("{MARK_RECEIVED}[")), "{live}");
+        assert!(live.ends_with("partial"), "{live}");
+        assert_eq!(s.row_prefix(0), (MARK_RECEIVED.len(), stamp));
+
+        // The live timestamp follows the newest byte, so a later chunk
+        // updates it in place instead of waiting for the terminator.
+        s.append(b"-more", 2_000);
+        assert_ne!(s.row(0), live, "the live timestamp did not follow the data");
+        let live = s.row(0).to_owned();
+        assert!(live.ends_with("partial-more"), "{live}");
+
+        // Committing must not move the text or change the prefix: the
+        // timestamp was already there while the line was live.
+        s.append(b"\r\n", 2_000);
+        assert_eq!(s.row(0), live);
+        assert_eq!(s.row_prefix(0), (MARK_RECEIVED.len(), stamp));
+    }
+
+    #[test]
+    fn committing_a_frame_does_not_rewrap_the_live_line() {
+        let mut s = store();
+        s.set_options(DisplayOptions {
+            timestamp: true,
+            wrap: true,
+            ..Default::default()
+        });
+        s.set_width_columns(20);
+        // The prefix is 18 columns, so ten payload columns need two rows.
+        s.append(b"0123456789", 1_000);
+        let rows_before = s.row_count();
+        let width_before = s.max_columns();
+        assert_eq!(rows_before, 2, "the live row must carry the timestamp");
+
+        s.append(b"\r\n", 1_000);
+        assert_eq!(s.row_count(), rows_before, "committing re-wrapped the row");
+        assert_eq!(
+            s.max_columns(),
+            width_before,
+            "committing changed the width"
+        );
     }
 
     #[test]

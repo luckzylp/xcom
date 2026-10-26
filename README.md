@@ -44,7 +44,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Display modes: black bg green text / white bg black text | ✅ | Controlled by theme; custom foreground/background colors also available |
 | Echo sent content | ✅ | Sent content shown in a different color in the receive area; toggle in Display settings or the receive area's right-click menu |
 | RTS / DTR control | ✅ | Switchable in real time while port is open |
-| Timestamps (frame-delimited by CR/LF) | ✅ | An incomplete frame is shown live at the end of the receive area; the timestamp is attached once CR/LF completes it |
+| Timestamps (frame-delimited by CR/LF) | ✅ | An incomplete frame is shown live at the end of the receive area with its current timestamp, which is fixed once CR/LF completes it |
 | Direction markers on every row | ✅ | Coloured `->` for received data, `<-` for sent data; toggle in Display settings or the receive area's right-click menu |
 | Save receive window as any format file | ✅ | Save as text or raw binary |
 | Clear receive (also resets Tx/Rx counters) | ✅ | |
