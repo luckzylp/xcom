@@ -160,8 +160,6 @@ pub struct XcomApp {
 
     pub(crate) side_tab: SideTab,
     pub(crate) show_about: bool,
-    /// Whether the Display settings dialog is open.
-    pub(crate) show_display_settings: bool,
     /// Whether the font-settings dialog is open.
     pub(crate) show_font_settings: bool,
     /// Whether the receive-colours dialog is open.
@@ -262,7 +260,6 @@ impl XcomApp {
             protocol_progress: None,
             side_tab: SideTab::Multi,
             show_about: false,
-            show_display_settings: false,
             show_font_settings: false,
             show_log_colors: false,
             show_highlight: false,
@@ -1209,12 +1206,6 @@ impl XcomApp {
             self.ports.poll();
             self.info(tr("已刷新串口列表"));
         }
-        // The desktop convention for "open the settings dialog".
-        let display_settings =
-            ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Comma));
-        if display_settings {
-            self.show_display_settings = true;
-        }
         // Save / Save As, matching the shortcuts shown in the File menu.
         let save =
             ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S));
@@ -1332,7 +1323,6 @@ impl XcomApp {
         panels::tool_panel(self, ui);
         panels::center_panel(self, ui);
         panels::apply_splitters(self, ui);
-        panels::display_settings_window(self, ctx);
         panels::font_settings_window(self, ctx);
         panels::log_colors_window(self, ctx);
         panels::highlight_window(self, ctx);
@@ -2952,7 +2942,7 @@ mod layout_tests {
         );
 
         // Switching the markers off must reach the painted output, not just the
-        // store: this is the option the user toggles in Display settings.
+        // store: this is the option the user toggles under View → Display.
         app.settings.display.markers = false;
         app.log.set_options(app.settings.display);
         for _ in 0..2 {
@@ -3076,16 +3066,6 @@ mod layout_tests {
         );
     }
 
-    /// The display settings page keeps the display switches and HEX layout.
-    #[test]
-    fn renders_the_display_settings_window() {
-        let ctx = egui::Context::default();
-        let mut app = seeded();
-        app.show_display_settings = true;
-        app.settings.display.mode = crate::logstore::ViewMode::Hex;
-        render(&mut app, &ctx, "display settings");
-    }
-
     /// Fonts, receive colours and keyword rules each have their own window.
     #[test]
     fn renders_the_font_colour_and_highlight_windows() {
@@ -3106,13 +3086,13 @@ mod layout_tests {
 
     /// The display-settings dialog is a real window: it can be dragged bigger.
     #[test]
-    fn the_display_settings_window_can_be_resized() {
+    fn the_font_settings_window_can_be_resized() {
         let ctx = egui::Context::default();
         // Fonts must be bound before the first frame: `set_fonts` only takes
         // effect for the next one, which is why `render` does the same.
         crate::fonts::install_default_families(&ctx);
         let mut app = seeded();
-        app.show_display_settings = true;
+        app.show_font_settings = true;
 
         let draw = |app: &mut XcomApp, events: Vec<egui::Event>| {
             let mut raw = input();
@@ -3134,7 +3114,7 @@ mod layout_tests {
         // Two passes let the window settle at its default size.
         draw(&mut app, Vec::new());
         draw(&mut app, Vec::new());
-        let before = panels::probe::display_window_rect();
+        let before = panels::probe::font_window_rect();
         assert!(
             before.width() >= 360.0 && before.height() >= 280.0,
             "the display window was not laid out: {before:?}"
@@ -3153,7 +3133,7 @@ mod layout_tests {
         draw(&mut app, vec![press(to, false)]);
         draw(&mut app, Vec::new());
 
-        let after = panels::probe::display_window_rect();
+        let after = panels::probe::font_window_rect();
         assert!(
             after.width() > before.width() + 80.0,
             "the window did not grow horizontally: {before:?} -> {after:?}"

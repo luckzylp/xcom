@@ -42,10 +42,10 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Hot-plug serial ports | ✅ | Auto-closes and prompts on disconnect |
 | Hex display (can auto-convert existing data) | ✅ | Text ⇄ HEX toggle re-renders historical data |
 | Display modes: black bg green text / white bg black text | ✅ | Controlled by theme; custom foreground/background colors also available |
-| Echo sent content | ✅ | Sent content shown in a different color in the receive area; toggle in Display settings or the receive area's right-click menu |
+| Echo sent content | ✅ | Sent content shown in a different color in the receive area; toggle under View → Display or in the receive area's right-click menu |
 | RTS / DTR control | ✅ | Switchable in real time while port is open |
 | Timestamps (frame-delimited by CR/LF) | ✅ | An incomplete frame is shown live at the end of the receive area with its current timestamp, which is fixed once CR/LF completes it |
-| Direction markers on every row | ✅ | Coloured `->` for received data, `<-` for sent data; toggle in Display settings or the receive area's right-click menu |
+| Direction markers on every row | ✅ | Coloured `->` for received data, `<-` for sent data; toggle under View → Display or in the receive area's right-click menu |
 | Save receive window as any format file | ✅ | Save as text or raw binary |
 | Live log file while receiving | ✅ | File → Log file…; the name pattern supports `%Y %M %D %h %m %s` and more, and an existing file is appended to |
 | Clear receive (also resets Tx/Rx counters) | ✅ | |
@@ -76,16 +76,16 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Receive area text selection**: drag-select with mouse, Ctrl+C copy, Ctrl+A select all (based on glyph metrics, CJK full-width characters select correctly).
 - **Keyword highlighting**: add keywords and colours under View → Display → Keyword highlighting…; each rule is a literal or, with the `.*` toggle, a regular expression (invalid patterns are flagged and skipped). Rules persist in the settings file, and longer matches win when they overlap.
 - **Live log files**: File → Log file… writes every received byte to disk while the session runs. The file name is expanded once from a pattern when logging starts, with `%Y %y %M %D %h %m %s %S %f %H %%` tokens (`%H` is the serial port name); an existing file is appended to, and the folder and pattern persist.
-- **A grouped, submenu-only View menu**: every entry under View is a submenu — Panels (configuration/tool/send area), Display (display mode, markers, timestamps, wrapping, auto-scroll, echo, HEX layout, line spacing, plus separate Font settings, Receive colours and Keyword highlighting windows), Encoding, Theme and Language.
-- **Separate appearance windows**: fonts, receive colours and keyword rules each have their own resizable window instead of being stacked inside the display settings page. The colours window shows a live sample using the effective palette.
-- **Resizable dialogs**: the display settings, font settings, receive colours, keyword highlighting, log file, shortcuts, about and custom-baud windows can be dragged larger (and smaller, down to a sensible minimum).
+- **A grouped, submenu-only View menu**: every entry under View is a submenu — Panels (configuration/tool/send area), Display (display mode, markers, timestamps, wrapping, auto-scroll, echo, HEX layout, plus separate Font settings, Receive colours and Keyword highlighting windows), Encoding, Theme and Language.
+- **Separate appearance windows**: fonts, receive colours and keyword rules each have their own resizable window instead of sharing one settings page. Line spacing now lives with the fonts, and the colours window shows a live sample using the effective palette.
+- **Resizable dialogs**: the font settings, receive colours, keyword highlighting, log file, shortcuts, about and custom-baud windows can be dragged larger (and smaller, down to a sensible minimum).
 - **Virtualized log view**: Only visible lines are rendered, staying smooth during long high-speed reception.
-- **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off in Display settings or the receive area's right-click menu. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
+- **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off under View → Display or in the receive area's right-click menu. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.
-- **Adjustable receive area line spacing**; auto-wrap width follows window resize and the selected font.
+- **Adjustable receive area line spacing** (in the font settings window); auto-wrap width follows window resize and the selected font.
 - **Collapsible side panels**: drag the configuration panel's splitter all the way left (or the tool panel's all the way right) and it snaps shut, handing the width to the receive area. A hairline stays at the edge, with a chevron on hover to open it again; the "Configuration panel / Tool panel" items under **View** are the same state. The centre column keeps a 320px floor, so each panel's maximum is a *soft* one that only applies when the window can spare the room.
 - **The multi-send panel marks the entry being sent**: during "send checked" or looping, the entry in flight is highlighted with a leading colour bar, and the send status bar below the table shows `Sending #3 (3 / 7)` using the same global number as the table's `#` column (the run spans the whole pool, not just the current page, and the mark appears only on the page currently showing that entry). The mark clears when the run ends, is stopped, the port closes, or the app restarts. "Loop sending" is a run state rather than a saved preference, so it never survives into a state where it claims to be looping but isn't.
-- Configuration file persistence; restores last serial and display settings after restart.
+- Configuration file persistence; restores last serial and display options after restart.
 
 ---
 
@@ -213,7 +213,6 @@ The frame period **must be greater than the response frame-delimiting time**, ot
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl + ,` | Open display settings |
 | `Ctrl + Enter` | Send the content of the send area |
 | `Ctrl + O` | Open / close serial port |
 | `F5` | Refresh the port list |

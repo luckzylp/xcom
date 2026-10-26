@@ -347,7 +347,6 @@ static EN: &[(&str, &str)] = &[
                               "Note: close the port before changing its parameters"),
 
     // -- panels ------------------------------------------------------------
-    ("显示设置", "Display settings"),
     ("16进制显示", "Hex display"),
     ("HEX 样式", "Hex style"),
     ("连续", "Continuous"),
@@ -370,6 +369,8 @@ static EN: &[(&str, &str)] = &[
     ("发送区字号", "Send font size"),
     ("字体修改会立即应用到对应的文本区。",
      "Font changes apply to the matching text area immediately."),
+    ("行距 0 表示使用字体默认行高。",
+     "Spacing 0 uses the font's default row height."),
     ("接收区示例", "Receive area sample"),
     ("预览", "Preview"),
     ("自动", "Automatic"),

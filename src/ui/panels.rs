@@ -70,7 +70,7 @@ pub(crate) mod probe {
         /// the panel hands the multi-send table and the bar under it.
         static TOOL_PANEL_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static BOTTOM_STATUS_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static DISPLAY_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        static FONT_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static ABOUT_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static ABOUT_HEADER_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static ABOUT_TITLE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
@@ -570,17 +570,17 @@ pub(crate) mod probe {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_display_window_rect(rect: egui::Rect) {
-        DISPLAY_WINDOW_RECT.with(|cell| cell.set(rect));
+    pub(crate) fn set_font_window_rect(rect: egui::Rect) {
+        FONT_WINDOW_RECT.with(|cell| cell.set(rect));
     }
     #[cfg(not(test))]
     #[inline(always)]
-    pub(crate) fn set_display_window_rect<R>(_rect: R) {}
+    pub(crate) fn set_font_window_rect<R>(_rect: R) {}
 
-    /// Where the display-settings window was laid out last.
+    /// Where the font-settings window was laid out last.
     #[cfg(test)]
-    pub(crate) fn display_window_rect() -> egui::Rect {
-        DISPLAY_WINDOW_RECT.with(|cell| cell.get())
+    pub(crate) fn font_window_rect() -> egui::Rect {
+        FONT_WINDOW_RECT.with(|cell| cell.get())
     }
 
     #[cfg(test)]
@@ -1324,11 +1324,19 @@ fn display_menu(app: &mut XcomApp, ui: &mut Ui) {
     }
 
     let mut markers = display.markers;
-    if ui.checkbox(&mut markers, tr("方向标记")).changed() {
+    if ui
+        .checkbox(&mut markers, tr("方向标记"))
+        .on_hover_text(tr("接收的数据以 -> 开头，发送的数据以 <- 开头"))
+        .changed()
+    {
         display.markers = markers;
     }
     let mut timestamp = display.timestamp;
-    if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
+    if ui
+        .checkbox(&mut timestamp, tr("时间戳"))
+        .on_hover_text(tr("以回车换行断帧；未收全的一帧先显示当前时间，收全后定帧"))
+        .changed()
+    {
         display.timestamp = timestamp;
     }
     let mut wrap = display.wrap;
@@ -1343,24 +1351,14 @@ fn display_menu(app: &mut XcomApp, ui: &mut Ui) {
         app.set_auto_scroll(auto_scroll);
     }
     let mut echo = app.settings.echo_sent;
-    if ui.checkbox(&mut echo, tr("回显发送")).changed() {
+    if ui
+        .checkbox(&mut echo, tr("回显发送"))
+        .on_hover_text(tr("把发出的内容显示在接收区，便于确认是否真的发出"))
+        .changed()
+    {
         app.settings.echo_sent = echo;
         app.mark_settings_dirty();
     }
-
-    ui.menu_button(tr("行距"), |ui| {
-        for spacing in [0.0, 2.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 40.0] {
-            let selected = (app.settings.line_spacing - spacing).abs() < 0.5;
-            if ui
-                .selectable_label(selected, format!("{spacing:.0} px"))
-                .clicked()
-            {
-                app.settings.line_spacing = spacing;
-                app.mark_settings_dirty();
-                ui.close();
-            }
-        }
-    });
 
     ui.separator();
     if menu_dialog_item(ui, "字体设置") {
@@ -1371,10 +1369,6 @@ fn display_menu(app: &mut XcomApp, ui: &mut Ui) {
     }
     if menu_dialog_item(ui, "关键字高亮") {
         app.show_highlight = true;
-    }
-    ui.separator();
-    if menu_dialog_item_shortcut(ui, "显示设置", "Ctrl+,") {
-        app.show_display_settings = true;
     }
 
     app.set_display_options(display);
@@ -1461,49 +1455,8 @@ fn help_menu(app: &mut XcomApp, ui: &mut Ui) {
 }
 
 // ---------------------------------------------------------------------------
-// Display settings
+// Appearance windows
 // ---------------------------------------------------------------------------
-
-/// The display form, moved out of the configuration panel.
-///
-/// View → Display carries the switches used from day to day; this page adds
-/// the HEX layout and a fine-grained line-spacing slider.  Fonts, receive
-/// colours and keyword rules now have windows of their own.
-pub(crate) fn display_settings_window(app: &mut XcomApp, ctx: &Context) {
-    if !app.show_display_settings {
-        return;
-    }
-    let mut open = true;
-    let mut close_requested = false;
-    let window = egui::Window::new(tr("显示设置"))
-        .id(egui::Id::new("display_settings_dialog"))
-        .title_bar(false)
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_size([480.0, 480.0])
-        .min_size([360.0, 280.0])
-        .show(ctx, |ui| {
-            let header = dialog::header(ui, tr("显示设置"), None);
-            if header.close_clicked {
-                close_requested = true;
-            }
-            ui.separator();
-            // The window is resizable; the page fills whatever height it has
-            // and scrolls inside instead of forcing the window to grow.
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    display_settings_ui(app, ui);
-                });
-        });
-    if let Some(window) = window {
-        probe::set_display_window_rect(window.response.rect);
-    }
-    if !open || close_requested {
-        app.show_display_settings = false;
-    }
-}
 
 /// The font grid shared by the font-settings window.
 fn font_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
@@ -1561,6 +1514,25 @@ fn font_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
         app.mark_settings_dirty();
     }
 
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(tr("行距"));
+        let mut spacing = app.settings.line_spacing;
+        if ui
+            .add(
+                egui::Slider::new(
+                    &mut spacing,
+                    crate::settings::LINE_SPACING_MIN..=crate::settings::LINE_SPACING_MAX,
+                )
+                .fixed_decimals(0),
+            )
+            .changed()
+        {
+            app.settings.line_spacing = spacing;
+            app.mark_settings_dirty();
+        }
+    });
+    ui.small(tr("行距 0 表示使用字体默认行高。"));
     ui.small(tr("字体修改会立即应用到对应的文本区。"));
 }
 
@@ -1606,7 +1578,7 @@ pub(crate) fn font_settings_window(app: &mut XcomApp, ctx: &Context) {
     }
     let mut open = true;
     let mut close_requested = false;
-    egui::Window::new(tr("字体设置"))
+    let window = egui::Window::new(tr("字体设置"))
         .id(egui::Id::new("font_settings_dialog"))
         .title_bar(false)
         .open(&mut open)
@@ -1624,6 +1596,9 @@ pub(crate) fn font_settings_window(app: &mut XcomApp, ctx: &Context) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| font_settings_ui(app, ui));
         });
+    if let Some(window) = window {
+        probe::set_font_window_rect(window.response.rect);
+    }
     if !open || close_requested {
         app.show_font_settings = false;
     }
@@ -2343,127 +2318,6 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
         data.insert_temp(manager_id, manager_open);
         data.insert_temp(input_id, pending_baud);
     });
-}
-
-/// Every display control, without a container.
-///
-/// The left panel used to host this; it now lives in a dialog opened from
-/// **View → Display settings…**, so the configuration panel can stay focused on
-/// the serial connection.
-fn display_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
-    let mut display = app.settings.display;
-    let mut changed = false;
-
-    let mut hex = display.mode == ViewMode::Hex;
-    if ui.checkbox(&mut hex, tr("16进制显示")).changed() {
-        display.mode = if hex { ViewMode::Hex } else { ViewMode::Text };
-        changed = true;
-    }
-
-    if display.mode == ViewMode::Hex {
-        ui.horizontal(|ui| {
-            ui.label(tr("HEX 样式"));
-            let mut style = display.hex_style;
-            if combo(
-                ui,
-                "hex_style",
-                &mut style,
-                &[HexStyle::Stream, HexStyle::Dump],
-                |s| match s {
-                    HexStyle::Stream => tr("连续").to_owned(),
-                    HexStyle::Dump => tr("16 字节/行").to_owned(),
-                },
-            ) {
-                display.hex_style = style;
-                changed = true;
-            }
-            let mut upper = display.upper_hex;
-            if ui.checkbox(&mut upper, tr("大写")).changed() {
-                display.upper_hex = upper;
-                changed = true;
-            }
-        });
-        if display.hex_style == HexStyle::Dump {
-            ui.horizontal(|ui| {
-                ui.label(tr("每行字节"));
-                let mut per_row = display.hex_bytes_per_row;
-                if ui
-                    .add(egui::DragValue::new(&mut per_row).range(1..=64))
-                    .changed()
-                {
-                    display.hex_bytes_per_row = per_row;
-                    changed = true;
-                }
-            });
-        }
-    }
-
-    let mut markers = display.markers;
-    if ui
-        .checkbox(&mut markers, tr("方向标记"))
-        .on_hover_text(tr("接收的数据以 -> 开头，发送的数据以 <- 开头"))
-        .changed()
-    {
-        display.markers = markers;
-        changed = true;
-    }
-
-    let mut timestamp = display.timestamp;
-    if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
-        display.timestamp = timestamp;
-        changed = true;
-    }
-    if display.timestamp {
-        ui.small(tr("以回车换行断帧；未收全的一帧先显示当前时间，收全后定帧"));
-    }
-
-    let mut wrap = display.wrap;
-    if ui.checkbox(&mut wrap, tr("自动换行")).changed() {
-        display.wrap = wrap;
-        changed = true;
-    }
-
-    let mut auto_scroll = app.settings.auto_scroll;
-    if ui
-        .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
-        .changed()
-    {
-        app.set_auto_scroll(auto_scroll);
-    }
-
-    let mut echo = app.settings.echo_sent;
-    if ui
-        .checkbox(&mut echo, tr("回显发送"))
-        .on_hover_text(tr("把发出的内容显示在接收区，便于确认是否真的发出"))
-        .changed()
-    {
-        app.settings.echo_sent = echo;
-        app.mark_settings_dirty();
-    }
-
-    ui.horizontal(|ui| {
-        ui.label(tr("行距"));
-        let mut spacing = app.settings.line_spacing;
-        if ui
-            .add(
-                egui::Slider::new(
-                    &mut spacing,
-                    crate::settings::LINE_SPACING_MIN..=crate::settings::LINE_SPACING_MAX,
-                )
-                .fixed_decimals(0),
-            )
-            .changed()
-        {
-            app.settings.line_spacing = spacing;
-            app.mark_settings_dirty();
-        }
-    });
-
-    if changed {
-        app.settings.display = display;
-        app.log.set_options(display);
-        app.mark_settings_dirty();
-    }
 }
 
 fn statistics_section(app: &mut XcomApp, ui: &mut Ui) {
@@ -4293,7 +4147,6 @@ pub(crate) fn shortcuts_window(app: &mut XcomApp, ctx: &Context) {
                 .spacing([16.0, 4.0])
                 .show(ui, |ui| {
                     let rows = [
-                        ("Ctrl+,", tr("显示设置")),
                         ("Ctrl+O", tr("打开/关闭串口")),
                         ("Ctrl+Enter", tr("发送")),
                         ("Ctrl+S", tr("保存接收数据")),
