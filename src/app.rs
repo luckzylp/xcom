@@ -1632,6 +1632,9 @@ mod layout_tests {
         let manage = panels::probe::custom_baud_button_rect();
         assert!(manage.width() > 0.0, "custom-baud manager button missing");
         click(&ctx, &mut app, manage.center());
+        // The centered popup needs one more frame to settle its size before
+        // its child rectangles are read for the follow-up clicks.
+        full_frame(&ctx, &mut app, input());
 
         let popup = panels::probe::custom_baud_window_rect();
         let input_rect = panels::probe::custom_baud_input_rect();
@@ -1665,6 +1668,7 @@ mod layout_tests {
         assert!(!app.settings.serial.baud_choices().contains(&115_201));
 
         // The dialog draws its own header, so its close button must work too.
+        full_frame(&ctx, &mut app, input());
         full_frame(&ctx, &mut app, input());
         let close = panels::probe::custom_baud_close_rect();
         assert!(close.width() > 0.0, "the dialog close button is missing");
@@ -3141,6 +3145,51 @@ mod layout_tests {
         assert!(
             after.height() > before.height() + 50.0,
             "the window did not grow vertically: {before:?} -> {after:?}"
+        );
+    }
+
+    /// A dialog opened from a menu is centered, and re-opening centers it
+    /// again instead of restoring wherever it was last dragged.
+    #[test]
+    fn menus_open_dialogs_centered() {
+        let ctx = egui::Context::default();
+        crate::fonts::install_default_families(&ctx);
+        let mut app = seeded();
+
+        let draw = |app: &mut XcomApp| {
+            let mut raw = input();
+            raw.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 840.0),
+            ));
+            let mut output = ctx.run_ui(raw, |ui| app.draw(ui));
+            output.textures_delta.clear();
+        };
+        let centered = |rect: egui::Rect| {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 840.0));
+            (rect.center() - screen.center()).length() < 12.0
+        };
+
+        app.show_font_settings = true;
+        draw(&mut app);
+        draw(&mut app);
+        let first = panels::probe::font_window_rect();
+        assert!(
+            centered(first),
+            "the font window opened off-center: {first:?}"
+        );
+
+        // Close it, then open it again: it must center again rather than
+        // reappear at the old position.
+        app.show_font_settings = false;
+        draw(&mut app);
+        app.show_font_settings = true;
+        draw(&mut app);
+        draw(&mut app);
+        let again = panels::probe::font_window_rect();
+        assert!(
+            centered(again),
+            "the font window did not re-center on the second opening: {again:?}"
         );
     }
 

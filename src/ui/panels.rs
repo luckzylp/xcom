@@ -1151,12 +1151,40 @@ fn custom_baud_manager_id() -> egui::Id {
     egui::Id::new("custom_baud_manager")
 }
 
+/// Center a dialog on the first frame it opens.
+///
+/// egui remembers a window's position by id, so a dialog opened again would
+/// reappear wherever it was last dragged.  The one-shot flag lives in egui's
+/// temporary memory: it is set on the opening frame and cleared when the
+/// window closes, so every menu-driven opening starts centered while the
+/// window stays movable afterwards.
+fn center_on_open<'open>(
+    window: egui::Window<'open>,
+    ctx: &Context,
+    id: egui::Id,
+) -> egui::Window<'open> {
+    let key = id.with("center_on_open");
+    let already_open = ctx.data(|data| data.get_temp::<bool>(key)).unwrap_or(false);
+    let window = window.pivot(egui::Align2::CENTER_CENTER);
+    if already_open {
+        window
+    } else {
+        ctx.data_mut(|data| data.insert_temp(key, true));
+        window.current_pos(ctx.content_rect().center())
+    }
+}
+
+/// Note that a dialog is closed, so the next opening centers it again.
+fn dialog_closed(ctx: &Context, id: egui::Id) {
+    ctx.data_mut(|data| data.insert_temp(id.with("center_on_open"), false));
+}
+
 /// The application menu bar.
 ///
 /// Configuration that used to sit in one crowded strip is organised the way a
 /// desktop application would: commands live in the menu of the thing they act
-/// on, toggles are check items under View, and the settings that need room for
-/// labels and colour pickers live in the display settings page.
+/// on, toggles are check items under View, and settings that need room for
+/// labels and colour pickers live in their own windows.
 pub(crate) fn menu_bar(app: &mut XcomApp, ui: &mut Ui) {
     egui::Panel::top("menu_bar").show(ui, |ui| {
         probe::begin_top_bar();
@@ -1573,29 +1601,31 @@ fn log_colors_ui(app: &mut XcomApp, ui: &mut Ui) {
 
 /// The font-settings window (View → Display → Font settings…).
 pub(crate) fn font_settings_window(app: &mut XcomApp, ctx: &Context) {
+    let id = egui::Id::new("font_settings_dialog");
     if !app.show_font_settings {
+        dialog_closed(ctx, id);
         return;
     }
     let mut open = true;
     let mut close_requested = false;
     let window = egui::Window::new(tr("字体设置"))
-        .id(egui::Id::new("font_settings_dialog"))
+        .id(id)
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
         .default_size([520.0, 360.0])
-        .min_size([380.0, 260.0])
-        .show(ctx, |ui| {
-            let header = dialog::header(ui, tr("字体设置"), None);
-            if header.close_clicked {
-                close_requested = true;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| font_settings_ui(app, ui));
-        });
+        .min_size([380.0, 260.0]);
+    let window = center_on_open(window, ctx, id).show(ctx, |ui| {
+        let header = dialog::header(ui, tr("字体设置"), None);
+        if header.close_clicked {
+            close_requested = true;
+        }
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| font_settings_ui(app, ui));
+    });
     if let Some(window) = window {
         probe::set_font_window_rect(window.response.rect);
     }
@@ -1606,29 +1636,31 @@ pub(crate) fn font_settings_window(app: &mut XcomApp, ctx: &Context) {
 
 /// The receive-colours window (View → Display → Receive colours…).
 pub(crate) fn log_colors_window(app: &mut XcomApp, ctx: &Context) {
+    let id = egui::Id::new("log_colors_dialog");
     if !app.show_log_colors {
+        dialog_closed(ctx, id);
         return;
     }
     let mut open = true;
     let mut close_requested = false;
-    egui::Window::new(tr("接收区配色"))
-        .id(egui::Id::new("log_colors_dialog"))
+    let window = egui::Window::new(tr("接收区配色"))
+        .id(id)
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
         .default_size([440.0, 260.0])
-        .min_size([340.0, 200.0])
-        .show(ctx, |ui| {
-            let header = dialog::header(ui, tr("接收区配色"), None);
-            if header.close_clicked {
-                close_requested = true;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| log_colors_ui(app, ui));
-        });
+        .min_size([340.0, 200.0]);
+    center_on_open(window, ctx, id).show(ctx, |ui| {
+        let header = dialog::header(ui, tr("接收区配色"), None);
+        if header.close_clicked {
+            close_requested = true;
+        }
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| log_colors_ui(app, ui));
+    });
     if !open || close_requested {
         app.show_log_colors = false;
     }
@@ -1636,29 +1668,31 @@ pub(crate) fn log_colors_window(app: &mut XcomApp, ctx: &Context) {
 
 /// The keyword-highlight window (View → Display → Keyword highlighting…).
 pub(crate) fn highlight_window(app: &mut XcomApp, ctx: &Context) {
+    let id = egui::Id::new("highlight_dialog");
     if !app.show_highlight {
+        dialog_closed(ctx, id);
         return;
     }
     let mut open = true;
     let mut close_requested = false;
-    egui::Window::new(tr("关键字高亮"))
-        .id(egui::Id::new("highlight_dialog"))
+    let window = egui::Window::new(tr("关键字高亮"))
+        .id(id)
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
         .default_size([480.0, 480.0])
-        .min_size([380.0, 300.0])
-        .show(ctx, |ui| {
-            let header = dialog::header(ui, tr("关键字高亮"), None);
-            if header.close_clicked {
-                close_requested = true;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| highlight_settings_ui(app, ui));
-        });
+        .min_size([380.0, 300.0]);
+    center_on_open(window, ctx, id).show(ctx, |ui| {
+        let header = dialog::header(ui, tr("关键字高亮"), None);
+        if header.close_clicked {
+            close_requested = true;
+        }
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| highlight_settings_ui(app, ui));
+    });
     if !open || close_requested {
         app.show_highlight = false;
     }
@@ -2219,6 +2253,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
     // caption (~1.4x the body) is what made this small dialog look
     // top-heavy.  Without a title bar egui falls back to "drag anywhere", so
     // the compact header we draw below keeps the dialog movable.
+    let was_open = manager_open;
     let popup = egui::Window::new(tr("自定义波特率"))
         .id(manager_id)
         .title_bar(false)
@@ -2226,83 +2261,86 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
         .min_size([280.0, 220.0])
         .collapsible(false)
         .resizable(true)
-        .open(&mut manager_open)
-        .show(&ctx, |ui| {
-            ui.set_min_width(268.0);
+        .open(&mut manager_open);
+    let popup = if was_open {
+        center_on_open(popup, &ctx, manager_id)
+    } else {
+        dialog_closed(&ctx, manager_id);
+        popup
+    };
+    let popup = popup.show(&ctx, |ui| {
+        ui.set_min_width(268.0);
 
-            // ── compact header ──────────────────────────────────────────
-            let paint_icon = |ui: &Ui, rect, color| paint_tune_icon(ui, rect, color);
-            let header = dialog::header(ui, tr("自定义波特率"), Some(&paint_icon));
-            probe::set_custom_baud_header_rect(header.rect);
-            probe::set_custom_baud_title_rect(header.title_rect);
-            probe::set_custom_baud_close_rect(header.close_rect);
-            if header.close_clicked {
-                close_requested = true;
+        // ── compact header ──────────────────────────────────────────
+        let paint_icon = |ui: &Ui, rect, color| paint_tune_icon(ui, rect, color);
+        let header = dialog::header(ui, tr("自定义波特率"), Some(&paint_icon));
+        probe::set_custom_baud_header_rect(header.rect);
+        probe::set_custom_baud_title_rect(header.title_rect);
+        probe::set_custom_baud_close_rect(header.close_rect);
+        if header.close_clicked {
+            close_requested = true;
+        }
+        ui.separator();
+
+        // ── add a rate ──────────────────────────────────────────────
+        let can_add = app.settings.serial.can_add_custom_baud(pending_baud);
+        ui.add_space(2.0);
+        ui.label(tr("添加波特率"));
+        ui.horizontal(|ui| {
+            let input = ui.add_sized(
+                [(ui.available_width() - 64.0).max(96.0), 24.0],
+                egui::DragValue::new(&mut pending_baud)
+                    .speed(100.0)
+                    .range(CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1),
+            );
+            probe::set_custom_baud_input_rect(input.rect);
+            let add = ui.add_enabled(
+                can_add,
+                egui::Button::new(tr("添加")).min_size(egui::vec2(56.0, 24.0)),
+            );
+            probe::set_custom_baud_add_rect(add.rect);
+            if add.clicked() && app.settings.serial.add_custom_baud(pending_baud) {
+                app.mark_settings_dirty();
             }
-            ui.separator();
+        });
+        if !can_add {
+            let hint = if app.settings.serial.custom_bauds.len() >= MAX_CUSTOM_BAUDS {
+                tr("自定义波特率列表已满")
+            } else {
+                tr("该波特率已存在或为标准值")
+            };
+            ui.weak(hint);
+        }
 
-            // ── add a rate ──────────────────────────────────────────────
-            let can_add = app.settings.serial.can_add_custom_baud(pending_baud);
-            ui.add_space(2.0);
-            ui.label(tr("添加波特率"));
-            ui.horizontal(|ui| {
-                let input = ui.add_sized(
-                    [(ui.available_width() - 64.0).max(96.0), 24.0],
-                    egui::DragValue::new(&mut pending_baud)
-                        .speed(100.0)
-                        .range(CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1),
-                );
-                probe::set_custom_baud_input_rect(input.rect);
-                let add = ui.add_enabled(
-                    can_add,
-                    egui::Button::new(tr("添加")).min_size(egui::vec2(56.0, 24.0)),
-                );
-                probe::set_custom_baud_add_rect(add.rect);
-                if add.clicked() && app.settings.serial.add_custom_baud(pending_baud) {
-                    app.mark_settings_dirty();
+        // ── saved rates ─────────────────────────────────────────────
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(2.0);
+        ui.label(tr("已保存的自定义波特率"));
+        egui::ScrollArea::vertical()
+            .max_height(200.0)
+            .show(ui, |ui| {
+                let rates = app.settings.serial.custom_bauds.clone();
+                if rates.is_empty() {
+                    ui.weak(tr("暂无自定义波特率"));
+                }
+                for rate in rates {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(rate.to_string()).monospace());
+                        ui.weak("bps");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete = ui
+                                .add_sized([24.0, 22.0], egui::Button::new("−"))
+                                .on_hover_text(tr("删除"));
+                            probe::push_custom_baud_delete_rect(rate, delete.rect);
+                            if delete.clicked() {
+                                remove_baud = Some(rate);
+                            }
+                        });
+                    });
                 }
             });
-            if !can_add {
-                let hint = if app.settings.serial.custom_bauds.len() >= MAX_CUSTOM_BAUDS {
-                    tr("自定义波特率列表已满")
-                } else {
-                    tr("该波特率已存在或为标准值")
-                };
-                ui.weak(hint);
-            }
-
-            // ── saved rates ─────────────────────────────────────────────
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(2.0);
-            ui.label(tr("已保存的自定义波特率"));
-            egui::ScrollArea::vertical()
-                .max_height(200.0)
-                .show(ui, |ui| {
-                    let rates = app.settings.serial.custom_bauds.clone();
-                    if rates.is_empty() {
-                        ui.weak(tr("暂无自定义波特率"));
-                    }
-                    for rate in rates {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(rate.to_string()).monospace());
-                            ui.weak("bps");
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let delete = ui
-                                        .add_sized([24.0, 22.0], egui::Button::new("−"))
-                                        .on_hover_text(tr("删除"));
-                                    probe::push_custom_baud_delete_rect(rate, delete.rect);
-                                    if delete.clicked() {
-                                        remove_baud = Some(rate);
-                                    }
-                                },
-                            );
-                        });
-                    }
-                });
-        });
+    });
     if let Some(popup) = popup {
         probe::set_custom_baud_window_rect(popup.response.rect);
     }
@@ -3904,7 +3942,9 @@ pub(crate) fn status_bar(app: &mut XcomApp, ui: &mut Ui) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
+    let id = egui::Id::new("about_dialog");
     if !app.show_about {
+        dialog_closed(ctx, id);
         return;
     }
     let mut open = true;
@@ -3914,15 +3954,15 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
     // what lets the button follow the desktop's layout; with no title bar of
     // its own, egui keeps the window draggable from anywhere.
     let window = egui::Window::new(tr("关于 XCOM"))
-        .id(egui::Id::new("about_dialog"))
+        .id(id)
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
         .default_size([480.0, 560.0])
-        .min_size([360.0, 240.0])
-        .show(ctx, |ui| {
-            let header = dialog::header(ui, tr("关于 XCOM"), None);
+        .min_size([360.0, 240.0]);
+    let window = center_on_open(window, ctx, id).show(ctx, |ui| {
+        let header = dialog::header(ui, tr("关于 XCOM"), None);
             probe::set_about_header_rect(header.rect);
             probe::set_about_title_rect(header.title_rect);
             probe::set_about_close_rect(header.close_rect);
@@ -3976,20 +4016,22 @@ pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
 /// owns the directory and the file-name pattern; the app never starts writing
 /// on launch.
 pub(crate) fn log_file_window(app: &mut XcomApp, ctx: &Context) {
+    let id = egui::Id::new("log_file_dialog");
     if !app.show_log_file {
+        dialog_closed(ctx, id);
         return;
     }
     let mut open = true;
     let mut close_requested = false;
-    egui::Window::new(tr("日志文件"))
-        .id(egui::Id::new("log_file_dialog"))
+    let window = egui::Window::new(tr("日志文件"))
+        .id(id)
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
         .default_size([480.0, 420.0])
-        .min_size([360.0, 300.0])
-        .show(ctx, |ui| {
+        .min_size([360.0, 300.0]);
+    center_on_open(window, ctx, id).show(ctx, |ui| {
             let header = dialog::header(ui, tr("日志文件"), None);
             if header.close_clicked {
                 close_requested = true;
@@ -4080,41 +4122,42 @@ pub(crate) fn log_file_window(app: &mut XcomApp, ctx: &Context) {
 /// "Restore defaults" is destructive and irreversible, so the menu item only
 /// asks; the reset itself happens after an explicit confirmation here.
 pub(crate) fn reset_confirm_window(app: &mut XcomApp, ctx: &Context) {
+    let id = egui::Id::new("reset_confirm_dialog");
     if !app.show_reset_confirm {
+        dialog_closed(ctx, id);
         return;
     }
     let mut open = true;
     let mut close_requested = false;
-    egui::Window::new(tr("恢复默认设置"))
-        .id(egui::Id::new("reset_confirm_dialog"))
+    let window = egui::Window::new(tr("恢复默认设置"))
+        .id(id)
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .min_size([360.0, 200.0])
-        .show(ctx, |ui| {
-            let header = dialog::header(ui, tr("恢复默认设置"), None);
-            if header.close_clicked {
+        .min_size([360.0, 200.0]);
+    center_on_open(window, ctx, id).show(ctx, |ui| {
+        let header = dialog::header(ui, tr("恢复默认设置"), None);
+        if header.close_clicked {
+            close_requested = true;
+        }
+        ui.separator();
+        ui.label(tr(
+            "将清除全部设置（串口参数、界面布局、主题与语言等），此操作无法撤销。",
+        ));
+        ui.add_space(6.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let confirm =
+                egui::Button::new(RichText::new(tr("确认恢复")).color(level_color(Level::Warning)));
+            if ui.add(confirm).clicked() {
+                app.apply_default_settings();
                 close_requested = true;
             }
-            ui.separator();
-            ui.label(tr(
-                "将清除全部设置（串口参数、界面布局、主题与语言等），此操作无法撤销。",
-            ));
-            ui.add_space(6.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let confirm = egui::Button::new(
-                    RichText::new(tr("确认恢复")).color(level_color(Level::Warning)),
-                );
-                if ui.add(confirm).clicked() {
-                    app.apply_default_settings();
-                    close_requested = true;
-                }
-                if ui.button(tr("取消")).clicked() {
-                    close_requested = true;
-                }
-            });
+            if ui.button(tr("取消")).clicked() {
+                close_requested = true;
+            }
         });
+    });
     if !open || close_requested {
         app.show_reset_confirm = false;
     }
@@ -4123,46 +4166,48 @@ pub(crate) fn reset_confirm_window(app: &mut XcomApp, ctx: &Context) {
 /// The keyboard map for every shortcut the app handles, so users never have to
 /// discover them by reading the source.
 pub(crate) fn shortcuts_window(app: &mut XcomApp, ctx: &Context) {
+    let id = egui::Id::new("shortcuts_dialog");
     if !app.show_shortcuts {
+        dialog_closed(ctx, id);
         return;
     }
     let mut open = true;
     let mut close_requested = false;
-    egui::Window::new(tr("快捷键"))
-        .id(egui::Id::new("shortcuts_dialog"))
+    let window = egui::Window::new(tr("快捷键"))
+        .id(id)
         .title_bar(false)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
         .default_size([420.0, 380.0])
-        .min_size([320.0, 240.0])
-        .show(ctx, |ui| {
-            let header = dialog::header(ui, tr("快捷键"), None);
-            if header.close_clicked {
-                close_requested = true;
-            }
-            ui.separator();
-            egui::Grid::new("shortcuts_grid")
-                .num_columns(2)
-                .spacing([16.0, 4.0])
-                .show(ui, |ui| {
-                    let rows = [
-                        ("Ctrl+O", tr("打开/关闭串口")),
-                        ("Ctrl+Enter", tr("发送")),
-                        ("Ctrl+S", tr("保存接收数据")),
-                        ("Ctrl+Shift+S", tr("保存原始数据")),
-                        ("Ctrl+C", tr("复制选中")),
-                        ("Ctrl+A", tr("全选")),
-                        ("F5", tr("刷新串口列表")),
-                        ("Ctrl+Q", tr("退出")),
-                    ];
-                    for (keys, what) in rows {
-                        ui.label(RichText::new(keys).monospace());
-                        ui.label(what);
-                        ui.end_row();
-                    }
-                });
-        });
+        .min_size([320.0, 240.0]);
+    center_on_open(window, ctx, id).show(ctx, |ui| {
+        let header = dialog::header(ui, tr("快捷键"), None);
+        if header.close_clicked {
+            close_requested = true;
+        }
+        ui.separator();
+        egui::Grid::new("shortcuts_grid")
+            .num_columns(2)
+            .spacing([16.0, 4.0])
+            .show(ui, |ui| {
+                let rows = [
+                    ("Ctrl+O", tr("打开/关闭串口")),
+                    ("Ctrl+Enter", tr("发送")),
+                    ("Ctrl+S", tr("保存接收数据")),
+                    ("Ctrl+Shift+S", tr("保存原始数据")),
+                    ("Ctrl+C", tr("复制选中")),
+                    ("Ctrl+A", tr("全选")),
+                    ("F5", tr("刷新串口列表")),
+                    ("Ctrl+Q", tr("退出")),
+                ];
+                for (keys, what) in rows {
+                    ui.label(RichText::new(keys).monospace());
+                    ui.label(what);
+                    ui.end_row();
+                }
+            });
+    });
     if !open || close_requested {
         app.show_shortcuts = false;
     }
