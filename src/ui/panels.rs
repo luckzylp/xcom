@@ -1538,7 +1538,7 @@ fn tools_menu(app: &mut XcomApp, ui: &mut Ui) {
         app.mark_settings_dirty();
     }
     ui.separator();
-    if menu_dialog_item(ui, "管理自定义波特率") {
+    if menu_dialog_item(ui, "自定义波特率") {
         app.settings.show_config_panel = true;
         app.mark_settings_dirty();
         ui.ctx()
@@ -2228,7 +2228,7 @@ fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
                             paint_tune_icon(row_ui, manage.rect, row_ui.visuals().text_color());
                         probe::set_custom_baud_icon_shapes(icon_shapes);
                         probe::set_custom_baud_button_label("");
-                        let manage = manage.on_hover_text(tr("管理自定义波特率"));
+                        let manage = manage.on_hover_text(tr("自定义波特率"));
                         probe::set_custom_baud_button_rect(manage.rect);
                         if manage.clicked() {
                             manager_open = true;

@@ -324,7 +324,7 @@ static EN: &[(&str, &str)] = &[
     ("自定义波特率",           "Custom baud rate"),
     ("已保存的自定义波特率",   "Saved custom baud rates"),
     ("暂无自定义波特率",       "No custom baud rates yet"),
-    ("管理自定义波特率",       "Manage custom baud rates"),
+    ("自定义波特率",       "Custom baud rates"),
     ("自定义波特率列表已满",   "The custom baud rate list is full"),
     ("该波特率已存在或为标准值", "This baud rate already exists or is standard"),
     ("添加波特率",             "Add a baud rate"),
