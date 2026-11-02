@@ -4109,6 +4109,118 @@ mod layout_tests {
         );
     }
 
+    /// Clicking a row's 发送 button sends that entry, exactly like the send
+    /// area's own button does.
+    #[test]
+    #[cfg(unix)]
+    fn the_row_send_button_sends_the_entry() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let Some(mut pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        crate::fonts::install_default_families(&ctx);
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_tool_panel = true;
+        app.side_tab = SideTab::Multi;
+        app.settings.serial.port = pty.slave_path.clone();
+        if let Err(e) = app.link.open(&app.settings.serial) {
+            eprintln!("skipping: cannot open serial port: {e}");
+            return;
+        }
+        app.settings.multi.newline_cr = false;
+        app.settings.multi.newline_lf = false;
+        let added = app.settings.multi.add_entry();
+        let entry = app.settings.multi.entry_mut(added).expect("entry");
+        entry.text = "AT".to_owned();
+        entry.enabled = true;
+        entry.newline = false;
+
+        full_frame(&ctx, &mut app, input());
+        let send = panels::probe::multi_send_rects()
+            .into_iter()
+            .find(|(index, _)| *index == 0)
+            .map(|(_, rect)| rect)
+            .expect("row 0 needs a send button");
+        assert!(send.width() > 0.0, "the send button was not laid out");
+        click(&ctx, &mut app, send.center());
+
+        let got = pty.read_available(Duration::from_millis(200));
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            "AT",
+            "messages: {:?}",
+            app.messages
+                .iter()
+                .map(|message| message.text.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Typing into a row and then clicking its 发送 button sends the typed text.
+    #[test]
+    #[cfg(unix)]
+    fn typing_in_a_row_then_clicking_send_works() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let Some(mut pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        crate::fonts::install_default_families(&ctx);
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_tool_panel = true;
+        app.side_tab = SideTab::Multi;
+        app.settings.serial.port = pty.slave_path.clone();
+        if let Err(e) = app.link.open(&app.settings.serial) {
+            eprintln!("skipping: cannot open serial port: {e}");
+            return;
+        }
+        app.settings.multi.newline_cr = false;
+        app.settings.multi.newline_lf = false;
+        app.settings.multi.add_entry();
+
+        full_frame(&ctx, &mut app, input());
+        let handle = panels::probe::multi_handle_rects()
+            .into_iter()
+            .find(|(index, _)| *index == 0)
+            .map(|(_, rect)| rect)
+            .expect("row 0 handle");
+        // The text field starts just right of the number handle.
+        click(
+            &ctx,
+            &mut app,
+            egui::pos2(handle.right() + 12.0, handle.center().y),
+        );
+        let mut typed = input();
+        typed.events = vec![egui::Event::Text("AT".to_owned())];
+        full_frame(&ctx, &mut app, typed);
+        assert_eq!(
+            app.settings.multi.entries[0].text, "AT",
+            "typing did not stick"
+        );
+
+        let send = panels::probe::multi_send_rects()
+            .into_iter()
+            .find(|(index, _)| *index == 0)
+            .map(|(_, rect)| rect)
+            .expect("row 0 send");
+        click(&ctx, &mut app, send.center());
+        let got = pty.read_available(Duration::from_millis(200));
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            "AT",
+            "messages: {:?}",
+            app.messages
+                .iter()
+                .map(|message| message.text.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// The panel adds and deletes on demand, and renumbers after a delete.
     #[test]
     fn the_multi_panel_adds_and_deletes_entries() {
@@ -4118,12 +4230,23 @@ mod layout_tests {
         let mut app = seeded();
         app.settings.show_tool_panel = true;
         app.side_tab = SideTab::Multi;
+        app.settings.send.append_newline = true;
+        app.settings.send.hex = false;
+        app.settings.send.newline_cr = false;
+        app.settings.send.newline_lf = true;
 
         frame_at(&ctx, &mut app, (1280.0, 840.0));
         let add = panels::probe::multi_add_rect();
         assert!(add.width() > 0.0, "the add button was not laid out");
         click(&ctx, &mut app, add.center());
         assert_eq!(app.settings.multi.entries.len(), 1);
+        assert!(
+            app.settings.multi.entries[0].newline,
+            "a new row must inherit the send area's 发送新行"
+        );
+        assert!(!app.settings.multi.entries[0].hex);
+        assert!(!app.settings.multi.newline_cr);
+        assert!(app.settings.multi.newline_lf);
         app.settings.multi.entries[0].text = "A".to_owned();
 
         frame_at(&ctx, &mut app, (1280.0, 840.0));
@@ -4154,6 +4277,41 @@ mod layout_tests {
             before,
             "a running loop must not accept new entries"
         );
+    }
+
+    /// Existing rows have no newline; the bulk toggle fixes them all and
+    /// picks up the send area's CR/LF, so their 发送 buttons behave like the
+    /// send area.
+    #[test]
+    fn the_all_newline_toggle_fixes_existing_rows() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.show_tool_panel = true;
+        app.side_tab = SideTab::Multi;
+        populate_multi(&mut app, 3);
+        // The state of a config written by the old fixed-pool build: every
+        // row without 新行 and the multi CR/LF switched off.
+        for entry in &mut app.settings.multi.entries {
+            entry.newline = false;
+        }
+        app.settings.multi.newline_cr = false;
+        app.settings.multi.newline_lf = false;
+        app.settings.send.newline_cr = true;
+        app.settings.send.newline_lf = true;
+
+        frame_at(&ctx, &mut app, (1280.0, 840.0));
+        let toggle = panels::probe::multi_newline_all_rect();
+        assert!(toggle.width() > 0.0, "the bulk newline toggle is missing");
+        click(&ctx, &mut app, toggle.center());
+
+        assert!(
+            app.settings.multi.entries.iter().all(|entry| entry.newline),
+            "every row must be switched to 新行"
+        );
+        assert!(app.settings.multi.newline_cr);
+        assert!(app.settings.multi.newline_lf);
     }
 
     /// Dragging the `#` cell onto another row reorders the list.

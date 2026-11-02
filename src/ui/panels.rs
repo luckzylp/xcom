@@ -65,6 +65,9 @@ pub(crate) mod probe {
             const { RefCell::new(Vec::new()) };
         static MULTI_ROW_RECTS: RefCell<Vec<(usize, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
+        static MULTI_SEND_RECTS: RefCell<Vec<(usize, egui::Rect)>> =
+            const { RefCell::new(Vec::new()) };
+        static MULTI_NEWLINE_ALL_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static MULTI_STATUS_TEXT: RefCell<String> = const { RefCell::new(String::new()) };
         /// Where the table's scroll area actually ended up, and how tall its
         /// content is.  A bigger content height means the user must scroll.
@@ -449,6 +452,8 @@ pub(crate) mod probe {
         MULTI_DELETE_RECTS.with(|rects| rects.borrow_mut().clear());
         MULTI_HANDLE_RECTS.with(|rects| rects.borrow_mut().clear());
         MULTI_ROW_RECTS.with(|rects| rects.borrow_mut().clear());
+        MULTI_SEND_RECTS.with(|rects| rects.borrow_mut().clear());
+        MULTI_NEWLINE_ALL_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
         MULTI_STATUS_TEXT.with(|text| text.borrow_mut().clear());
         MULTI_TABLE_VIEWPORT.with(|rect| rect.set(egui::Rect::NOTHING));
         MULTI_TABLE_CONTENT.with(|size| size.set(egui::Vec2::ZERO));
@@ -537,6 +542,32 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn multi_row_rects() -> Vec<(usize, egui::Rect)> {
         MULTI_ROW_RECTS.with(|rects| rects.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_multi_send_rect(index: usize, rect: egui::Rect) {
+        MULTI_SEND_RECTS.with(|rects| rects.borrow_mut().push((index, rect)));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn push_multi_send_rect<R>(_index: usize, _rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn multi_send_rects() -> Vec<(usize, egui::Rect)> {
+        MULTI_SEND_RECTS.with(|rects| rects.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_multi_newline_all_rect(rect: egui::Rect) {
+        MULTI_NEWLINE_ALL_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_multi_newline_all_rect<R>(_rect: R) {}
+
+    #[cfg(test)]
+    pub(crate) fn multi_newline_all_rect() -> egui::Rect {
+        MULTI_NEWLINE_ALL_RECT.with(|cell| cell.get())
     }
 
     #[cfg(test)]
@@ -3234,7 +3265,20 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
             .on_hover_text(tr("在列表末尾添加一条空条目"));
         probe::set_multi_add_rect(add.rect);
         if add.clicked() {
-            app.settings.multi.add_entry();
+            // A new row should behave like the send area by default: the
+            // per-row 发送 button was otherwise sending without the newline
+            // the send area appends, which makes AT-style commands look dead.
+            let newline = app.settings.send.append_newline;
+            let hex = app.settings.send.hex;
+            let cr = app.settings.send.newline_cr;
+            let lf = app.settings.send.newline_lf;
+            let index = app.settings.multi.add_entry();
+            if let Some(entry) = app.settings.multi.entry_mut(index) {
+                entry.newline = newline;
+                entry.hex = hex;
+            }
+            app.settings.multi.newline_cr = cr;
+            app.settings.multi.newline_lf = lf;
             app.mark_settings_dirty();
             ui.ctx()
                 .data_mut(|data| data.insert_temp(scroll_to_last_id, true));
@@ -3248,6 +3292,11 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                     let multi = &mut app.settings.multi;
                     match multi.import_json(&text) {
                         Ok(count) => {
+                            // Imported rows may carry the newline flag, but the
+                            // bytes come from the multi CR/LF settings; keep
+                            // those in step with the working send area.
+                            app.settings.multi.newline_cr = app.settings.send.newline_cr;
+                            app.settings.multi.newline_lf = app.settings.send.newline_lf;
                             app.mark_settings_dirty();
                             app.ok(crate::i18n::tr1("已导入 {} 个条目", count));
                         }
@@ -3339,6 +3388,26 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         if a || b {
             app.settings.multi.newline_cr = cr;
             app.settings.multi.newline_lf = lf;
+            app.mark_settings_dirty();
+        }
+        let has_entries = !app.settings.multi.entries.is_empty();
+        let mut all_newline =
+            has_entries && app.settings.multi.entries.iter().all(|entry| entry.newline);
+        let all_newline_control = ui
+            .add_enabled(
+                has_entries,
+                egui::Checkbox::new(&mut all_newline, tr("全部加新行")),
+            )
+            .on_hover_text(tr(
+                "把每一行的「新行」设置改成同一状态，并使用发送区的 CR/LF",
+            ));
+        probe::set_multi_newline_all_rect(all_newline_control.rect);
+        if all_newline_control.changed() {
+            for entry in &mut app.settings.multi.entries {
+                entry.newline = all_newline;
+            }
+            app.settings.multi.newline_cr = app.settings.send.newline_cr;
+            app.settings.multi.newline_lf = app.settings.send.newline_lf;
             app.mark_settings_dirty();
         }
     });
@@ -3530,10 +3599,16 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         entry.delay_ms = delay;
                         dirty = true;
                     }
-                    if ui
+                    let send_hint = if entry.newline {
+                        tr("发送此条目（含新行）")
+                    } else {
+                        tr("发送此条目（不含新行）")
+                    };
+                    let send = ui
                         .add_sized([send_w, row_height], egui::Button::new(tr("发送")))
-                        .clicked()
-                    {
+                        .on_hover_text(send_hint);
+                    probe::push_multi_send_rect(index, send.rect);
+                    if send.clicked() {
                         send_request = Some(index);
                     }
                     let delete = ui
