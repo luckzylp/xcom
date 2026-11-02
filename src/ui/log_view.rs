@@ -307,6 +307,8 @@ pub fn show(
     state: &mut LogViewState,
     options: &LogViewOptions<'_>,
 ) -> LogViewOutput {
+    #[cfg(test)]
+    probe::begin_selection_frame();
     let font = options.font.clone();
     let pixels_per_point = ui.ctx().pixels_per_point();
     let ideal_row_height = ui.ctx().fonts_mut(|f| f.row_height(&font)) + options.line_spacing;
@@ -564,12 +566,17 @@ pub(crate) mod probe {
 
     use eframe::egui::{Rect, Vec2};
 
+    use std::cell::RefCell;
+
     thread_local! {
         /// `(offset, content size, viewport size)`
         static SCROLL: Cell<(Vec2, Vec2, Vec2)> =
             const { Cell::new((Vec2::ZERO, Vec2::ZERO, Vec2::ZERO)) };
         /// Where the scroll area's visible inner rect was laid out.
         static VIEWPORT: Cell<Rect> = const { Cell::new(Rect::NOTHING) };
+        /// Highlight rectangles painted this frame, keyed by row id.
+        static SELECTION_RECTS: RefCell<Vec<(u64, Rect)>> =
+            const { RefCell::new(Vec::new()) };
     }
 
     pub(crate) fn record(out: &eframe::egui::scroll_area::ScrollAreaOutput<()>) {
@@ -579,6 +586,18 @@ pub(crate) mod probe {
 
     pub(crate) fn viewport() -> Rect {
         VIEWPORT.with(|cell| cell.get())
+    }
+
+    pub(crate) fn begin_selection_frame() {
+        SELECTION_RECTS.with(|rects| rects.borrow_mut().clear());
+    }
+
+    pub(crate) fn record_selection(row_id: u64, rect: Rect) {
+        SELECTION_RECTS.with(|rects| rects.borrow_mut().push((row_id, rect)));
+    }
+
+    pub(crate) fn selection_rects() -> Vec<(u64, Rect)> {
+        SELECTION_RECTS.with(|rects| rects.borrow().clone())
     }
 
     pub(crate) fn scroll() -> (Vec2, Vec2, Vec2) {
@@ -698,8 +717,16 @@ fn paint_selection(
     // A selection that covers the newline also needs a marker at the row end.
     let (x0, x1) = if to > from {
         let a = row.galley.pos_from_cursor(CCursor::new(from));
-        let b = row.galley.pos_from_cursor(CCursor::new(to));
-        (a.left(), b.left().max(b.right()))
+        if to >= chars {
+            // The whole row is selected (including its newline): extend the
+            // wash to the table edge.  Otherwise a short row -- an echoed
+            // command, say -- shows a stub of highlight next to long received
+            // rows and reads as only partly selected.
+            (a.left(), row.rect.width())
+        } else {
+            let b = row.galley.pos_from_cursor(CCursor::new(to));
+            (a.left(), b.left().max(b.right()))
+        }
     } else if row_id == start.row && row_id == end.row {
         // Empty range on this row: draw a caret so a click is visible.
         let a = row.galley.pos_from_cursor(CCursor::new(from));
@@ -713,6 +740,8 @@ fn paint_selection(
         Pos2::new(row.origin.x + x0, row.rect.top()),
         Pos2::new(row.origin.x + x1, row.rect.bottom()),
     );
+    #[cfg(test)]
+    probe::record_selection(row_id, rect);
     painter.rect_filled(rect, egui::CornerRadius::ZERO, palette.selection);
 }
 

@@ -4392,6 +4392,46 @@ mod layout_tests {
         );
     }
 
+    /// Select-all paints a continuous wash across every row, including short
+    /// echoed commands: the text was always selected and copied, but a wash
+    /// that stopped at the last glyph made the rest of the row look unselected.
+    #[test]
+    fn select_all_paints_every_row_across_the_table() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.echo_sent = true;
+        app.log.append_sent(b"ECHO1", 0);
+        app.log.append_sent(b"ECHO2", 0);
+        render(&mut app, &ctx, "echo");
+        app.log_view.select_all(&app.log);
+        render(&mut app, &ctx, "selection");
+
+        let viewport = crate::ui::log_view::probe::viewport();
+        let rects = crate::ui::log_view::probe::selection_rects();
+        let first = app.log.first_row_id();
+        for index in 0..app.log.row_count() {
+            let id = first + index as u64;
+            let rect = rects
+                .iter()
+                .find(|(row_id, _)| *row_id == id)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("row {index} has no selection highlight"));
+            assert!(
+                rect.width() >= viewport.width() - 0.5,
+                "row {index} ({:?}) is highlighted for only {:.1}px of the {:.1}px table",
+                app.log.row(index),
+                rect.width(),
+                viewport.width()
+            );
+        }
+        assert!(
+            rects.iter().any(|(row_id, _)| *row_id == first + 3),
+            "the echoed row was not painted"
+        );
+    }
+
     /// The panel adds and deletes on demand, and renumbers after a delete.    /// The panel adds and deletes on demand, and renumbers after a delete.
     #[test]
     fn the_multi_panel_adds_and_deletes_entries() {
