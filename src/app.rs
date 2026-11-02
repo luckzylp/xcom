@@ -4221,6 +4221,57 @@ mod layout_tests {
         );
     }
 
+    /// The row's send uses the multi panel's own CR/LF, never the send area's.
+    #[test]
+    #[cfg(unix)]
+    fn the_row_send_uses_the_multi_panels_own_newline() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let Some(mut pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        crate::fonts::install_default_families(&ctx);
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_tool_panel = true;
+        app.side_tab = SideTab::Multi;
+        app.settings.serial.port = pty.slave_path.clone();
+        if let Err(e) = app.link.open(&app.settings.serial) {
+            eprintln!("skipping: cannot open serial port: {e}");
+            return;
+        }
+        // The send area asks for LF; the multi panel asks for CR. The row must
+        // use the multi panel's choice.
+        app.settings.send.newline_cr = false;
+        app.settings.send.newline_lf = true;
+        app.settings.multi.newline_cr = true;
+        app.settings.multi.newline_lf = false;
+        let added = app.settings.multi.add_entry();
+        let entry = app.settings.multi.entry_mut(added).expect("entry");
+        entry.text = "AT".to_owned();
+        entry.enabled = true;
+        entry.newline = true;
+
+        full_frame(&ctx, &mut app, input());
+        let send = panels::probe::multi_send_rects()
+            .into_iter()
+            .find(|(index, _)| *index == 0)
+            .map(|(_, rect)| rect)
+            .expect("row 0 needs a send button");
+        click(&ctx, &mut app, send.center());
+        let got = pty.read_available(Duration::from_millis(200));
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            "AT\r",
+            "the row must use the multi panel's CR, not the send area's LF; messages: {:?}",
+            app.messages
+                .iter()
+                .map(|message| message.text.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// The panel adds and deletes on demand, and renumbers after a delete.
     #[test]
     fn the_multi_panel_adds_and_deletes_entries() {
@@ -4230,10 +4281,14 @@ mod layout_tests {
         let mut app = seeded();
         app.settings.show_tool_panel = true;
         app.side_tab = SideTab::Multi;
+        // The send area is configured differently on purpose: the multi panel
+        // must not inherit any of it.
         app.settings.send.append_newline = true;
-        app.settings.send.hex = false;
-        app.settings.send.newline_cr = false;
-        app.settings.send.newline_lf = true;
+        app.settings.send.hex = true;
+        app.settings.send.newline_cr = true;
+        app.settings.send.newline_lf = false;
+        app.settings.multi.newline_cr = false;
+        app.settings.multi.newline_lf = true;
 
         frame_at(&ctx, &mut app, (1280.0, 840.0));
         let add = panels::probe::multi_add_rect();
@@ -4241,12 +4296,18 @@ mod layout_tests {
         click(&ctx, &mut app, add.center());
         assert_eq!(app.settings.multi.entries.len(), 1);
         assert!(
-            app.settings.multi.entries[0].newline,
-            "a new row must inherit the send area's 发送新行"
+            !app.settings.multi.entries[0].newline,
+            "a new row must not inherit the send area's 发送新行"
         );
-        assert!(!app.settings.multi.entries[0].hex);
-        assert!(!app.settings.multi.newline_cr);
-        assert!(app.settings.multi.newline_lf);
+        assert!(
+            !app.settings.multi.entries[0].hex,
+            "a new row must not inherit the send area's HEX mode"
+        );
+        assert!(
+            !app.settings.multi.newline_cr,
+            "the panel's CR must survive"
+        );
+        assert!(app.settings.multi.newline_lf, "the panel's LF must survive");
         app.settings.multi.entries[0].text = "A".to_owned();
 
         frame_at(&ctx, &mut app, (1280.0, 840.0));
@@ -4279,9 +4340,8 @@ mod layout_tests {
         );
     }
 
-    /// Existing rows have no newline; the bulk toggle fixes them all and
-    /// picks up the send area's CR/LF, so their 发送 buttons behave like the
-    /// send area.
+    /// Existing rows have no newline; the bulk toggle sets every row's flag
+    /// without touching either panel's CR/LF settings.
     #[test]
     fn the_all_newline_toggle_fixes_existing_rows() {
         let _guard = crate::i18n::test_lock();
@@ -4297,9 +4357,9 @@ mod layout_tests {
             entry.newline = false;
         }
         app.settings.multi.newline_cr = false;
-        app.settings.multi.newline_lf = false;
+        app.settings.multi.newline_lf = true;
         app.settings.send.newline_cr = true;
-        app.settings.send.newline_lf = true;
+        app.settings.send.newline_lf = false;
 
         frame_at(&ctx, &mut app, (1280.0, 840.0));
         let toggle = panels::probe::multi_newline_all_rect();
@@ -4310,8 +4370,22 @@ mod layout_tests {
             app.settings.multi.entries.iter().all(|entry| entry.newline),
             "every row must be switched to 新行"
         );
-        assert!(app.settings.multi.newline_cr);
-        assert!(app.settings.multi.newline_lf);
+        assert!(
+            !app.settings.multi.newline_cr,
+            "the multi CR must be untouched"
+        );
+        assert!(
+            app.settings.multi.newline_lf,
+            "the multi LF must be untouched"
+        );
+        assert!(
+            app.settings.send.newline_cr,
+            "the send area must be untouched"
+        );
+        assert!(
+            !app.settings.send.newline_lf,
+            "the send area must be untouched"
+        );
     }
 
     /// Dragging the `#` cell onto another row reorders the list.

@@ -56,7 +56,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Ctrl+Enter shortcut to send | ✅ | |
 | Clear sent (also resets Tx/Rx counters) | ✅ | |
 | Status bar: Tx/Rx byte counts, CTS/DSR/DCD, system time | ✅ | Also shows RI indicator |
-| Multi-send: on-demand list | ✅ | Add entries as needed (no fixed slot count) with the **Add entry** button, remove a row with **×**, and drag the `#` cell to reorder; entries have note, enable, HEX, newline toggles; the table scrolls when the list is longer than the panel. New rows inherit the send area's HEX/“send newline” settings, and **Newline all** applies the send area's CR/LF to existing rows |
+| Multi-send: on-demand list | ✅ | Add entries as needed (no fixed slot count) with the **Add entry** button, remove a row with **×**, and drag the `#` cell to reorder; entries have note, enable, HEX, newline toggles; the table scrolls when the list is longer than the panel. New rows start without HEX/newline; the multi-send panel's own **Newline CR/LF** controls the bytes, and **Newline all** sets every row's flag |
 | Multi-send: auto loop send | ✅ | Sends only checked entries; supports **infinite loop** or **specified loop count**; a round is paced entirely by each entry's own delay, with no separate round gap |
 | Multi-send: send all checked entries at once | ✅ | "Send Checked" button, each sent once in order |
 | Multi-send: import/export entries | ✅ | JSON format, easy to edit and version-control |

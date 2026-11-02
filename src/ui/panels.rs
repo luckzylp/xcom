@@ -3265,20 +3265,10 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
             .on_hover_text(tr("在列表末尾添加一条空条目"));
         probe::set_multi_add_rect(add.rect);
         if add.clicked() {
-            // A new row should behave like the send area by default: the
-            // per-row 发送 button was otherwise sending without the newline
-            // the send area appends, which makes AT-style commands look dead.
-            let newline = app.settings.send.append_newline;
-            let hex = app.settings.send.hex;
-            let cr = app.settings.send.newline_cr;
-            let lf = app.settings.send.newline_lf;
-            let index = app.settings.multi.add_entry();
-            if let Some(entry) = app.settings.multi.entry_mut(index) {
-                entry.newline = newline;
-                entry.hex = hex;
-            }
-            app.settings.multi.newline_cr = cr;
-            app.settings.multi.newline_lf = lf;
+            // The multi-send panel keeps its own HEX/newline settings: a new
+            // row starts bare and uses the panel's CR/LF controls, not the
+            // single-send area's.
+            app.settings.multi.add_entry();
             app.mark_settings_dirty();
             ui.ctx()
                 .data_mut(|data| data.insert_temp(scroll_to_last_id, true));
@@ -3292,11 +3282,8 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                     let multi = &mut app.settings.multi;
                     match multi.import_json(&text) {
                         Ok(count) => {
-                            // Imported rows may carry the newline flag, but the
-                            // bytes come from the multi CR/LF settings; keep
-                            // those in step with the working send area.
-                            app.settings.multi.newline_cr = app.settings.send.newline_cr;
-                            app.settings.multi.newline_lf = app.settings.send.newline_lf;
+                            // The multi panel owns its CR/LF; importing rows
+                            // must not pull in the send area's settings.
                             app.mark_settings_dirty();
                             app.ok(crate::i18n::tr1("已导入 {} 个条目", count));
                         }
@@ -3381,10 +3368,18 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     });
 
     ui.horizontal_wrapped(|ui| {
+        ui.label(tr("多条换行"))
+            .on_hover_text(tr("仅用于多条发送，不影响发送区"));
         let mut cr = app.settings.multi.newline_cr;
         let mut lf = app.settings.multi.newline_lf;
-        let a = ui.checkbox(&mut cr, tr("新行 CR")).changed();
-        let b = ui.checkbox(&mut lf, tr("新行 LF")).changed();
+        let a = ui
+            .checkbox(&mut cr, tr("新行 CR"))
+            .on_hover_text(tr("仅用于多条发送，不影响发送区"))
+            .changed();
+        let b = ui
+            .checkbox(&mut lf, tr("新行 LF"))
+            .on_hover_text(tr("仅用于多条发送，不影响发送区"))
+            .changed();
         if a || b {
             app.settings.multi.newline_cr = cr;
             app.settings.multi.newline_lf = lf;
@@ -3399,15 +3394,13 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                 egui::Checkbox::new(&mut all_newline, tr("全部加新行")),
             )
             .on_hover_text(tr(
-                "把每一行的「新行」设置改成同一状态，并使用发送区的 CR/LF",
+                "把每一行的「新行」设置改成同一状态；换行字节由多条发送自己的 CR/LF 决定",
             ));
         probe::set_multi_newline_all_rect(all_newline_control.rect);
         if all_newline_control.changed() {
             for entry in &mut app.settings.multi.entries {
                 entry.newline = all_newline;
             }
-            app.settings.multi.newline_cr = app.settings.send.newline_cr;
-            app.settings.multi.newline_lf = app.settings.send.newline_lf;
             app.mark_settings_dirty();
         }
     });
@@ -3418,6 +3411,9 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     // Re-read the run state: the loop checkbox above may just have started one,
     // and structural edits must be off from that frame onward.
     let running = app.multi_run_active();
+    // A row's 新行 flag only produces bytes when the multi panel's own CR/LF
+    // has at least one half enabled.  The tooltip should tell the truth.
+    let multi_newline = app.settings.multi.newline_cr || app.settings.multi.newline_lf;
     let active_colours = theme::active_entry_colors(ui.ctx(), app.settings.theme);
     let mut send_request: Option<usize> = None;
     let mut dirty = false;
@@ -3599,7 +3595,7 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         entry.delay_ms = delay;
                         dirty = true;
                     }
-                    let send_hint = if entry.newline {
+                    let send_hint = if entry.newline && multi_newline {
                         tr("发送此条目（含新行）")
                     } else {
                         tr("发送此条目（不含新行）")
