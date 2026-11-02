@@ -4272,7 +4272,127 @@ mod layout_tests {
         );
     }
 
-    /// The panel adds and deletes on demand, and renumbers after a delete.
+    fn input_with_events(events: Vec<egui::Event>) -> egui::RawInput {
+        let mut raw = input();
+        raw.events = events;
+        raw
+    }
+
+    /// Send one framed Ctrl+key chord and return what the app emitted.
+    fn ctrl_key(ctx: &egui::Context, app: &mut XcomApp, key: egui::Key) -> egui::FullOutput {
+        let modifiers = egui::Modifiers {
+            command: true,
+            ctrl: true,
+            ..Default::default()
+        };
+        let raw = input_with_events(vec![
+            egui::Event::ModifiersChanged(modifiers),
+            egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            },
+        ]);
+        ctx.run_ui(raw, |ui| app.draw(ui))
+    }
+
+    fn copied_texts(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A fast drag over an echoed row must select it.  A drag that starts and
+    /// moves in one frame used to leave only an empty caret, because the anchor
+    /// and head were both taken from the current pointer.
+    #[test]
+    fn dragging_echoed_text_selects_and_copies_it() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.echo_sent = true;
+        app.log.append_sent(b"ECHO1", 0);
+        render(&mut app, &ctx, "echo");
+
+        // Reproduce the everyday focus: the send editor was just used.
+        let editor = panels::probe::editor_rect();
+        click(&ctx, &mut app, editor.center());
+
+        let viewport = crate::ui::log_view::probe::viewport();
+        let (offset, _, _) = crate::ui::log_view::probe::scroll();
+        let (pitch, _) = crate::ui::log_view::probe::row_pitch();
+        let y = viewport.top() + 3.0 * pitch - offset.y + pitch * 0.5;
+        let from = egui::pos2(viewport.left() + 30.0, y);
+        let to = egui::pos2(viewport.left() + 200.0, y);
+        let press = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        for events in [
+            vec![egui::Event::PointerMoved(from)],
+            vec![egui::Event::PointerMoved(from), press(from, true)],
+            vec![egui::Event::PointerMoved(to)],
+            vec![egui::Event::PointerMoved(to), press(to, false)],
+        ] {
+            full_frame(&ctx, &mut app, input_with_events(events));
+        }
+
+        let selected = app
+            .log_view
+            .selected_text(&app.log)
+            .expect("the drag selected nothing");
+        assert!(selected.contains("CHO"), "selected {selected:?}");
+
+        let output = ctrl_key(&ctx, &mut app, egui::Key::C);
+        let copies = copied_texts(&output);
+        assert_eq!(
+            copies.last().map(String::as_str),
+            Some(selected.as_str()),
+            "the log selection was not the last thing copied: {copies:?}"
+        );
+    }
+
+    /// Ctrl+A and Ctrl+C with the send editor focused must act on the log, and
+    /// the echoed row must be part of both.
+    #[test]
+    fn select_all_then_copy_includes_echoed_rows() {
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+        let ctx = egui::Context::default();
+        let mut app = seeded();
+        app.settings.echo_sent = true;
+        app.log.append_sent(b"ECHO1", 0);
+        render(&mut app, &ctx, "echo");
+
+        let editor = panels::probe::editor_rect();
+        click(&ctx, &mut app, editor.center());
+
+        ctrl_key(&ctx, &mut app, egui::Key::A);
+        let selected = app.log_view.selected_text(&app.log).expect("select all");
+        assert!(selected.contains("ECHO1"), "selected {selected:?}");
+        assert!(selected.contains("AT+GMR"), "selected {selected:?}");
+
+        let output = ctrl_key(&ctx, &mut app, egui::Key::C);
+        let copies = copied_texts(&output);
+        assert_eq!(
+            copies.last().map(String::as_str),
+            Some(selected.as_str()),
+            "the log selection was not the last thing copied: {copies:?}"
+        );
+    }
+
+    /// The panel adds and deletes on demand, and renumbers after a delete.    /// The panel adds and deletes on demand, and renumbers after a delete.
     #[test]
     fn the_multi_panel_adds_and_deletes_entries() {
         let _guard = crate::i18n::test_lock();

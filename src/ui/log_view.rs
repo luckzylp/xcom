@@ -374,6 +374,7 @@ pub fn show(
     }
 
     let clip_rect = ui.clip_rect();
+    let mut log_response_id: Option<egui::Id> = None;
     let result = scroll.show(ui, |ui| {
         let content_width =
             (store.max_columns() as f32 * char_width + 12.0).max(ui.available_width());
@@ -382,6 +383,7 @@ pub fn show(
             Vec2::new(content_width, content_height),
             Sense::click_and_drag(),
         );
+        log_response_id = Some(response.id);
 
         // Only these rows are laid out this frame.
         let viewport = clip_rect.intersect(rect);
@@ -434,8 +436,19 @@ pub fn show(
 
         // ---- interaction (before painting so the highlight is current) ----
         let pointer = response.interact_pointer_pos();
+        // Clicking or dragging the log takes keyboard focus away from a text
+        // field.  Otherwise Ctrl+A / Ctrl+C keep going to the send editor (or
+        // a multi-send row), and the log's selection is never selected or
+        // copied as the user expects.
+        if response.clicked() || response.drag_started() || response.secondary_clicked() {
+            response.request_focus();
+        }
         if response.drag_started() {
-            if let Some(pos) = pointer
+            // Anchor at where the button went down, not where the pointer is
+            // now: a fast drag can start and move in the same frame, and using
+            // the current position for both ends would select nothing.
+            let anchor_pos = ui.input(|i| i.pointer.press_origin()).or(pointer);
+            if let Some(pos) = anchor_pos
                 && let Some(caret) = hit_test(&visible, rect, row_height, pos)
             {
                 state.drag_anchor = Some(caret);
@@ -444,16 +457,21 @@ pub fn show(
                     head: caret,
                 });
             }
-        } else if response.dragged() {
-            if let (Some(pos), Some(anchor)) = (pointer, state.drag_anchor)
-                && let Some(caret) = hit_test_clamped(&visible, rect, row_height, pos)
-            {
-                state.selection = Some(Selection {
-                    anchor,
-                    head: caret,
-                });
-            }
-        } else if response.clicked() {
+        }
+        // Not `else if`: a fast drag can start and move far enough within one
+        // frame.  If this branch were skipped, the drag would leave only the
+        // empty caret set above, and the user would see "nothing selected"
+        // even though the pointer moved across the text.
+        if response.dragged()
+            && let (Some(pos), Some(anchor)) = (pointer, state.drag_anchor)
+            && let Some(caret) = hit_test_clamped(&visible, rect, row_height, pos)
+        {
+            state.selection = Some(Selection {
+                anchor,
+                head: caret,
+            });
+        }
+        if response.clicked() {
             // A plain click collapses the selection to a caret.
             if let Some(pos) = pointer
                 && let Some(caret) = hit_test(&visible, rect, row_height, pos)
@@ -503,12 +521,23 @@ pub fn show(
         && let Some(text) = state.selected_text(store)
     {
         ui.ctx().copy_text(text);
+        // Take focus as part of copying: a focused text field drawn later in
+        // the frame could otherwise handle the same Ctrl+C and overwrite the
+        // clipboard with its own (often empty) selection.
+        if let Some(id) = log_response_id {
+            ui.memory_mut(|memory| memory.request_focus(id));
+        }
         output.copied = true;
     }
 
     let select_all = ui.input(|i| i.key_pressed(egui::Key::A) && i.modifiers.command);
     if select_all {
         state.select_all(store);
+        // Likewise, Ctrl+A while a text field is focused should hand the
+        // selection to the log, not leave the field selecting its own text.
+        if let Some(id) = log_response_id {
+            ui.memory_mut(|memory| memory.request_focus(id));
+        }
     }
 
     output.copied |= context_actions.copied;
@@ -533,16 +562,23 @@ pub fn show(
 pub(crate) mod probe {
     use std::cell::Cell;
 
-    use eframe::egui::Vec2;
+    use eframe::egui::{Rect, Vec2};
 
     thread_local! {
         /// `(offset, content size, viewport size)`
         static SCROLL: Cell<(Vec2, Vec2, Vec2)> =
             const { Cell::new((Vec2::ZERO, Vec2::ZERO, Vec2::ZERO)) };
+        /// Where the scroll area's visible inner rect was laid out.
+        static VIEWPORT: Cell<Rect> = const { Cell::new(Rect::NOTHING) };
     }
 
     pub(crate) fn record(out: &eframe::egui::scroll_area::ScrollAreaOutput<()>) {
         SCROLL.with(|cell| cell.set((out.state.offset, out.content_size, out.inner_rect.size())));
+        VIEWPORT.with(|cell| cell.set(out.inner_rect));
+    }
+
+    pub(crate) fn viewport() -> Rect {
+        VIEWPORT.with(|cell| cell.get())
     }
 
     pub(crate) fn scroll() -> (Vec2, Vec2, Vec2) {
