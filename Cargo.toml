@@ -1,8 +1,8 @@
 [package]
 name = "xcom"
-version = "0.9.1"
+version = "0.9.3"
 edition = "2024"
-rust-version = "1.90.0"
+rust-version = "1.100.0"
 description = "ATK-XCOM 风格串口调试助手 — 跨平台串口工具 (Rust + egui)"
 license = "MIT"
 readme = "README.md"
