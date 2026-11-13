@@ -1985,9 +1985,14 @@ mod layout_tests {
             ("softprops/action-gh-release", 3),
         ];
         // Actions that cannot be gated this way: a composite action runs no
-        // Node.js at all, and `Swatinem/rust-cache` moved to Node.js 24 inside
-        // its `v2` line, so the floating tag already resolves to it.
-        const UNGATED: &[&str] = &["dtolnay/rust-toolchain", "Swatinem/rust-cache"];
+        // Node.js at all (`taiki-e/install-action`), and `Swatinem/rust-cache`
+        // moved to Node.js 24 inside its `v2` line, so the floating tag
+        // already resolves to it.
+        const UNGATED: &[&str] = &[
+            "dtolnay/rust-toolchain",
+            "Swatinem/rust-cache",
+            "taiki-e/install-action",
+        ];
 
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/.github/workflows");
         let mut pins = 0;

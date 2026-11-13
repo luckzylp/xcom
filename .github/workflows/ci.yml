@@ -96,11 +96,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
             libudev-dev
+      # Both published setup-zig actions still declare `runs.using: node20`,
+      # which workflow_actions_run_on_node_24 rejects, so zig is fetched here.
       - name: Install zig
         if: matrix.zig_target
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=0.16.0
+          case "$(uname -m)" in
+            x86_64) arch=x86_64 ;;
+            aarch64) arch=aarch64 ;;
+            *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          tarball="zig-${arch}-linux-${version}.tar.xz"
+          curl -fsSL "https://ziglang.org/download/${version}/${tarball}" -o "${RUNNER_TEMP}/${tarball}"
+          tar -xJf "${RUNNER_TEMP}/${tarball}" -C "$RUNNER_TEMP"
+          echo "${RUNNER_TEMP}/zig-${arch}-linux-${version}" >> "$GITHUB_PATH"
       - name: Install cargo-zigbuild
         if: matrix.zig_target
         uses: taiki-e/install-action@v2
