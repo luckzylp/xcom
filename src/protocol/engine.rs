@@ -212,6 +212,7 @@ impl ProtocolEngine {
         }
     }
 
+    #[cfg(test)]
     pub fn config(&self) -> &ProtocolConfig {
         &self.cfg
     }

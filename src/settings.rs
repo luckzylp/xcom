@@ -26,6 +26,19 @@ use crate::theme::{LogColorOverride, ThemeMode};
 pub const LINE_SPACING_MIN: f32 = 0.0;
 pub const LINE_SPACING_MAX: f32 = 40.0;
 
+/// Default width of the configuration panel, in points.
+pub const LEFT_PANEL_DEFAULT: f32 = 300.0;
+pub const LEFT_PANEL_MIN: f32 = 269.0;
+pub const LEFT_PANEL_MAX: f32 = 460.0;
+/// Default width of the multi-send / protocol panel.
+pub const RIGHT_PANEL_DEFAULT: f32 = 320.0;
+pub const RIGHT_PANEL_MIN: f32 = 300.0;
+pub const RIGHT_PANEL_MAX: f32 = 760.0;
+/// Default height of the send area below the log.
+pub const SEND_AREA_DEFAULT: f32 = 196.0;
+pub const SEND_AREA_MIN: f32 = 96.0;
+pub const SEND_AREA_MAX: f32 = 560.0;
+
 fn default_receive_font_size() -> f32 {
     13.0
 }
@@ -66,14 +79,6 @@ impl FontSettings {
         self.ui_size = self.ui_size.clamp(9.0, 24.0);
         self.receive_size = self.receive_size.clamp(8.0, 32.0);
         self.send_size = self.send_size.clamp(8.0, 32.0);
-    }
-
-    pub(crate) fn family_signature(&self) -> (Option<&str>, Option<&str>, Option<&str>) {
-        (
-            self.ui_family.as_deref(),
-            self.receive_family.as_deref(),
-            self.send_family.as_deref(),
-        )
     }
 }
 
@@ -222,8 +227,8 @@ pub struct Settings {
     pub max_rows: usize,
     /// Maximum retained raw bytes.
     pub max_raw: usize,
-    /// Width of the serial-settings panel, in points.  Owned by the app rather
-    /// than by egui's panel state: see `ui::panels::splitter`.
+    /// Width of the serial-settings panel, in points.  Owned by the app so the
+    /// splitter, the menu and the persisted file agree on one value.
     pub left_panel_width: f32,
     /// Whether the configuration panel is shown.
     ///
@@ -271,11 +276,11 @@ impl Default for Settings {
             log_font_size: FontSettings::default().receive_size,
             max_rows: 200_000,
             max_raw: 32 * 1024 * 1024,
-            left_panel_width: crate::ui::panels::LEFT_PANEL_DEFAULT,
+            left_panel_width: LEFT_PANEL_DEFAULT,
             show_config_panel: true,
-            right_panel_width: crate::ui::panels::RIGHT_PANEL_DEFAULT,
+            right_panel_width: RIGHT_PANEL_DEFAULT,
             show_tool_panel: false,
-            send_area_height: crate::ui::panels::SEND_AREA_DEFAULT,
+            send_area_height: SEND_AREA_DEFAULT,
             show_send_area: true,
             window_size: None,
         }
@@ -294,18 +299,11 @@ impl Settings {
         self.multi.normalize();
         self.protocol.normalize();
         self.log_file.normalize();
-        self.left_panel_width = self.left_panel_width.clamp(
-            crate::ui::panels::LEFT_PANEL_MIN,
-            crate::ui::panels::LEFT_PANEL_MAX,
-        );
-        self.right_panel_width = self.right_panel_width.clamp(
-            crate::ui::panels::RIGHT_PANEL_MIN,
-            crate::ui::panels::RIGHT_PANEL_MAX,
-        );
-        self.send_area_height = self.send_area_height.clamp(
-            crate::ui::panels::SEND_AREA_MIN,
-            crate::ui::panels::SEND_AREA_MAX,
-        );
+        self.left_panel_width = self.left_panel_width.clamp(LEFT_PANEL_MIN, LEFT_PANEL_MAX);
+        self.right_panel_width = self
+            .right_panel_width
+            .clamp(RIGHT_PANEL_MIN, RIGHT_PANEL_MAX);
+        self.send_area_height = self.send_area_height.clamp(SEND_AREA_MIN, SEND_AREA_MAX);
     }
 
     /// Directory holding the settings file.

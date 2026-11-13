@@ -171,10 +171,6 @@ impl AutoDetector {
     }
 
     /// Total number of bytes analysed so far.
-    pub fn total(&self) -> usize {
-        self.total
-    }
-
     /// Feed newly received bytes; returns the encoding to decode them with.
     pub fn feed(&mut self, chunk: &[u8]) -> &'static Encoding {
         if chunk.is_empty() {

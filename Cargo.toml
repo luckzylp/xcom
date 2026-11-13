@@ -3,11 +3,11 @@ name = "xcom"
 version = "0.9.2"
 edition = "2024"
 rust-version = "1.100.0"
-description = "ATK-XCOM 风格串口调试助手 — 跨平台串口工具 (Rust + egui)"
+description = "ATK-XCOM 风格串口调试助手 — 跨平台串口工具 (Rust + gpui-kit)"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/example/xcom"
-keywords = ["serial", "serialport", "uart", "egui", "gui"]
+keywords = ["serial", "serialport", "uart", "gpui", "gui"]
 categories = ["command-line-utilities", "gui"]
 
 [[bin]]
@@ -15,21 +15,9 @@ name = "xcom"
 path = "src/main.rs"
 
 [dependencies]
-egui = "0.36"
-eframe = { version = "0.36", default-features = false, features = [
-    "default_fonts",
-    "glow",
-    "wayland",
-    "x11",
-] }
-# eframe depends on winit with default features off, which silently drops
-# `wayland-csd-adwaita`.  Without it winit falls back to a bare-bones
-# client-side frame: square corners and right-hand window buttons that ignore
-# the desktop's `button-layout` setting.  With it, sctk-adwaita draws a proper
-# Adwaita frame and reads the system button layout (left on GNOME by default).
-# The dependency is purely a feature switch; it is never referenced in code.
-# Only affects Linux: winit gates it behind a non-macOS Unix cfg.
-winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita"] }
+# One dependency for the window, theme, components and overlays.  GPUI is
+# re-exported as `gpui_kit::*`; the component layer is `gpui_kit::component`.
+gpui-kit = "=0.9.0"
 serialport = "4.10"
 regex = "1"
 encoding_rs = "0.8"
@@ -44,6 +32,8 @@ log = "0.4"
 env_logger = "0.11"
 
 [dev-dependencies]
+# UI integration tests render real gpui-kit components in headless windows.
+gpui-kit = { version = "=0.9.0", features = ["test-support"] }
 # Used only by the Unix PTY loopback test, which needs `openpty`.
 libc = "0.2"
 

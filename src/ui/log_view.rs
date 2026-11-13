@@ -1,27 +1,35 @@
 //! The receive view: a virtualized, selectable log.
 //!
-//! Only the rows intersecting the viewport are laid out and painted, so the
-//! view costs O(visible) regardless of how much data has scrolled past.  Text
-//! selection is implemented on top of egui's galley hit-testing, which gives
-//! correct behaviour for wide (CJK) glyphs without any手工 column math.
+//! Only the rows intersecting the viewport are shaped and painted, so the view
+//! costs O(visible) regardless of how much data has scrolled past.  The shaped
+//! line for each visible row is kept for the current frame so pointer hit
+//! testing uses the real glyph positions, including wide CJK glyphs and any
+//! proportional font the user selected.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use eframe::egui::text::{CCursor, LayoutJob};
-use eframe::egui::{
-    self, Color32, FontId, Galley, Pos2, Rect, ScrollArea, Sense, TextFormat, Ui, Vec2,
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::{
+    AnyElement, Bounds, ClipboardItem, Context, Font, Hsla, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, Pixels, Point, ShapedLine, SharedString,
+    StatefulInteractiveElement as _, Styled as _, TextAlign, TextRun, Window, canvas, div, fill,
+    point, px, size,
 };
 
-use crate::highlight::{HighlightSettings, Highlighter};
+use crate::app::{LOG_CONTEXT, XcomApp};
+use crate::highlight::Highlighter;
 use crate::i18n::tr;
-use crate::logstore::{DisplayOptions, LogStore, RowKind, ViewMode};
+use crate::logstore::{LogStore, RowKind, ViewMode};
 use crate::theme::LogPalette;
 
-/// A caret position: a row id plus a character index within that row.
+/// A caret position: a row id plus a byte offset within that row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Caret {
     /// Stable row id, so the caret survives scrollback trimming.
     row: u64,
+    /// UTF-8 byte offset inside the row.
     col: usize,
 }
 
@@ -33,7 +41,6 @@ struct Selection {
 }
 
 impl Selection {
-    /// The selection ordered so `start <= end`.
     fn ordered(&self) -> (Caret, Caret) {
         if (self.anchor.row, self.anchor.col) <= (self.head.row, self.head.col) {
             (self.anchor, self.head)
@@ -47,36 +54,56 @@ impl Selection {
     }
 }
 
-/// Persistent view state (selection and drag anchor).
-#[derive(Default)]
+/// Persistent view state (selection, drag anchor and scroll position).
 pub struct LogViewState {
     selection: Option<Selection>,
-    /// Caret captured when a drag started.
     drag_anchor: Option<Caret>,
     /// Whether the view followed the newest row on the previous frame.
-    ///
-    /// `ScrollArea::stick_to_bottom` only re-enters sticky mode once the
-    /// offset touches the end, so switching the option on while the view is
-    /// scrolled up would otherwise do nothing at all.  Tracking the previous
-    /// frame lets the view notice that transition and jump once.
     following: bool,
     /// Compiled keyword rules, rebuilt only when the settings change.
     highlighter: Highlighter,
+    pub(crate) scroll: gpui_kit::ScrollHandle,
+    /// Shaped lines for the rows painted this frame, keyed by stable row id.
+    lines: HashMap<u64, ShapedLine>,
+    row_height: Pixels,
+    char_width: Pixels,
+    /// Whether the last frame reached the bottom, used to detect a user scroll.
+    at_bottom: bool,
+    /// Set for the frame in which the view asked to scroll to the bottom.
+    scrolling_to_bottom: bool,
+}
+
+impl Default for LogViewState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LogViewState {
-    /// Drop the current selection.
+    pub fn new() -> Self {
+        Self {
+            selection: None,
+            drag_anchor: None,
+            following: true,
+            highlighter: Highlighter::default(),
+            scroll: gpui_kit::ScrollHandle::new(),
+            lines: HashMap::new(),
+            row_height: px(18.0),
+            char_width: px(8.0),
+            at_bottom: true,
+            scrolling_to_bottom: false,
+        }
+    }
+
     pub fn clear_selection(&mut self) {
         self.selection = None;
         self.drag_anchor = None;
     }
 
-    /// Whether anything is selected.
     pub fn has_selection(&self) -> bool {
         self.selection.is_some_and(|s| !s.is_empty())
     }
 
-    /// Select every retained row.
     pub fn select_all(&mut self, store: &LogStore) {
         if store.row_count() == 0 {
             return;
@@ -88,7 +115,7 @@ impl LogViewState {
         let last_index = store.row_count() - 1;
         let last = Caret {
             row: store.row_id(last_index),
-            col: store.row(last_index).chars().count(),
+            col: store.row(last_index).len(),
         };
         self.selection = Some(Selection {
             anchor: first,
@@ -96,7 +123,6 @@ impl LogViewState {
         });
     }
 
-    /// The selected text, if any.
     pub fn selected_text(&self, store: &LogStore) -> Option<String> {
         let selection = self.selection?;
         if selection.is_empty() || store.row_count() == 0 {
@@ -106,7 +132,6 @@ impl LogViewState {
         let first_id = store.first_row_id();
         let last_id = store.row_id(store.row_count() - 1);
 
-        // Clamp into the rows that are still retained.
         let start_index = start.row.max(first_id).saturating_sub(first_id) as usize;
         let end_index = (end.row.min(last_id).saturating_sub(first_id)) as usize;
         if start_index > end_index || start_index >= store.row_count() {
@@ -116,19 +141,25 @@ impl LogViewState {
         let mut out = String::new();
         for index in start_index..=end_index {
             let row = store.row(index);
-            let chars = row.chars().count();
+            let boundary = |value: usize| {
+                let mut value = value.min(row.len());
+                while !row.is_char_boundary(value) {
+                    value -= 1;
+                }
+                value
+            };
             let from = if index == start_index {
-                start.col.min(chars)
+                boundary(start.col)
             } else {
                 0
             };
             let to = if index == end_index {
-                end.col.min(chars)
+                boundary(end.col)
             } else {
-                chars
+                row.len()
             };
             if to > from {
-                out.extend(row.chars().skip(from).take(to - from));
+                out.push_str(&row[from..to]);
             }
             if index != end_index {
                 out.push('\n');
@@ -136,526 +167,85 @@ impl LogViewState {
         }
         if out.is_empty() { None } else { Some(out) }
     }
-}
 
-/// How the view should behave this frame.
-pub struct LogViewOptions<'a> {
-    pub auto_scroll: bool,
-    pub font: FontId,
-    pub line_spacing: f32,
-    /// Whether the display is currently frozen, for the context menu label.
-    pub paused: bool,
-    /// Current display options, so the context menu shows their state.
-    pub display: DisplayOptions,
-    pub echo_sent: bool,
-    /// Keyword rules applied to the data part of each row.
-    pub highlights: &'a HighlightSettings,
-}
-
-/// Actions the surrounding UI should perform, requested from the view.
-#[derive(Default)]
-pub struct LogViewOutput {
-    /// The selection was copied to the clipboard by the view itself.
-    pub copied: bool,
-    /// A selection exists and could be copied.
-    pub has_selection: bool,
-    /// The context menu asked to freeze or resume the display.
-    pub toggle_pause: bool,
-    /// The context menu asked to switch between text and HEX display.
-    pub toggle_hex: bool,
-    /// The context menu asked to toggle echoing sent content.
-    pub toggle_echo: bool,
-    /// Context menu display switches.
-    pub toggle_markers: bool,
-    pub toggle_timestamp: bool,
-    pub toggle_wrap: bool,
-    pub toggle_auto_scroll: bool,
-    /// The context menu asked to open the keyword-highlight settings.
-    pub open_highlight_settings: bool,
-    /// The context menu asked to clear the receive view.
-    pub clear_received: bool,
-}
-
-/// What the receive view's context menu asked for.
-#[derive(Default)]
-struct ContextActions {
-    copied: bool,
-    toggle_pause: bool,
-    toggle_hex: bool,
-    toggle_echo: bool,
-    toggle_markers: bool,
-    toggle_timestamp: bool,
-    toggle_wrap: bool,
-    toggle_auto_scroll: bool,
-    open_highlight_settings: bool,
-    clear_received: bool,
-}
-
-/// The receive view's right-click menu.
-///
-/// The receive toolbar used to carry these actions; they are secondary enough
-/// that a context menu keeps the data area free of chrome while leaving the
-/// clipboard and keyboard shortcuts unchanged.
-fn context_menu(
-    response: egui::Response,
-    store: &LogStore,
-    state: &mut LogViewState,
-    options: &LogViewOptions<'_>,
-) -> ContextActions {
-    let mut actions = ContextActions::default();
-    response.context_menu(|ui| {
-        let copy = ui.add_enabled(
-            state.has_selection(),
-            egui::Button::new(tr("复制选中")).shortcut_text("Ctrl+C"),
-        );
-        if copy.clicked() {
-            if let Some(text) = state.selected_text(store) {
-                ui.ctx().copy_text(text);
-                actions.copied = true;
-            }
-            ui.close();
+    fn selection_for_row(&self, row_id: u64, len: usize) -> Option<(usize, usize)> {
+        let selection = self.selection?;
+        if selection.is_empty() {
+            return None;
         }
-
-        if ui
-            .add(egui::Button::new(tr("全选")).shortcut_text("Ctrl+A"))
-            .clicked()
-        {
-            state.select_all(store);
-            ui.close();
+        let (start, end) = selection.ordered();
+        if row_id < start.row || row_id > end.row {
+            return None;
         }
-
-        ui.separator();
-        let pause = if options.paused {
-            tr("继续显示")
+        let from = if row_id == start.row {
+            start.col.min(len)
         } else {
-            tr("暂停显示")
+            0
         };
-        if ui.button(pause).clicked() {
-            actions.toggle_pause = true;
-            ui.close();
-        }
-
-        let mut hex = options.display.mode == ViewMode::Hex;
-        if ui.checkbox(&mut hex, tr("16进制显示")).changed() {
-            actions.toggle_hex = true;
-            ui.close();
-        }
-        let mut echo = options.echo_sent;
-        if ui.checkbox(&mut echo, tr("回显发送")).changed() {
-            actions.toggle_echo = true;
-            ui.close();
-        }
-
-        ui.separator();
-        let mut markers = options.display.markers;
-        if ui.checkbox(&mut markers, tr("方向标记")).changed() {
-            actions.toggle_markers = true;
-            ui.close();
-        }
-        let mut timestamp = options.display.timestamp;
-        if ui.checkbox(&mut timestamp, tr("时间戳")).changed() {
-            actions.toggle_timestamp = true;
-            ui.close();
-        }
-        let mut wrap = options.display.wrap;
-        if ui.checkbox(&mut wrap, tr("自动换行")).changed() {
-            actions.toggle_wrap = true;
-            ui.close();
-        }
-        let mut auto_scroll = options.auto_scroll;
-        if ui
-            .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
-            .changed()
-        {
-            actions.toggle_auto_scroll = true;
-            ui.close();
-        }
-
-        ui.separator();
-        // A dialog opener rather than a checkbox: the switch and the rules
-        // editor live together on the display settings page.
-        if ui.button(format!("{}…", tr("关键字高亮"))).clicked() {
-            actions.open_highlight_settings = true;
-            ui.close();
-        }
-        ui.separator();
-        if ui.button(tr("清除接收")).clicked() {
-            actions.clear_received = true;
-            ui.close();
-        }
-    });
-    actions
-}
-
-/// Everything needed to hit-test and paint one visible row.
-struct VisibleRow {
-    index: usize,
-    /// Stable id, used by carets so they survive trimming.
-    row_id: u64,
-    galley: Arc<Galley>,
-    origin: Pos2,
-    rect: Rect,
-    /// Colour this row is drawn in, which the galley bakes in.
-    color: Color32,
-}
-
-/// Draw the log and handle interaction.
-pub fn show(
-    ui: &mut Ui,
-    store: &LogStore,
-    palette: LogPalette,
-    state: &mut LogViewState,
-    options: &LogViewOptions<'_>,
-) -> LogViewOutput {
-    #[cfg(test)]
-    probe::begin_selection_frame();
-    let font = options.font.clone();
-    let pixels_per_point = ui.ctx().pixels_per_point();
-    let ideal_row_height = ui.ctx().fonts_mut(|f| f.row_height(&font)) + options.line_spacing;
-    // Snap the row pitch to whole physical pixels.  The scroll area rounds the
-    // content origin to a pixel, so a fractional pitch (egui's font row height
-    // is e.g. 15.125px) makes that rounding drift against the rows as content
-    // grows: the whole log shimmers by one pixel in a wave every few rows.
-    let row_height = (ideal_row_height * pixels_per_point).round().max(1.0) / pixels_per_point;
-    #[cfg(test)]
-    probe::record_row_pitch(row_height, pixels_per_point);
-    let char_width = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'M'));
-    let total_rows = store.row_count();
-
-    let mut output = LogViewOutput::default();
-
-    // Following is suspended while text is selected, so the selection is not
-    // dragged out from under the pointer.
-    let follow = options.auto_scroll && !state.has_selection();
-    let jump_to_bottom = follow && !state.following;
-    state.following = follow;
-    state.highlighter.sync(options.highlights);
-
-    if total_rows == 0 {
-        // Still draw the (empty) background so the theme colour shows through.
-        let (rect, response) =
-            ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::click_and_drag());
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::ZERO, palette.background);
-        let actions = context_menu(response, store, state, options);
-        output.copied = actions.copied;
-        output.toggle_pause = actions.toggle_pause;
-        output.toggle_hex = actions.toggle_hex;
-        output.toggle_echo = actions.toggle_echo;
-        output.toggle_markers = actions.toggle_markers;
-        output.toggle_timestamp = actions.toggle_timestamp;
-        output.toggle_wrap = actions.toggle_wrap;
-        output.toggle_auto_scroll = actions.toggle_auto_scroll;
-        output.open_highlight_settings = actions.open_highlight_settings;
-        output.clear_received = actions.clear_received;
-        return output;
+        let to = if row_id == end.row {
+            end.col.min(len)
+        } else {
+            len
+        };
+        Some((from, to))
     }
 
-    // The content response only covers the rows themselves, so a short log
-    // would leave most of the view with no right-click target.  This backdrop
-    // is registered first; the row response added later still wins over the
-    // data, while the blank area opens the same menu.
-    let viewport = ui.available_rect_before_wrap();
-    let backdrop = ui.interact(viewport, ui.id().with("log_context"), Sense::click());
-    let mut context_actions = context_menu(backdrop, store, state, options);
-
-    let mut scroll = ScrollArea::both()
-        .auto_shrink([false, false])
-        .stick_to_bottom(follow);
-
-    // Re-entering follow mode (the option was switched on, or a selection was
-    // dropped) has to ask for the end position explicitly.  The target is
-    // rounded up by one scroll-bar width because the exact viewport is only
-    // known after the content is laid out; the scroll area clamps it to the
-    // real end, which is also what re-arms `stick_to_bottom`.
-    if jump_to_bottom && total_rows > 0 {
-        let content_height = total_rows as f32 * row_height;
-        let scroll_bar = ui.spacing().scroll.allocated_width();
-        let viewport_height = (ui.available_height() - scroll_bar).max(1.0);
-        scroll = scroll.vertical_scroll_offset((content_height - viewport_height).max(0.0));
-    }
-
-    let clip_rect = ui.clip_rect();
-    let mut log_response_id: Option<egui::Id> = None;
-    let result = scroll.show(ui, |ui| {
-        let content_width =
-            (store.max_columns() as f32 * char_width + 12.0).max(ui.available_width());
-        let content_height = total_rows as f32 * row_height;
-        let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(content_width, content_height),
-            Sense::click_and_drag(),
-        );
-        log_response_id = Some(response.id);
-
-        // Only these rows are laid out this frame.
-        let viewport = clip_rect.intersect(rect);
-        let first = if viewport.height() <= 0.0 {
-            0
-        } else {
-            (((viewport.top() - rect.top()) / row_height)
-                .floor()
-                .max(0.0) as usize)
-                .min(total_rows)
-        };
-        let last = if viewport.height() <= 0.0 {
-            0
-        } else {
-            ((((viewport.bottom() - rect.top()) / row_height).ceil() as usize) + 1).min(total_rows)
-        };
-
-        let mut visible: Vec<VisibleRow> = Vec::with_capacity(last.saturating_sub(first));
-        for index in first..last {
-            let text = store.row(index).to_owned();
-            // Received and echoed transmissions share one text colour; only
-            // the direction marker tells them apart.
-            let kind = store.row_kind(index);
-            let color = palette.foreground;
-            let galley = ui.ctx().fonts_mut(|f| {
-                f.layout_job(row_job(
-                    &text,
-                    store.row_prefix(index),
-                    kind,
-                    &font,
-                    color,
-                    palette,
-                    &state.highlighter,
-                ))
+    fn set_caret(&mut self, caret: Caret, dragging: bool) {
+        if dragging {
+            self.selection = Some(Selection {
+                anchor: self.drag_anchor.unwrap_or(caret),
+                head: caret,
             });
-            let origin = Pos2::new(rect.left(), rect.top() + index as f32 * row_height);
-            let row_rect = Rect::from_min_size(
-                origin,
-                Vec2::new(content_width.max(rect.width()), row_height),
-            );
-            visible.push(VisibleRow {
-                index,
-                row_id: store.row_id(index),
-                galley,
-                origin,
-                rect: row_rect,
-                color,
-            });
-        }
-
-        // ---- interaction (before painting so the highlight is current) ----
-        let pointer = response.interact_pointer_pos();
-        // Clicking or dragging the log takes keyboard focus away from a text
-        // field.  Otherwise Ctrl+A / Ctrl+C keep going to the send editor (or
-        // a multi-send row), and the log's selection is never selected or
-        // copied as the user expects.
-        if response.clicked() || response.drag_started() || response.secondary_clicked() {
-            response.request_focus();
-        }
-        if response.drag_started() {
-            // Anchor at where the button went down, not where the pointer is
-            // now: a fast drag can start and move in the same frame, and using
-            // the current position for both ends would select nothing.
-            let anchor_pos = ui.input(|i| i.pointer.press_origin()).or(pointer);
-            if let Some(pos) = anchor_pos
-                && let Some(caret) = hit_test(&visible, rect, row_height, pos)
-            {
-                state.drag_anchor = Some(caret);
-                state.selection = Some(Selection {
-                    anchor: caret,
-                    head: caret,
-                });
-            }
-        }
-        // Not `else if`: a fast drag can start and move far enough within one
-        // frame.  If this branch were skipped, the drag would leave only the
-        // empty caret set above, and the user would see "nothing selected"
-        // even though the pointer moved across the text.
-        if response.dragged()
-            && let (Some(pos), Some(anchor)) = (pointer, state.drag_anchor)
-            && let Some(caret) = hit_test_clamped(&visible, rect, row_height, pos)
-        {
-            state.selection = Some(Selection {
-                anchor,
+        } else {
+            self.selection = Some(Selection {
+                anchor: caret,
                 head: caret,
             });
         }
-        if response.clicked() {
-            // A plain click collapses the selection to a caret.
-            if let Some(pos) = pointer
-                && let Some(caret) = hit_test(&visible, rect, row_height, pos)
-            {
-                state.selection = Some(Selection {
-                    anchor: caret,
-                    head: caret,
-                });
-            }
-            state.drag_anchor = None;
-        } else if response.drag_stopped() {
-            state.drag_anchor = None;
-        }
-
-        // ---- painting ------------------------------------------------------
-        let painter = ui.painter_at(viewport);
-        painter.rect_filled(viewport, egui::CornerRadius::ZERO, palette.background);
-
-        let selection = state.selection.filter(|s| !s.is_empty());
-        for row in &visible {
-            if let Some(sel) = selection {
-                paint_selection(&painter, row, sel, palette);
-            }
-            painter.galley(row.origin, row.galley.clone(), row.color);
-        }
-
-        let row_actions = context_menu(response, store, state, options);
-        context_actions.copied |= row_actions.copied;
-        context_actions.toggle_pause |= row_actions.toggle_pause;
-        context_actions.toggle_hex |= row_actions.toggle_hex;
-        context_actions.toggle_echo |= row_actions.toggle_echo;
-        context_actions.toggle_markers |= row_actions.toggle_markers;
-        context_actions.toggle_timestamp |= row_actions.toggle_timestamp;
-        context_actions.toggle_wrap |= row_actions.toggle_wrap;
-        context_actions.toggle_auto_scroll |= row_actions.toggle_auto_scroll;
-        context_actions.open_highlight_settings |= row_actions.open_highlight_settings;
-        context_actions.clear_received |= row_actions.clear_received;
-        output.has_selection = state.has_selection();
-    });
-
-    // Clipboard copy is handled here so the shortcut works while the log has
-    // focus, regardless of which panel is active.
-    let copy_pressed =
-        ui.input(|i| i.key_pressed(egui::Key::C) && i.modifiers.command && !i.modifiers.shift);
-    if copy_pressed
-        && state.has_selection()
-        && let Some(text) = state.selected_text(store)
-    {
-        ui.ctx().copy_text(text);
-        // Take focus as part of copying: a focused text field drawn later in
-        // the frame could otherwise handle the same Ctrl+C and overwrite the
-        // clipboard with its own (often empty) selection.
-        if let Some(id) = log_response_id {
-            ui.memory_mut(|memory| memory.request_focus(id));
-        }
-        output.copied = true;
-    }
-
-    let select_all = ui.input(|i| i.key_pressed(egui::Key::A) && i.modifiers.command);
-    if select_all {
-        state.select_all(store);
-        // Likewise, Ctrl+A while a text field is focused should hand the
-        // selection to the log, not leave the field selecting its own text.
-        if let Some(id) = log_response_id {
-            ui.memory_mut(|memory| memory.request_focus(id));
-        }
-    }
-
-    output.copied |= context_actions.copied;
-    output.toggle_pause |= context_actions.toggle_pause;
-    output.toggle_hex |= context_actions.toggle_hex;
-    output.toggle_echo |= context_actions.toggle_echo;
-    output.toggle_markers |= context_actions.toggle_markers;
-    output.toggle_timestamp |= context_actions.toggle_timestamp;
-    output.toggle_wrap |= context_actions.toggle_wrap;
-    output.toggle_auto_scroll |= context_actions.toggle_auto_scroll;
-    output.open_highlight_settings |= context_actions.open_highlight_settings;
-    output.clear_received |= context_actions.clear_received;
-    #[cfg(test)]
-    probe::record(&result);
-    let _ = result;
-    output
-}
-
-/// Test-only observations of the scroll area, so layout tests can assert that
-/// the view really follows the newest row.
-#[cfg(test)]
-pub(crate) mod probe {
-    use std::cell::Cell;
-
-    use eframe::egui::{Rect, Vec2};
-
-    use std::cell::RefCell;
-
-    thread_local! {
-        /// `(offset, content size, viewport size)`
-        static SCROLL: Cell<(Vec2, Vec2, Vec2)> =
-            const { Cell::new((Vec2::ZERO, Vec2::ZERO, Vec2::ZERO)) };
-        /// Where the scroll area's visible inner rect was laid out.
-        static VIEWPORT: Cell<Rect> = const { Cell::new(Rect::NOTHING) };
-        /// Highlight rectangles painted this frame, keyed by row id.
-        static SELECTION_RECTS: RefCell<Vec<(u64, Rect)>> =
-            const { RefCell::new(Vec::new()) };
-    }
-
-    pub(crate) fn record(out: &eframe::egui::scroll_area::ScrollAreaOutput<()>) {
-        SCROLL.with(|cell| cell.set((out.state.offset, out.content_size, out.inner_rect.size())));
-        VIEWPORT.with(|cell| cell.set(out.inner_rect));
-    }
-
-    pub(crate) fn viewport() -> Rect {
-        VIEWPORT.with(|cell| cell.get())
-    }
-
-    pub(crate) fn begin_selection_frame() {
-        SELECTION_RECTS.with(|rects| rects.borrow_mut().clear());
-    }
-
-    pub(crate) fn record_selection(row_id: u64, rect: Rect) {
-        SELECTION_RECTS.with(|rects| rects.borrow_mut().push((row_id, rect)));
-    }
-
-    pub(crate) fn selection_rects() -> Vec<(u64, Rect)> {
-        SELECTION_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    pub(crate) fn scroll() -> (Vec2, Vec2, Vec2) {
-        SCROLL.with(|cell| cell.get())
-    }
-
-    thread_local! {
-        /// `(row pitch, pixels per point)` as actually laid out.
-        static ROW_PITCH: Cell<(f32, f32)> = const { Cell::new((0.0, 1.0)) };
-    }
-
-    pub(crate) fn record_row_pitch(row_height: f32, pixels_per_point: f32) {
-        ROW_PITCH.with(|cell| cell.set((row_height, pixels_per_point)));
-    }
-
-    pub(crate) fn row_pitch() -> (f32, f32) {
-        ROW_PITCH.with(|cell| cell.get())
     }
 }
 
-/// Lay out one row: the direction marker, the timestamp and the data, each in
-/// its own colour.
-///
-/// The job's text is exactly the row's text, so caret columns and the copied
-/// selection still line up with what the store holds.
-fn row_job(
+/// Build the text runs for one row: marker, timestamp, then data with keyword
+/// highlights applied only to the data part.
+fn row_runs(
     text: &str,
     prefix: (usize, usize),
     kind: RowKind,
-    font: &FontId,
-    color: Color32,
+    font: &Font,
+    color: Hsla,
     palette: LogPalette,
     highlights: &Highlighter,
-) -> LayoutJob {
-    let (mark_len, stamp_len) = prefix;
-    let mark_len = clamp_to_boundary(text, mark_len);
-    let stamp_end = clamp_to_boundary(text, mark_len + stamp_len);
-    let marker_color = match kind {
-        RowKind::Received => palette.received_marker,
-        RowKind::Sent => palette.sent_marker,
+) -> Vec<TextRun> {
+    let clamp = |mut len: usize| {
+        len = len.min(text.len());
+        while !text.is_char_boundary(len) {
+            len -= 1;
+        }
+        len
     };
+    let mark_len = clamp(prefix.0);
+    let stamp_end = clamp(prefix.0 + prefix.1);
+    let marker_color = match kind {
+        RowKind::Received => Hsla::from(palette.received_marker),
+        RowKind::Sent => Hsla::from(palette.sent_marker),
+    };
+    let timestamp = Hsla::from(palette.timestamp);
 
-    let mut job = LayoutJob::default();
-    let mut push = |text: &str, color: Color32| {
-        if !text.is_empty() {
-            job.append(
-                text,
-                0.0,
-                TextFormat {
-                    font_id: font.clone(),
-                    color,
-                    ..Default::default()
-                },
-            );
+    let mut runs = Vec::new();
+    let mut push = |slice: &str, color: Hsla| {
+        if !slice.is_empty() {
+            runs.push(TextRun {
+                len: slice.len(),
+                font: font.clone(),
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            });
         }
     };
     push(&text[..mark_len], marker_color);
-    push(&text[mark_len..stamp_end], palette.timestamp);
+    push(&text[mark_len..stamp_end], timestamp);
 
     let data = &text[stamp_end..];
     if highlights.is_active() {
@@ -664,10 +254,12 @@ fn row_job(
             if found.start > last {
                 push(&data[last..found.start], color);
             }
-            let color = highlights.color(found.rule);
+            let rgb = highlights.color(found.rule);
             push(
                 &data[found.start..found.end],
-                Color32::from_rgb(color[0], color[1], color[2]),
+                Hsla::from(gpui_kit::rgb(
+                    (rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32,
+                )),
             );
             last = found.end;
         }
@@ -677,448 +269,445 @@ fn row_job(
     } else {
         push(data, color);
     }
-    job
+    runs
 }
 
-/// Clamp a byte length to a character boundary, so a row whose prefix metadata
-/// disagrees with its text can never panic the painter.
-fn clamp_to_boundary(text: &str, len: usize) -> usize {
-    let mut len = len.min(text.len());
-    while !text.is_char_boundary(len) {
-        len -= 1;
-    }
-    len
-}
+impl XcomApp {
+    /// Draw the receive log and handle its pointer and keyboard interaction.
+    pub(crate) fn render_log(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let palette = crate::theme::log_palette(cx, self.settings.theme, self.settings.log_colors);
+        let font = crate::fonts::receive_font(&self.settings.fonts, &cx.theme().mono_font_family);
+        let font_size = px(self.settings.fonts.receive_size);
+        let sample = window.text_system().shape_line(
+            SharedString::from("M"),
+            font_size,
+            &[TextRun {
+                len: 1,
+                font: font.clone(),
+                color: Hsla::from(palette.foreground),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        let char_width = sample.width();
+        let row_height = sample.ascent + sample.descent + px(self.settings.line_spacing);
+        self.log_view.char_width = char_width;
+        self.log_view.row_height = row_height;
+        self.log_view.highlighter.sync(&self.settings.highlights);
 
-/// Paint the highlight rectangles for one row.
-fn paint_selection(
-    painter: &egui::Painter,
-    row: &VisibleRow,
-    selection: Selection,
-    palette: LogPalette,
-) {
-    let row_id = row.row_id;
-    let (start, end) = selection.ordered();
-    if row_id < start.row || row_id > end.row {
-        return;
-    }
-    let chars = row.galley.text().chars().count();
-    let from = if row_id == start.row {
-        start.col.min(chars)
-    } else {
-        0
-    };
-    let to = if row_id == end.row {
-        end.col.min(chars)
-    } else {
-        chars
-    };
-
-    // A selection that covers the newline also needs a marker at the row end.
-    let (x0, x1) = if to > from {
-        let a = row.galley.pos_from_cursor(CCursor::new(from));
-        if to >= chars {
-            // The whole row is selected (including its newline): extend the
-            // wash to the table edge.  Otherwise a short row -- an echoed
-            // command, say -- shows a stub of highlight next to long received
-            // rows and reads as only partly selected.
-            (a.left(), row.rect.width())
-        } else {
-            let b = row.galley.pos_from_cursor(CCursor::new(to));
-            (a.left(), b.left().max(b.right()))
+        let viewport = self.log_view.scroll.bounds();
+        if self.settings.display.wrap && char_width > px(0.0) && viewport.size.width > px(0.0) {
+            let cols = (viewport.size.width / char_width).floor().max(8.0) as usize;
+            if self.update_wrap_width(cols) {
+                // One extra frame shows the re-wrapped rows; the next call
+                // sees the same width and stops, so this cannot loop.
+                cx.notify();
+            }
         }
-    } else if row_id == start.row && row_id == end.row {
-        // Empty range on this row: draw a caret so a click is visible.
-        let a = row.galley.pos_from_cursor(CCursor::new(from));
-        (a.left(), a.left() + 1.0)
-    } else {
-        let end_of_row = row.galley.pos_from_cursor(CCursor::new(chars));
-        (end_of_row.right(), end_of_row.right() + 4.0)
-    };
 
-    let rect = Rect::from_min_max(
-        Pos2::new(row.origin.x + x0, row.rect.top()),
-        Pos2::new(row.origin.x + x1, row.rect.bottom()),
-    );
-    #[cfg(test)]
-    probe::record_selection(row_id, rect);
-    painter.rect_filled(rect, egui::CornerRadius::ZERO, palette.selection);
-}
+        let total_rows = self.log.row_count();
+        let content_width = if self.settings.display.wrap {
+            viewport.size.width.max(px(1.0))
+        } else {
+            (self.log.max_columns() as f32 * char_width + px(12.0)).max(viewport.size.width)
+        };
+        let content_height = total_rows as f32 * row_height;
+        let offset = self.log_view.scroll.offset();
+        let max_offset = self.log_view.scroll.max_offset();
+        let at_bottom = max_offset.y <= px(0.0) || offset.y >= max_offset.y - px(2.0);
 
-/// Map a pointer position to a caret within the visible rows.
-fn hit_test(visible: &[VisibleRow], content: Rect, row_height: f32, pos: Pos2) -> Option<Caret> {
-    if visible.is_empty() {
-        return None;
+        let follow = self.settings.auto_scroll && !self.log_view.has_selection();
+        if follow {
+            if self.log_view.following || at_bottom || !self.log_view.scrolling_to_bottom {
+                self.log_view.scroll.scroll_to_bottom();
+                self.log_view.scrolling_to_bottom = true;
+            } else if !at_bottom {
+                // The user scrolled away from the end while following: stop
+                // pulling them back until they return to the bottom.
+                self.log_view.following = false;
+            }
+        } else {
+            self.log_view.following = false;
+            self.log_view.scrolling_to_bottom = false;
+        }
+        self.log_view.at_bottom = at_bottom;
+        if at_bottom {
+            self.log_view.following = true;
+        }
+
+        let first = ((offset.y.max(px(0.0)) / row_height).floor() as usize).min(total_rows);
+        let last = (((offset.y.max(px(0.0)) + viewport.size.height) / row_height).ceil() as usize
+            + 1)
+        .min(total_rows);
+
+        self.log_view.lines.clear();
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(last.saturating_sub(first));
+        for index in first..last {
+            let text = SharedString::from(self.log.row(index));
+            let row_id = self.log.row_id(index);
+            let prefix = self.log.row_prefix(index);
+            let kind = self.log.row_kind(index);
+            let runs = row_runs(
+                &text,
+                prefix,
+                kind,
+                &font,
+                Hsla::from(palette.foreground),
+                palette,
+                &self.log_view.highlighter,
+            );
+            let line = window
+                .text_system()
+                .shape_line(text.clone(), font_size, &runs, None);
+            let selection = self.log_view.selection_for_row(row_id, text.len());
+            self.log_view.lines.insert(row_id, line.clone());
+            let line = Arc::new(line);
+            let selection_color = Hsla::from(palette.selection);
+            let row = div()
+                .id(("log-row", row_id))
+                .w(content_width)
+                .h(row_height)
+                .child(
+                    canvas(
+                        move |_bounds, _window, _cx| (),
+                        move |bounds, _, window, _cx| {
+                            if let Some((from, to)) = selection
+                                && to > from
+                            {
+                                let x0 = line.x_for_index(from);
+                                let x1 = if to >= line.len() {
+                                    bounds.size.width
+                                } else {
+                                    line.x_for_index(to).max(line.x_for_index(from) + px(1.0))
+                                };
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(bounds.left() + x0, bounds.top()),
+                                        size(x1 - x0, bounds.size.height),
+                                    ),
+                                    selection_color,
+                                ));
+                            }
+                            let _ = line.paint(
+                                point(bounds.left(), bounds.top()),
+                                bounds.size.height,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                _cx,
+                            );
+                        },
+                    )
+                    .size_full(),
+                );
+            rows.push(row.into_any_element());
+        }
+
+        let weak = cx.entity().downgrade();
+        let context_weak = weak.clone();
+        let has_selection = self.log_view.has_selection();
+        let selected_text = self.log_view.selected_text(&self.log);
+        let paused = self.show_paused;
+        let display = self.settings.display;
+        let echo_sent = self.settings.echo_sent;
+        let auto_scroll = self.settings.auto_scroll;
+
+        let empty = total_rows == 0;
+        let mut body = div()
+            .id("log-scroll")
+            .relative()
+            .size_full()
+            .overflow_scroll()
+            .track_scroll(&self.log_view.scroll)
+            .bg(palette.background)
+            .text_color(palette.foreground)
+            .track_focus(&self.log_focus)
+            .key_context(LOG_CONTEXT)
+            .on_action(cx.listener(|this, _: &crate::app::CopyLog, _, cx| {
+                this.copy_log_selection(cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::app::SelectAllLog, _, cx| {
+                this.select_all_log();
+                cx.notify();
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                    this.log_focus.focus(window, cx);
+                    if let Some(caret) = this.log_caret_at(event.position) {
+                        this.log_view.drag_anchor = Some(caret);
+                        this.log_view.set_caret(caret, false);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _window, cx| {
+                    if event.dragging()
+                        && let Some(caret) = this.log_caret_at(event.position)
+                    {
+                        this.log_view.set_caret(caret, true);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &gpui_kit::MouseUpEvent, _window, cx| {
+                    this.log_view.drag_anchor = None;
+                    cx.notify();
+                }),
+            )
+            .context_menu(move |menu, _window, _cx| {
+                let mut menu = menu;
+                let copy = PopupMenuItem::new(tr("复制选中")).disabled(!has_selection);
+                menu = menu.item(copy.on_click({
+                    let weak = context_weak.clone();
+                    let text = selected_text.clone();
+                    move |_, _, cx| {
+                        if let Some(text) = text.as_deref() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+                        }
+                        let _ = weak.update(cx, |this, cx| {
+                            this.info(tr("已复制选中内容到剪贴板"));
+                            cx.notify();
+                        });
+                    }
+                }));
+                menu = menu.item(PopupMenuItem::new(tr("全选")).on_click({
+                    let weak = context_weak.clone();
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            this.select_all_log();
+                            cx.notify();
+                        });
+                    }
+                }));
+                menu = menu.separator();
+                menu = menu.item(
+                    PopupMenuItem::new(if paused {
+                        tr("继续显示")
+                    } else {
+                        tr("暂停显示")
+                    })
+                    .on_click({
+                        let weak = context_weak.clone();
+                        move |_, _, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                if this.show_paused {
+                                    this.resume_display();
+                                } else {
+                                    this.show_paused = true;
+                                }
+                                cx.notify();
+                            });
+                        }
+                    }),
+                );
+                menu = menu.item(
+                    PopupMenuItem::new(tr("16进制显示"))
+                        .checked(display.mode == ViewMode::Hex)
+                        .on_click({
+                            let weak = context_weak.clone();
+                            move |_, _, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    let mut options = this.settings.display;
+                                    options.mode = if options.mode == ViewMode::Hex {
+                                        ViewMode::Text
+                                    } else {
+                                        ViewMode::Hex
+                                    };
+                                    this.set_display_options(options);
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                );
+                menu = menu.item(
+                    PopupMenuItem::new(tr("回显发送"))
+                        .checked(echo_sent)
+                        .on_click({
+                            let weak = context_weak.clone();
+                            move |_, _, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.settings.echo_sent = !this.settings.echo_sent;
+                                    this.mark_settings_dirty();
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                );
+                menu = menu.separator();
+                for (label, checked, toggle) in [
+                    (tr("方向标记"), display.markers, 0usize),
+                    (tr("时间戳"), display.timestamp, 1),
+                    (tr("自动换行"), display.wrap, 2),
+                    (tr("自动滚动到最新"), auto_scroll, 3),
+                ] {
+                    menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click({
+                        let weak = context_weak.clone();
+                        move |_, _, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                match toggle {
+                                    0 => {
+                                        let mut options = this.settings.display;
+                                        options.markers = !options.markers;
+                                        this.set_display_options(options);
+                                    }
+                                    1 => {
+                                        let mut options = this.settings.display;
+                                        options.timestamp = !options.timestamp;
+                                        this.set_display_options(options);
+                                    }
+                                    2 => {
+                                        let mut options = this.settings.display;
+                                        options.wrap = !options.wrap;
+                                        this.set_display_options(options);
+                                    }
+                                    _ => {
+                                        let value = !this.settings.auto_scroll;
+                                        this.set_auto_scroll(value);
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        }
+                    }));
+                }
+                menu = menu.separator();
+                menu = menu.item(
+                    PopupMenuItem::new(format!("{}…", tr("关键字高亮"))).on_click({
+                        let weak = context_weak.clone();
+                        move |_, window, cx| {
+                            super::panels::run_action(
+                                weak.clone(),
+                                crate::app::Action::ShowHighlight,
+                                window,
+                                cx,
+                            );
+                        }
+                    }),
+                );
+                menu = menu.separator();
+                menu.item(PopupMenuItem::new(tr("清除接收")).on_click({
+                    let weak = context_weak.clone();
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            this.clear_receive();
+                            cx.notify();
+                        });
+                    }
+                }))
+            });
+
+        if empty {
+            body = body.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_color(Hsla::from(palette.timestamp))
+                            .child(tr("暂无数据")),
+                    ),
+            );
+        } else {
+            let top_spacer = div().w(content_width).h(row_height * first as f32);
+            let bottom_spacer = div()
+                .w(content_width)
+                .h(row_height * total_rows.saturating_sub(last) as f32);
+            body = body.child(
+                div()
+                    .w(content_width)
+                    .h(content_height)
+                    .flex()
+                    .flex_col()
+                    .child(top_spacer)
+                    .children(rows)
+                    .child(bottom_spacer),
+            );
+        }
+        if viewport.size.height <= px(0.0) {
+            // The scroll area has no resolved bounds on its first frame; ask
+            // for one more frame so the visible rows can be painted.
+            cx.notify();
+        }
+        body.into_any_element()
     }
-    let offset = ((pos.y - content.top()) / row_height).floor();
-    let index = offset.max(0.0) as usize;
-    // Clamp into the rendered window rather than the whole log.
-    let index = index.clamp(visible[0].index, visible[visible.len() - 1].index);
-    caret_in_row(visible, index, pos)
-}
 
-/// Like [`hit_test`] but tolerant of a pointer dragged outside the rows, so a
-/// drag can extend the selection past the viewport edge.
-fn hit_test_clamped(
-    visible: &[VisibleRow],
-    content: Rect,
-    row_height: f32,
-    pos: Pos2,
-) -> Option<Caret> {
-    if visible.is_empty() {
-        return None;
+    /// Resolve a window position to a row/byte caret in the receive log.
+    fn log_caret_at(&self, position: Point<Pixels>) -> Option<Caret> {
+        let bounds = self.log_view.scroll.bounds();
+        if bounds.size.height <= px(0.0) || self.log.row_count() == 0 {
+            return None;
+        }
+        let offset = self.log_view.scroll.offset();
+        let content_y = position.y - bounds.top() + offset.y;
+        let row = (content_y / self.log_view.row_height).floor().max(0.0) as usize;
+        let row = row.min(self.log.row_count() - 1);
+        let row_id = self.log.row_id(row);
+        let line = self.log_view.lines.get(&row_id);
+        let col = match line {
+            Some(line) => {
+                let local_x = position.x - bounds.left() + offset.x;
+                let index = line.closest_index_for_x(local_x.max(px(0.0)));
+                let text = self.log.row(row);
+                let mut index = index.min(text.len());
+                while !text.is_char_boundary(index) {
+                    index -= 1;
+                }
+                index
+            }
+            None => 0,
+        };
+        Some(Caret { row: row_id, col })
     }
-    let clamped_y = pos.y.clamp(
-        content.top(),
-        content.top() + (visible[visible.len() - 1].index as f32 + 1.0) * row_height - 1.0,
-    );
-    let clamped = Pos2::new(pos.x, clamped_y);
-    hit_test(visible, content, row_height, clamped)
-}
-
-/// Resolve a caret inside a specific row, given an absolute pointer position.
-fn caret_in_row(visible: &[VisibleRow], index: usize, pos: Pos2) -> Option<Caret> {
-    let row = visible.iter().find(|r| r.index == index)?;
-    let local = Vec2::new(pos.x - row.origin.x, pos.y - row.origin.y);
-    let cursor = row.galley.cursor_from_pos(local);
-    Some(Caret {
-        row: row.row_id,
-        col: cursor.index.into(),
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoding::EncodingId;
-    use crate::logstore::{DisplayOptions, MARK_RECEIVED, MARK_SENT};
-    use crate::theme::DARK_LOG;
-    use encoding_rs::UTF_8;
+    use crate::logstore::DisplayOptions;
 
-    fn store_with(lines: &[&str]) -> LogStore {
-        // Selection arithmetic is what these tests exercise, so the direction
-        // markers are switched off to keep the expected columns literal.
-        let mut store = LogStore::new(UTF_8);
-        store.set_options(DisplayOptions {
+    fn plain_log() -> LogStore {
+        let mut log = LogStore::new(encoding_rs::UTF_8);
+        log.set_options(DisplayOptions {
             markers: false,
             ..Default::default()
         });
-        for line in lines {
-            store.append(format!("{line}\r\n").as_bytes(), 0);
-        }
-        store
-    }
-
-    /// A section's byte range as plain `usize`s.
-    fn byte_range(job: &LayoutJob, section: usize) -> std::ops::Range<usize> {
-        let range = &job.sections[section].byte_range;
-        range.start.0..range.end.0
+        log
     }
 
     #[test]
-    fn selection_of_a_single_row() {
-        let store = store_with(&["hello", "world"]);
-        let state = LogViewState {
-            selection: Some(Selection {
-                anchor: Caret {
-                    row: store.row_id(0),
-                    col: 1,
-                },
-                head: Caret {
-                    row: store.row_id(0),
-                    col: 4,
-                },
-            }),
-            ..Default::default()
-        };
-        assert_eq!(state.selected_text(&store).unwrap(), "ell");
+    fn select_all_copies_every_row_in_order() {
+        let mut log = plain_log();
+        log.append(b"hello\nworld\n", 0);
+        let mut view = LogViewState::new();
+        assert!(view.selected_text(&log).is_none());
+        view.select_all(&log);
+        assert_eq!(view.selected_text(&log).as_deref(), Some("hello\nworld"));
     }
 
     #[test]
-    fn selection_across_rows_includes_newlines() {
-        let store = store_with(&["abc", "def", "ghi"]);
-        let state = LogViewState {
-            selection: Some(Selection {
-                anchor: Caret {
-                    row: store.row_id(0),
-                    col: 1,
-                },
-                head: Caret {
-                    row: store.row_id(2),
-                    col: 2,
-                },
-            }),
-            ..Default::default()
-        };
-        assert_eq!(state.selected_text(&store).unwrap(), "bc\ndef\ngh");
-    }
-
-    #[test]
-    fn reversed_selection_reads_in_document_order() {
-        let store = store_with(&["abc", "def"]);
-        let state = LogViewState {
-            selection: Some(Selection {
-                anchor: Caret {
-                    row: store.row_id(1),
-                    col: 3,
-                },
-                head: Caret {
-                    row: store.row_id(0),
-                    col: 0,
-                },
-            }),
-            ..Default::default()
-        };
-        assert_eq!(state.selected_text(&store).unwrap(), "abc\ndef");
-    }
-
-    #[test]
-    fn empty_selection_yields_nothing() {
-        let store = store_with(&["abc"]);
-        let state = LogViewState {
-            selection: Some(Selection {
-                anchor: Caret {
-                    row: store.row_id(0),
-                    col: 1,
-                },
-                head: Caret {
-                    row: store.row_id(0),
-                    col: 1,
-                },
-            }),
-            ..Default::default()
-        };
-        assert!(state.selected_text(&store).is_none());
-        assert!(!state.has_selection());
-    }
-
-    #[test]
-    fn select_all_covers_every_row() {
-        let store = store_with(&["one", "two", "three"]);
-        let mut state = LogViewState::default();
-        state.select_all(&store);
-        assert_eq!(state.selected_text(&store).unwrap(), "one\ntwo\nthree");
-    }
-
-    #[test]
-    fn select_all_on_empty_log_is_harmless() {
-        let store = LogStore::new(UTF_8);
-        let mut state = LogViewState::default();
-        state.select_all(&store);
-        assert!(state.selected_text(&store).is_none());
-    }
-
-    #[test]
-    fn selection_survives_scrollback_trimming() {
-        let mut store = LogStore::new(UTF_8);
-        store.set_options(DisplayOptions {
-            markers: false,
-            ..Default::default()
+    fn selecting_a_partial_row_reads_only_that_range() {
+        let mut log = plain_log();
+        log.append(b"abcdef\n", 0);
+        let mut view = LogViewState::new();
+        view.selection = Some(Selection {
+            anchor: Caret {
+                row: log.row_id(0),
+                col: 1,
+            },
+            head: Caret {
+                row: log.row_id(0),
+                col: 4,
+            },
         });
-        store.set_limits(1024, 64 * 1024);
-        for i in 0..3000 {
-            store.append(format!("line{i}\r\n").as_bytes(), 0);
-        }
-        let mut state = LogViewState::default();
-        state.select_all(&store);
-        // Every retained row must be selected; nothing may panic on the ids
-        // that have already been trimmed away.
-        let text = state.selected_text(&store).unwrap();
-        assert!(text.starts_with("line"));
-        assert_eq!(text.lines().count(), store.row_count());
-    }
-
-    #[test]
-    fn select_all_ignores_rows_trimmed_since_selection() {
-        let mut store = LogStore::new(UTF_8);
-        store.set_limits(1024, 64 * 1024);
-        for i in 0..3000 {
-            store.append(format!("line{i}\r\n").as_bytes(), 0);
-        }
-        let mut state = LogViewState::default();
-        state.select_all(&store);
-        // Trim further and re-read: the stale anchor must clamp, not panic.
-        for i in 0..2000 {
-            store.append(format!("more{i}\r\n").as_bytes(), 0);
-        }
-        let text = state.selected_text(&store).unwrap();
-        assert!(!text.is_empty());
-    }
-
-    #[test]
-    fn unicode_columns_are_counted_in_chars_not_bytes() {
-        let store = store_with(&["中文abc"]);
-        let state = LogViewState {
-            selection: Some(Selection {
-                anchor: Caret {
-                    row: store.row_id(0),
-                    col: 0,
-                },
-                head: Caret {
-                    row: store.row_id(0),
-                    col: 3,
-                },
-            }),
-            ..Default::default()
-        };
-        assert_eq!(state.selected_text(&store).unwrap(), "中文a");
-    }
-
-    #[test]
-    fn log_store_reports_widest_row() {
-        let store = store_with(&["ab", "abcdef", "abc"]);
-        assert_eq!(store.max_columns(), 6);
-        let _ = EncodingId::Utf8;
-    }
-
-    #[test]
-    fn selection_can_include_the_direction_marker() {
-        let mut store = LogStore::new(UTF_8);
-        store.append(b"hello\r\n", 0);
-        store.append_sent(b"world", 0);
-        let mut state = LogViewState::default();
-        state.select_all(&store);
-        // The marker is part of the row, so it is part of the selection and of
-        // what Ctrl+C puts on the clipboard.
-        assert_eq!(
-            state.selected_text(&store).unwrap(),
-            format!("{MARK_RECEIVED}hello\n{MARK_SENT}world")
-        );
-    }
-
-    #[test]
-    fn row_job_splits_marker_timestamp_and_data() {
-        let font = FontId::monospace(12.0);
-        let stamp = "[12:00:00.000] ";
-        let text = format!("{MARK_RECEIVED}{stamp}hi");
-        let job = row_job(
-            &text,
-            (MARK_RECEIVED.len(), stamp.len()),
-            RowKind::Received,
-            &font,
-            DARK_LOG.foreground,
-            DARK_LOG,
-            &Highlighter::default(),
-        );
-        // The galley text must stay identical to the row, or caret columns
-        // would drift away from the stored text.
-        assert_eq!(job.text, text);
-        let sections: Vec<(&str, Color32)> = job
-            .sections
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (&job.text[byte_range(&job, i)], s.format.color))
-            .collect();
-        assert_eq!(
-            sections,
-            vec![
-                (MARK_RECEIVED, DARK_LOG.received_marker),
-                (stamp, DARK_LOG.timestamp),
-                ("hi", DARK_LOG.foreground),
-            ]
-        );
-    }
-
-    #[test]
-    fn row_job_shows_a_sent_marker_in_its_own_colour() {
-        let font = FontId::monospace(12.0);
-        let text = format!("{MARK_SENT}out");
-        let job = row_job(
-            &text,
-            (MARK_SENT.len(), 0),
-            RowKind::Sent,
-            &font,
-            DARK_LOG.foreground,
-            DARK_LOG,
-            &Highlighter::default(),
-        );
-        let section = |i: usize| &job.text[byte_range(&job, i)];
-        assert_eq!(job.sections[0].format.color, DARK_LOG.sent_marker);
-        assert_eq!(section(0), MARK_SENT);
-        assert_eq!(section(1), "out");
-        // Echoed data uses the same text colour as received data.
-        assert_eq!(job.sections[1].format.color, DARK_LOG.foreground);
-    }
-
-    #[test]
-    fn row_job_without_a_prefix_is_a_single_section() {
-        let font = FontId::monospace(12.0);
-        let job = row_job(
-            "plain",
-            (0, 0),
-            RowKind::Received,
-            &font,
-            DARK_LOG.foreground,
-            DARK_LOG,
-            &Highlighter::default(),
-        );
-        assert_eq!(job.sections.len(), 1);
-        assert_eq!(byte_range(&job, 0), 0..5);
-        assert_eq!(job.sections[0].format.color, DARK_LOG.foreground);
-    }
-
-    #[test]
-    fn row_job_tolerates_prefix_metadata_past_the_text() {
-        let font = FontId::monospace(12.0);
-        // A pathological mismatch must not panic: the offsets clamp back to a
-        // character boundary instead of slicing a character in half.
-        let job = row_job(
-            "中",
-            (9, 9),
-            RowKind::Received,
-            &font,
-            DARK_LOG.foreground,
-            DARK_LOG,
-            &Highlighter::default(),
-        );
-        assert_eq!(job.text, "中");
-        assert_eq!(job.sections.len(), 1);
-        assert_eq!(byte_range(&job, 0), 0..3);
-    }
-
-    #[test]
-    fn row_job_paints_keywords_without_changing_the_text() {
-        let font = FontId::monospace(12.0);
-        let highlights = HighlightSettings {
-            rules: vec![
-                crate::highlight::HighlightRule {
-                    text: "OK".to_owned(),
-                    enabled: true,
-                    regex: false,
-                    color: [1, 2, 3],
-                },
-                crate::highlight::HighlightRule {
-                    text: "ERROR".to_owned(),
-                    enabled: true,
-                    regex: false,
-                    color: [4, 5, 6],
-                },
-            ],
-        };
-        let text = "OK no ERROR";
-        let job = row_job(
-            text,
-            (0, 0),
-            RowKind::Received,
-            &font,
-            DARK_LOG.foreground,
-            DARK_LOG,
-            &Highlighter::new(&highlights),
-        );
-        assert_eq!(job.text, text, "highlighting must not alter the row text");
-        let sections: Vec<(&str, Color32)> = job
-            .sections
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (&job.text[byte_range(&job, i)], s.format.color))
-            .collect();
-        assert_eq!(
-            sections,
-            vec![
-                ("OK", Color32::from_rgb(1, 2, 3)),
-                (" no ", DARK_LOG.foreground),
-                ("ERROR", Color32::from_rgb(4, 5, 6)),
-            ]
-        );
+        assert_eq!(view.selected_text(&log).as_deref(), Some("bcd"));
     }
 }

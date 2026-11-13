@@ -43,6 +43,7 @@ impl PortDesc {
     }
 
     /// Full metadata for the hover tooltip, one field per line.
+    #[cfg(test)]
     pub fn detail(&self) -> Option<String> {
         match &self.kind {
             PortKind::Usb {

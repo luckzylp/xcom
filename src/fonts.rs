@@ -1,679 +1,180 @@
-//! CJK font discovery.
+//! Interface, receive-area and send-area font selection.
 //!
-//! The entire UI is in Chinese, so a font with CJK coverage is mandatory.  The
-//! default egui fonts cover Latin only, and bundling a full CJK face would add
-//! ~10 MB to every binary.  Instead we locate a system font at startup: first
-//! from a list of well-known paths (fast, and covers almost every real desktop)
-//! and then by asking `fontdb` for any installed family with a CJK name.
-//!
-//! If nothing is found the app still runs; Chinese text simply renders as
-//! tofu, and the UI says so in the log so the cause is obvious.
+//! GPUI renders with the platform's text system, so there is no font-definition
+//! table to install.  This module scans the installed families for the font
+//! dialog, chooses a CJK-capable family for the one-time warning, and turns a
+//! [`FontSettings`] into the `Font` values the views ask for.
 
-use std::sync::Arc;
+use std::sync::OnceLock;
 
-use eframe::egui;
+use gpui_kit::{Font, SharedString, font};
 
 use crate::settings::FontSettings;
 
-/// Family names that indicate CJK coverage, in descending preference.
+/// Families reported by `fontdb`, sorted and de-duplicated.
 ///
-/// Ordering matters: a sans-serif with broad coverage is a better UI font than
-/// a serif or a handwriting face.
-const PREFERRED_FAMILIES: &[&str] = &[
-    "Noto Sans CJK SC",
-    "Noto Sans SC",
-    "Source Han Sans SC",
-    "Sarasa Gothic SC",
-    "Sarasa Mono SC",
-    "Microsoft YaHei UI",
-    "Microsoft YaHei",
-    "PingFang SC",
-    "Hiragino Sans GB",
-    "Heiti SC",
-    "WenQuanYi Micro Hei",
-    "WenQuanYi Zen Hei",
-    "Noto Sans CJK TC",
-    "Noto Sans CJK JP",
-    "SimHei",
-    "SimSun",
-    "Arial Unicode MS",
-];
-
-/// Well-known font file paths, tried before the slower database scan.
-#[cfg(target_os = "linux")]
-const KNOWN_PATHS: &[&str] = &[
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf",
-    "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf",
-    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-    "/usr/share/fonts/truetype/arphic/uming.ttc",
-    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-];
-
-#[cfg(target_os = "windows")]
-const KNOWN_PATHS: &[&str] = &[
-    "C:\\Windows\\Fonts\\msyh.ttc",
-    "C:\\Windows\\Fonts\\msyh.ttf",
-    "C:\\Windows\\Fonts\\msyhbd.ttc",
-    "C:\\Windows\\Fonts\\simhei.ttf",
-    "C:\\Windows\\Fonts\\simsun.ttc",
-    "C:\\Windows\\Fonts\\Deng.ttf",
-];
-
-#[cfg(target_os = "macos")]
-const KNOWN_PATHS: &[&str] = &[
-    "/System/Library/Fonts/PingFang.ttc",
-    "/System/Library/Fonts/STHeiti Light.ttc",
-    "/System/Library/Fonts/STHeiti Medium.ttc",
-    "/Library/Fonts/Arial Unicode.ttf",
-    "/System/Library/Fonts/Hiragino Sans GB.ttc",
-];
-
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-const KNOWN_PATHS: &[&str] = &[];
-
-/// A loaded font face, ready to hand to egui.
-#[derive(Clone)]
-pub struct LoadedFont {
-    /// Family name, for display in the UI.
-    pub family: String,
-    pub data: Vec<u8>,
-    /// Face index within a font collection (`.ttc`).
-    pub index: u32,
-}
-
-/// Stable egui family names for the two independently selectable text areas.
-///
-/// egui supports named font families, which lets the receive and send editors
-/// use different faces without changing the interface font.
-pub const RECEIVE_FONT_FAMILY: &str = "xcom-receive";
-pub const SEND_FONT_FAMILY: &str = "xcom-send";
-
-/// Well-known UI font paths (Zed / IBM Plex / clean sans).
-#[cfg(target_os = "linux")]
-const KNOWN_UI_PATHS: &[&str] = &[
-    "/usr/share/fonts/windows/ZedMonoNerdFontPropo-Regular.ttf",
-    "/usr/share/fonts/truetype/ibm-plex/IBMPlexSans-Regular.ttf",
-    "/usr/share/fonts/opentype/ibm-plex/IBMPlexSans-Regular.otf",
-    "/usr/share/fonts/windows/ZedMonoNerdFont-Regular.ttf",
-];
-
-#[cfg(not(target_os = "linux"))]
-const KNOWN_UI_PATHS: &[&str] = &[];
-
-/// Well-known Monospace font paths (Zed Mono / IBM Plex Mono).
-#[cfg(target_os = "linux")]
-const KNOWN_MONO_PATHS: &[&str] = &[
-    "/usr/share/fonts/windows/ZedMonoNerdFontMono-Regular.ttf",
-    "/usr/share/fonts/windows/ZedMonoNerdFont-Regular.ttf",
-    "/usr/share/fonts/truetype/ibm-plex/IBMPlexMono-Regular.ttf",
-    "/usr/share/fonts/opentype/ibm-plex/IBMPlexMono-Regular.otf",
-];
-
-#[cfg(not(target_os = "linux"))]
-const KNOWN_MONO_PATHS: &[&str] = &[];
-
-/// UI font family preference list.
-const PREFERRED_UI_FAMILIES: &[&str] = &[
-    "IBM Plex Sans",
-    "ZedMono Nerd Font Propo",
-    "ZedMono NFP",
-    "ZedMono Nerd Font",
-    "Inter",
-    "Cantarell",
-    "Noto Sans",
-    "Segoe UI",
-];
-
-/// Monospace font family preference list.
-const PREFERRED_MONO_FAMILIES: &[&str] = &[
-    "Noto Sans Mono CJK SC",
-    "Sarasa Mono SC",
-    "Source Han Mono SC",
-    "ZedMono Nerd Font Mono",
-    "ZedMono NFM",
-    "ZedMono Nerd Font",
-    "IBM Plex Mono",
-    "JetBrains Mono",
-    "DejaVu Sans Mono",
-];
-
-/// All installed family names, sorted for the settings combo boxes.
-pub fn available_families() -> Vec<String> {
-    static FAMILIES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    FAMILIES
-        .get_or_init(|| {
-            let mut db = fontdb::Database::new();
-            db.load_system_fonts();
-            let mut names = std::collections::BTreeSet::new();
-            for face in db.faces() {
-                for (name, _) in &face.families {
-                    names.insert(name.clone());
-                }
-            }
-            names.into_iter().collect()
-        })
-        .clone()
-}
-
-/// Load an exact family chosen by the user.
-pub fn find_family(name: &str) -> Option<LoadedFont> {
-    let mut db = fontdb::Database::new();
-    db.load_system_fonts();
-    let face = db.faces().find(|face| {
-        face.families
-            .iter()
-            .any(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
-    })?;
-    let data = db.with_face_data(face.id, |bytes, _| bytes.to_vec())?;
-    if data.is_empty() {
-        return None;
-    }
-    Some(LoadedFont {
-        family: name.to_owned(),
-        data,
-        index: face.index,
+/// Scanning the system fonts is a few hundred milliseconds on a cold cache, so
+/// the result is kept for the life of the process.
+fn installed_families() -> &'static [(String, bool)] {
+    static FAMILIES: OnceLock<Vec<(String, bool)>> = OnceLock::new();
+    FAMILIES.get_or_init(|| {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let mut families: Vec<(String, bool)> = db
+            .faces()
+            .filter_map(|face| {
+                face.families
+                    .first()
+                    .map(|(name, _)| (name.clone(), face.monospaced))
+            })
+            .collect();
+        families.sort_by_key(|a| a.0.to_lowercase());
+        families.dedup_by(|a, b| a.0.eq_ignore_ascii_case(&b.0));
+        families
     })
 }
 
-/// Try to find a Zed-like UI font.
-pub fn find_ui_font() -> Option<LoadedFont> {
-    for path in KNOWN_UI_PATHS {
-        if let Ok(data) = std::fs::read(path)
-            && !data.is_empty()
-        {
-            return Some(LoadedFont {
-                family: file_stem(path),
-                data,
-                index: 0,
-            });
-        }
-    }
-    scan_families(PREFERRED_UI_FAMILIES)
+/// Every installed family, for the font settings dialog.
+pub fn available_families() -> Vec<String> {
+    installed_families()
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
-/// Try to find a Zed-like Monospace font.
-pub fn find_mono_font() -> Option<LoadedFont> {
-    // Prefer a CJK-capable monospace face: using one face for Latin and CJK
-    // keeps mixed-script receive/send text on the same baseline.
-    if let Some(font) = scan_families(PREFERRED_MONO_FAMILIES) {
-        return Some(font);
-    }
-    for path in KNOWN_MONO_PATHS {
-        if let Ok(data) = std::fs::read(path)
-            && !data.is_empty()
-        {
-            return Some(LoadedFont {
-                family: file_stem(path),
-                data,
-                index: 0,
-            });
-        }
-    }
-    None
-}
-
-/// Family name of the UI font installed at startup.
-static INSTALLED_UI_FAMILY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-
-/// Family name of the UI font in use.
-pub fn installed_ui_family() -> Option<String> {
-    INSTALLED_UI_FAMILY.get().cloned().flatten()
-}
-
-/// Try to find a CJK-capable system font.
-pub fn find_cjk_font() -> Option<LoadedFont> {
-    for path in KNOWN_PATHS {
-        if let Ok(data) = std::fs::read(path)
-            && !data.is_empty()
-        {
-            return Some(LoadedFont {
-                family: file_stem(path),
-                data,
-                index: 0,
-            });
-        }
-    }
-    scan_families(PREFERRED_FAMILIES)
-}
-
-/// Ask `fontdb` for an installed family from `preferred`.
-fn scan_families(preferred: &[&str]) -> Option<LoadedFont> {
-    let mut db = fontdb::Database::new();
-    db.load_system_fonts();
-
-    for wanted in preferred {
-        let family = db
-            .faces()
-            .find(|face| {
-                face.families
-                    .iter()
-                    .any(|(name, _)| name.eq_ignore_ascii_case(wanted))
-            })
-            .map(|face| (face.id, face.index, (*wanted).to_owned()));
-        let Some((id, index, name)) = family else {
-            continue;
-        };
-        let data = db.with_face_data(id, |bytes, _| bytes.to_vec())?;
-        if data.is_empty() {
-            continue;
-        }
-        return Some(LoadedFont {
-            family: name,
-            data,
-            index,
-        });
-    }
-    None
-}
-
-/// Extract the file name without its extension.
+/// A sensible default interface family when the user has not chosen one.
 ///
-/// Both separators are handled explicitly rather than deferring to
-/// `Path::file_stem`, so the Windows path list produces sensible names even
-/// when this code is compiled and tested on Unix.
-fn file_stem(path: &str) -> String {
-    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    match name.rsplit_once('.') {
-        Some((stem, _)) if !stem.is_empty() => stem.to_owned(),
-        _ => name.to_owned(),
+/// GPUI's `.SystemUIFont` sometimes resolves to a family that is not actually
+/// installed on Linux; naming an installed family explicitly avoids the first
+/// frame's failed font lookup and keeps CJK glyphs available.
+pub fn default_ui_family() -> Option<String> {
+    if let Some(cjk) = find_cjk_family() {
+        return Some(cjk);
     }
-}
-
-/// The result of installing fonts into an egui context.
-pub enum FontStatus {
-    /// A CJK font was installed.
-    Loaded(String),
-    /// No CJK font was found; Chinese text will not render.
-    Missing,
-}
-
-/// Family name of the font installed at startup.
-///
-/// Cached rather than re-discovered: the lookup reads a multi-megabyte font
-/// file, so it must happen exactly once.
-static INSTALLED_FAMILY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-
-/// Family name of the CJK font in use, or `None` when none was found.
-pub fn installed_family() -> Option<String> {
-    INSTALLED_FAMILY.get().cloned().flatten()
-}
-
-fn add_font(fonts: &mut egui::FontDefinitions, key: &str, font: &LoadedFont) {
-    let mut data = egui::FontData::from_owned(font.data.clone());
-    data.index = font.index;
-    fonts.font_data.insert(key.to_owned(), Arc::new(data));
-    fonts
-        .families
-        .entry(egui::FontFamily::Name(Arc::from(key)))
-        .or_default()
-        .insert(0, key.to_owned());
-}
-
-fn bind_font_key(fonts: &mut egui::FontDefinitions, family: &egui::FontFamily, key: &str) {
-    fonts
-        .families
-        .entry(family.clone())
-        .or_default()
-        .insert(0, key.to_owned());
-}
-
-fn bind_font_keys(fonts: &mut egui::FontDefinitions, family: &egui::FontFamily, keys: &[String]) {
-    let list = fonts.families.entry(family.clone()).or_default();
-    for key in keys {
-        list.insert(0, key.clone());
-    }
-}
-
-fn push_cjk_fallback(fonts: &mut egui::FontDefinitions, family: egui::FontFamily) {
-    fonts
-        .families
-        .entry(family)
-        .or_default()
-        .push("cjk".to_owned());
-}
-
-/// Font IDs used by the receive and send widgets.
-pub fn receive_font_id(size: f32) -> egui::FontId {
-    egui::FontId::new(size, egui::FontFamily::Name(Arc::from(RECEIVE_FONT_FAMILY)))
-}
-
-pub fn send_font_id(size: f32) -> egui::FontId {
-    egui::FontId::new(size, egui::FontFamily::Name(Arc::from(SEND_FONT_FAMILY)))
-}
-
-/// Apply configured point sizes without changing widget visuals.
-pub fn apply_text_sizes(ctx: &egui::Context, settings: &FontSettings) {
-    ctx.global_style_mut(|style| {
-        style.text_styles = [
-            (
-                egui::TextStyle::Small,
-                egui::FontId::proportional(settings.ui_size * 0.69),
-            ),
-            (
-                egui::TextStyle::Body,
-                egui::FontId::proportional(settings.ui_size),
-            ),
-            (
-                egui::TextStyle::Button,
-                egui::FontId::proportional(settings.ui_size),
-            ),
-            (
-                egui::TextStyle::Heading,
-                egui::FontId::proportional(settings.ui_size * 1.38),
-            ),
-            (
-                egui::TextStyle::Monospace,
-                receive_font_id(settings.receive_size),
-            ),
-        ]
-        .into();
-    });
-}
-
-/// Bind the named receive/send families to egui's built-in fonts in tests.
-///
-/// Headless layout tests do not need to scan multi-megabyte system fonts; they
-/// only need the custom family names to exist so text layout cannot panic.
-#[cfg(test)]
-pub(crate) fn install_default_families(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
-    let monospace = fonts
-        .families
-        .get(&egui::FontFamily::Monospace)
-        .cloned()
-        .unwrap_or_default();
-    for name in [RECEIVE_FONT_FAMILY, SEND_FONT_FAMILY] {
-        fonts
-            .families
-            .insert(egui::FontFamily::Name(Arc::from(name)), monospace.clone());
-    }
-    ctx.set_fonts(fonts);
-}
-
-/// Install the application font stack.
-///
-/// Zed default UI font is made primary for proportional text, Zed Mono for
-/// monospace text, and the CJK face is appended as fallback for both.
-pub fn install(ctx: &egui::Context, settings: &FontSettings) -> FontStatus {
-    let mut fonts = egui::FontDefinitions::default();
-    let builtin_monospace = fonts
-        .families
-        .get(&egui::FontFamily::Monospace)
-        .cloned()
-        .unwrap_or_default();
-
-    let cjk = find_cjk_font();
-    let ui_font = settings
-        .ui_family
-        .as_deref()
-        .and_then(find_family)
-        .or_else(|| cjk.clone())
-        .or_else(find_ui_font);
-    if let Some(ui_font) = ui_font {
-        add_font(&mut fonts, "ui", &ui_font);
-        fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .insert(0, "ui".to_owned());
-        let _ = INSTALLED_UI_FAMILY.set(Some(ui_font.family));
-    } else {
-        let _ = INSTALLED_UI_FAMILY.set(None);
-    }
-
-    // If there is no CJK monospace face, using the CJK UI face is still
-    // better than mixing a Latin monospace with a CJK fallback: the latter
-    // reintroduces the one-pixel baseline split on Windows/macOS.
-    let default_mono = find_mono_font().or_else(|| cjk.clone());
-    let mono_keys = if default_mono.is_some() {
-        vec!["mono".to_owned()]
-    } else {
-        builtin_monospace
-    };
-    if let Some(mono_font) = default_mono.clone() {
-        add_font(&mut fonts, "mono", &mono_font);
-        fonts
-            .families
-            .entry(egui::FontFamily::Monospace)
-            .or_default()
-            .insert(0, "mono".to_owned());
-    }
-
-    if let Some(ref font) = cjk {
-        let mut data = egui::FontData::from_owned(font.data.clone());
-        data.index = font.index;
-        fonts.font_data.insert("cjk".to_owned(), Arc::new(data));
-
-        push_cjk_fallback(&mut fonts, egui::FontFamily::Proportional);
-        push_cjk_fallback(&mut fonts, egui::FontFamily::Monospace);
-    }
-
-    let receive_custom = settings.receive_family.as_deref().and_then(find_family);
-    let send_custom = settings.send_family.as_deref().and_then(find_family);
-    let receive_family = egui::FontFamily::Name(Arc::from(RECEIVE_FONT_FAMILY));
-    let send_family = egui::FontFamily::Name(Arc::from(SEND_FONT_FAMILY));
-    match (&receive_custom, &send_custom) {
-        // One loaded face can back both named families, avoiding two copies
-        // of a multi-megabyte CJK font when the user chooses the same family.
-        (Some(receive), Some(send))
-            if receive.family == send.family && receive.index == send.index =>
+    const PREFERRED: &[&str] = &[
+        "DejaVu Sans",
+        "Liberation Sans",
+        "Noto Sans",
+        "FreeSans",
+        "Arial",
+        "Helvetica",
+    ];
+    let installed = installed_families();
+    for preferred in PREFERRED {
+        if installed
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(preferred))
         {
-            add_font(&mut fonts, "area", receive);
-            bind_font_key(&mut fonts, &receive_family, "area");
-            bind_font_key(&mut fonts, &send_family, "area");
-        }
-        (Some(font), None) | (None, Some(font)) => {
-            add_font(&mut fonts, "area", font);
-            if receive_custom.is_some() {
-                bind_font_key(&mut fonts, &receive_family, "area");
-                bind_font_keys(&mut fonts, &send_family, &mono_keys);
-            } else {
-                bind_font_keys(&mut fonts, &receive_family, &mono_keys);
-                bind_font_key(&mut fonts, &send_family, "area");
-            }
-        }
-        (Some(receive), Some(send)) => {
-            add_font(&mut fonts, RECEIVE_FONT_FAMILY, receive);
-            add_font(&mut fonts, SEND_FONT_FAMILY, send);
-            bind_font_key(
-                &mut fonts,
-                &egui::FontFamily::Name(Arc::from(RECEIVE_FONT_FAMILY)),
-                RECEIVE_FONT_FAMILY,
-            );
-            bind_font_key(
-                &mut fonts,
-                &egui::FontFamily::Name(Arc::from(SEND_FONT_FAMILY)),
-                SEND_FONT_FAMILY,
-            );
-        }
-        (None, None) => {
-            bind_font_keys(&mut fonts, &receive_family, &mono_keys);
-            bind_font_keys(&mut fonts, &send_family, &mono_keys);
+            return Some((*preferred).to_owned());
         }
     }
-    if cjk.is_some() {
-        push_cjk_fallback(&mut fonts, receive_family);
-        push_cjk_fallback(&mut fonts, send_family);
-    }
+    installed.first().map(|(name, _)| name.clone())
+}
 
-    // The fallback list may already exist if a custom family was unavailable.
-    // Keeping exactly one `cjk` entry makes the definition deterministic.
-    for family in [
-        egui::FontFamily::Proportional,
-        egui::FontFamily::Monospace,
-        egui::FontFamily::Name(Arc::from(RECEIVE_FONT_FAMILY)),
-        egui::FontFamily::Name(Arc::from(SEND_FONT_FAMILY)),
-    ] {
-        if let Some(list) = fonts.families.get_mut(&family) {
-            list.dedup();
+/// The first installed family that can render CJK text, if any.
+///
+/// This is advisory: GPUI falls back through the platform's font list, so a
+/// missing CJK family means a warning rather than a broken interface.
+pub fn find_cjk_family() -> Option<String> {
+    const PREFERRED: &[&str] = &[
+        "Noto Sans CJK SC",
+        "Noto Sans CJK",
+        "Source Han Sans SC",
+        "Source Han Sans",
+        "Microsoft YaHei",
+        "微软雅黑",
+        "PingFang SC",
+        "PingFang",
+        "WenQuanYi Micro Hei",
+        "WenQuanYi Zen Hei",
+        "SimSun",
+        "宋体",
+        "Droid Sans Fallback",
+    ];
+    let installed = installed_families();
+    for preferred in PREFERRED {
+        if installed
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(preferred))
+        {
+            return Some((*preferred).to_owned());
         }
     }
-    ctx.set_fonts(fonts);
+    // A family whose name advertises CJK coverage, even if it is not in the
+    // short preferred list (localised distributions rename their packs).
+    installed
+        .iter()
+        .find(|(name, _)| {
+            let lower = name.to_lowercase();
+            lower.contains("cjk")
+                || lower.contains("han sans")
+                || lower.contains("noto sans sc")
+                || lower.contains("wenquanyi")
+        })
+        .map(|(name, _)| name.clone())
+}
 
-    match cjk {
-        Some(font) => {
-            let _ = INSTALLED_FAMILY.set(Some(font.family.clone()));
-            FontStatus::Loaded(font.family)
-        }
-        None => {
-            let _ = INSTALLED_FAMILY.set(None);
-            FontStatus::Missing
-        }
-    }
+fn family_or(family: Option<&str>, fallback: &SharedString) -> SharedString {
+    family
+        .map(SharedString::from)
+        .unwrap_or_else(|| fallback.clone())
+}
+
+/// The receive-area font, falling back to the theme's installed monospace face.
+pub fn receive_font(settings: &FontSettings, mono: &SharedString) -> Font {
+    font(family_or(settings.receive_family.as_deref(), mono))
+}
+
+/// The send-area font, falling back to the theme's installed monospace face.
+pub fn send_font(settings: &FontSettings, mono: &SharedString) -> Font {
+    font(family_or(settings.send_family.as_deref(), mono))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The receive view's direction markers must be real, one-column glyphs.
-    ///
-    /// This is the guard for the whole marker feature: a codepoint missing from
-    /// the user's font paints as `?` (which is what happened with the Unicode
-    /// arrows, hence the ASCII ones), and a double-width glyph -- as `→` is in
-    /// CJK faces -- pushes the row past the width the log store wrapped it to.
     #[test]
-    fn receive_markers_rasterise_as_single_column_glyphs() {
-        if find_cjk_font().is_none() {
-            eprintln!("skipping: no CJK font installed");
-            return;
-        }
-        // The receive font only rasterises the two-character markers as two
-        // monospace cells when it is backed by a true monospace face. Where
-        // no monospace is installed, `install` deliberately falls back to a
-        // proportional CJK face (the alternative -- a Latin monospace with a
-        // CJK fallback -- splits the baseline between scripts on Windows and
-        // macOS), so the 2-column invariant does not hold there and the
-        // guard cannot run. ASCII markers there come out *narrower* than two
-        // cells, never wider, so the overflow the guard exists for is still
-        // absent.
-        if find_mono_font().is_none() {
-            eprintln!(
-                "skipping: no monospace font installed (the receive font falls back to a proportional CJK face)"
-            );
-            return;
-        }
-        let ctx = egui::Context::default();
-        install(&ctx, &FontSettings::default());
-        let mut output = ctx.run_ui(egui::RawInput::default(), |_| ());
-        output.textures_delta.clear();
-        let font = receive_font_id(14.0);
-        let column = ctx.fonts_mut(|f| f.glyph_width(&font, 'M'));
-        assert!(column > 0.0, "the receive font has no metrics");
-
-        for marker in [crate::logstore::MARK_RECEIVED, crate::logstore::MARK_SENT] {
-            let arrow: String = marker.trim_end().to_owned();
-            let columns = arrow.chars().count() as f32;
-            ctx.fonts_mut(|fonts| {
-                let galley =
-                    fonts.layout_no_wrap(arrow.clone(), font.clone(), egui::Color32::WHITE);
-                let glyphs: Vec<&egui::epaint::text::Glyph> = galley
-                    .rows
-                    .iter()
-                    .flat_map(|row| row.glyphs.iter())
-                    .collect();
-                for (ch, glyph) in arrow.chars().zip(glyphs) {
-                    assert!(
-                        !glyph.uv_rect.is_nothing(),
-                        "{ch} (U+{:04X}) is not in the font stack",
-                        ch as u32
-                    );
-                }
-                // A rasterised glyph also means tessellated triangles: this is
-                // what would be missing if the marker painted as `?`.
-                let vertices: usize = galley
-                    .rows
-                    .iter()
-                    .map(|row| row.visuals.mesh.vertices.len())
-                    .sum();
-                assert!(
-                    vertices > 0,
-                    "{arrow:?} produced no glyph meshes -- it would paint as nothing"
-                );
-                let width = galley.rect.width() / column;
-                assert!(
-                    (width - columns).abs() < 0.05,
-                    "{arrow:?} is {width:.2} columns wide, expected {columns:.0}"
-                );
-            });
-        }
-    }
-
-    #[test]
-    fn preferred_families_are_non_empty_and_unique() {
-        let mut seen = std::collections::HashSet::new();
-        for name in PREFERRED_FAMILIES {
-            assert!(!name.is_empty());
-            assert!(seen.insert(*name), "duplicate family {name}");
-        }
-    }
-
-    #[test]
-    fn custom_receive_and_send_families_are_installed() {
+    fn families_are_sorted_and_unique() {
         let families = available_families();
-        let Some(family) = ["Noto Sans", "DejaVu Sans", "Arial", "Helvetica"]
-            .into_iter()
-            .find(|candidate| families.iter().any(|family| family == candidate))
-        else {
-            // A minimal CI image may only have egui's built-in fonts.
-            return;
-        };
+        let lower: Vec<String> = families.iter().map(|f| f.to_lowercase()).collect();
+        let mut sorted = lower.clone();
+        sorted.sort();
+        assert_eq!(lower, sorted, "the font list must be sorted");
+        let unique: std::collections::HashSet<_> = lower.iter().collect();
+        assert_eq!(unique.len(), lower.len(), "duplicate families");
+    }
+
+    #[test]
+    fn cjk_detection_accepts_common_names() {
+        // The function is advisory and scans the live system, so only assert
+        // the shape of a hit: a name is returned and is non-empty.
+        if let Some(family) = find_cjk_family() {
+            assert!(!family.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn family_selection_uses_the_configured_name() {
         let settings = FontSettings {
-            receive_family: Some(family.to_owned()),
-            send_family: Some(family.to_owned()),
+            ui_family: Some("Test UI".to_owned()),
+            receive_family: Some("Test Mono".to_owned()),
+            send_family: Some("Test Send".to_owned()),
             ..Default::default()
         };
-        let ctx = egui::Context::default();
-
-        install(&ctx, &settings);
-        let mut output = ctx.run_ui(egui::RawInput::default(), |_| ());
-        output.textures_delta.clear();
-
-        let receive = receive_font_id(settings.receive_size);
-        let send = send_font_id(settings.send_size);
-        let has_mesh = |font: egui::FontId| {
-            ctx.fonts_mut(|fonts| {
-                let galley = fonts.layout_no_wrap("A".to_owned(), font, egui::Color32::WHITE);
-                galley
-                    .rows
-                    .iter()
-                    .flat_map(|row| row.glyphs.iter())
-                    .any(|glyph| glyph.chr == 'A' && !glyph.uv_rect.is_nothing())
-            })
-        };
-        assert!(
-            has_mesh(receive),
-            "receive font did not provide a glyph mesh"
-        );
-        assert!(has_mesh(send), "send font did not provide a glyph mesh");
+        let mono = SharedString::from("Mono Fallback");
+        assert_eq!(receive_font(&settings, &mono).family.as_ref(), "Test Mono");
+        assert_eq!(send_font(&settings, &mono).family.as_ref(), "Test Send");
     }
 
     #[test]
-    fn file_stem_strips_directory_and_extension() {
+    fn missing_selection_falls_back_to_the_mono_face() {
+        let settings = FontSettings::default();
+        let mono = SharedString::from("Mono Fallback");
         assert_eq!(
-            file_stem("/usr/share/fonts/x/NotoSansCJK-Regular.ttc"),
-            "NotoSansCJK-Regular"
+            receive_font(&settings, &mono).family.as_ref(),
+            "Mono Fallback"
         );
-        assert_eq!(file_stem("C:\\Windows\\Fonts\\msyh.ttc"), "msyh");
-    }
-
-    #[test]
-    fn zed_font_can_be_found() {
-        if let Some(font) = find_ui_font() {
-            assert!(!font.data.is_empty());
-            assert!(!font.family.is_empty());
-        }
-    }
-
-    #[test]
-    fn detection_never_panics() {
-        // The result depends on the host, so only assert it is well formed.
-        if let Some(font) = find_cjk_font() {
-            assert!(!font.data.is_empty());
-            assert!(!font.family.is_empty());
-        }
+        assert_eq!(send_font(&settings, &mono).family.as_ref(), "Mono Fallback");
     }
 }

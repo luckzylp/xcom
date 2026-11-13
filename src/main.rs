@@ -1,7 +1,4 @@
 //! XCOM 串口调试助手 — a cross-platform serial port assistant.
-//!
-//! A Rust + egui reimplementation of the ALIENTEK ATK-XCOM tool, with no
-//! advertising and with an adaptive character-encoding detector.
 
 // Do not open a console window alongside the GUI on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -21,52 +18,70 @@ mod settings;
 mod theme;
 mod ui;
 
-fn main() -> eframe::Result<()> {
+use gpui_kit::{AppContext as _, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+
+fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let started = std::time::Instant::now();
 
-    // The window title is set before the app is constructed, so the language
-    // has to be resolved here rather than in `XcomApp::new`.
     let settings = settings::Settings::load();
     i18n::set_lang(settings.lang.unwrap_or_else(i18n::system_lang));
-    log::info!(
-        "界面语言 {:?}，窗口标题: {}",
-        i18n::lang(),
-        i18n::window_title()
-    );
 
-    // Alpha is what makes the rounded corners possible: the pixels we never
-    // paint stay see-through.  Only needed where we supply the frame ourselves.
-    let transparent = ui::window::PAINTS_OWN_BACKGROUND;
-    let startup_fonts = settings.fonts.clone();
+    let window_size = settings
+        .window_size
+        .map(|[w, h]| size(px(w.max(880.0)), px(h.max(540.0))))
+        .unwrap_or_else(|| size(px(1200.0), px(780.0)));
+    let startup = settings.clone();
+    let title = i18n::window_title();
 
-    let native_options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 780.0])
-            .with_min_inner_size([880.0, 540.0])
-            .with_transparent(transparent)
-            // A stable app id lets the compositor associate the window with its
-            // desktop entry (and therefore its icon).
-            .with_app_id("xcom")
-            .with_title(i18n::window_title()),
-        ..Default::default()
-    };
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            app::init(cx);
 
-    eframe::run_native(
-        &i18n::window_title(),
-        native_options,
-        Box::new(|cc| {
-            // Fonts must be installed before the first frame is laid out.
-            match fonts::install(&cc.egui_ctx, &startup_fonts) {
-                fonts::FontStatus::Loaded(family) => log::info!("已加载中文字体: {family}"),
-                fonts::FontStatus::Missing => {
-                    log::warn!("未找到中文字体，界面中文可能显示为方块")
-                }
-            }
-            fonts::apply_text_sizes(&cc.egui_ctx, &startup_fonts);
-            let app = app::XcomApp::new(cc);
+            theme::apply(cx, startup.theme);
+            theme::set_base_font(
+                cx,
+                startup.fonts.ui_family.as_deref(),
+                startup.fonts.ui_size,
+            );
+
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::centered(window_size, cx)),
+                window_min_size: Some(size(px(880.0), px(540.0))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(title.clone().into()),
+                    ..Default::default()
+                }),
+                app_id: Some("xcom".to_owned()),
+                ..Default::default()
+            };
+            let settings = startup.clone();
+            let (handle, view) = gpui_kit::open_window(options, cx, move |window, cx| {
+                cx.new(|cx| app::XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("failed to open the main window");
+
+            let weak = view.downgrade();
+            cx.on_app_quit(move |cx| {
+                let _ = weak.update(cx, |app, _| app.save_on_exit());
+                async {}
+            })
+            .detach();
+
+            let weak = view.downgrade();
+            cx.on_window_closed(move |cx, _window| {
+                let _ = weak.update(cx, |app, _| app.save_on_exit());
+            })
+            .detach();
+
+            log::info!(
+                "界面语言 {:?}，窗口标题: {}",
+                i18n::lang(),
+                i18n::window_title()
+            );
+            let _ = handle;
             log::info!("启动完成用时 {:?}", started.elapsed());
-            Ok(Box::new(app))
-        }),
-    )
+        });
 }

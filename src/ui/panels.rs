@@ -1,4655 +1,2021 @@
 //! Every visible panel of the application.
 //!
-//! The layout mirrors the original tool: configuration down the left, the
-//! receive log filling the middle, the send area beneath it, and the
-//! multi-send / protocol-transfer pages in a panel on the right.  A status bar
-//! along the bottom carries the byte counters, the handshake lines and the
-//! clock.
+//! The shell is the same as the original tool: menu bar on top, configuration
+//! on the left, receive log above the send area in the middle, the multi-send /
+//! protocol panel on the right, and a status bar along the bottom.
 
-use eframe::egui::{self, Context, RichText, Ui};
-use std::path::PathBuf;
+use gpui_kit::base::{InteractiveElementExt as _, StyledExt as _};
+use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _,
+    button::Button,
+    button::ButtonRounded,
+    button::ButtonVariants as _,
+    checkbox::Checkbox,
+    h_flex,
+    input::{Input, Textarea},
+    menu::PopupMenuItem,
+    switch::Switch,
+    v_flex,
+};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
+    TestSupportExt as _, WeakEntity, Window, div, px, relative,
+};
 
-use crate::app::{Level, MultiCountdown, SideTab, XcomApp, draw_log};
-use crate::encoding::EncodingId;
-use crate::highlight::HighlightRule;
-use crate::i18n::{self, Lang, tr};
-use crate::logstore::{HexStyle, ViewMode};
-use crate::protocol::{ChecksumKind, TaskKind};
-use crate::serial::config::{CUSTOM_BAUD_RANGE, MAX_CUSTOM_BAUDS, STANDARD_BAUDS};
-use crate::serial::{DataBitsSel, FlowSel, ParitySel, StopBitsSel};
-use crate::theme::{self, ThemeMode};
-use crate::ui::dialog;
+use crate::app::{Action, Choice, Level, SideTab, XcomApp};
+use crate::i18n::tr;
 
-/// Where a test can read what the real panels actually laid out.
+/// Compose the whole window.
+/// The in-window title bar used on Linux when the compositor gives the
+/// window client-side decorations.
 ///
-/// The drag tests must measure the production code path rather than a
-/// stand-in, or they pass whether or not the fix is present.  Outside tests
-/// every setter is an empty function that inlines away.
-pub(crate) mod probe {
-    #[cfg(test)]
-    use eframe::egui;
-    #[cfg(test)]
-    use std::cell::Cell;
-    #[cfg(test)]
-    use std::cell::RefCell;
-
-    #[cfg(test)]
-    thread_local! {
-        static LEFT_CONTENT_WIDTH: Cell<f32> = const { Cell::new(0.0) };
-        static SEND_PANEL_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static EDITOR_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static SERIAL_CONTENT_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static OPEN_BUTTON_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static REFRESH_BUTTON_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static CUSTOM_BAUD_BUTTON_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static CUSTOM_BAUD_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static CUSTOM_BAUD_INPUT_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static CUSTOM_BAUD_ADD_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static CUSTOM_BAUD_DELETE_RECTS: RefCell<Vec<(u32, egui::Rect)>> =
-            const { RefCell::new(Vec::new()) };
-        static CUSTOM_BAUD_HEADER_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static CUSTOM_BAUD_TITLE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static CUSTOM_BAUD_CLOSE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static CUSTOM_BAUD_BUTTON_LABEL: RefCell<String> = const { RefCell::new(String::new()) };
-        static CUSTOM_BAUD_ICON_SHAPES: Cell<usize> = const { Cell::new(0) };
-        static SERIAL_COMBO_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
-            const { RefCell::new(Vec::new()) };
-        static SEND_TOOLBAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
-            const { RefCell::new(Vec::new()) };
-        static MULTI_HEADER_RECTS: RefCell<Vec<egui::Rect>> = const { RefCell::new(Vec::new()) };
-        static MULTI_ACTIVE_ROW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        /// The strip the delay countdown is painted into, when one is running.
-        static MULTI_DELAY_BAR_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static MULTI_ADD_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static MULTI_DELETE_RECTS: RefCell<Vec<(usize, egui::Rect)>> =
-            const { RefCell::new(Vec::new()) };
-        static MULTI_HANDLE_RECTS: RefCell<Vec<(usize, egui::Rect)>> =
-            const { RefCell::new(Vec::new()) };
-        static MULTI_ROW_RECTS: RefCell<Vec<(usize, egui::Rect)>> =
-            const { RefCell::new(Vec::new()) };
-        static MULTI_SEND_RECTS: RefCell<Vec<(usize, egui::Rect)>> =
-            const { RefCell::new(Vec::new()) };
-        static MULTI_NEWLINE_ALL_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static MULTI_STATUS_TEXT: RefCell<String> = const { RefCell::new(String::new()) };
-        /// Where the table's scroll area actually ended up, and how tall its
-        /// content is.  A bigger content height means the user must scroll.
-        static MULTI_TABLE_VIEWPORT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static MULTI_TABLE_CONTENT: Cell<egui::Vec2> = const { Cell::new(egui::Vec2::ZERO) };
-        static MULTI_TABLE_SCROLLBARS: Cell<[bool; 2]> = const { Cell::new([false; 2]) };
-        static MULTI_LAST_ROW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static MULTI_SEND_STATUS_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        /// The room the tool panel had before its contents were laid out: what
-        /// the panel hands the multi-send table and the bar under it.
-        static TOOL_PANEL_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static BOTTOM_STATUS_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static FONT_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static HIGHLIGHT_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static ABOUT_WINDOW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static ABOUT_HEADER_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static ABOUT_TITLE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static ABOUT_CLOSE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static TOP_BAR_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
-            const { RefCell::new(Vec::new()) };
-        static HIGHLIGHT_TABLE_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-        static HIGHLIGHT_KEYWORD_RECTS: RefCell<Vec<egui::Rect>> =
-            const { RefCell::new(Vec::new()) };
-        static PROTOCOL_ROW_RECTS: RefCell<Vec<(&'static str, egui::Rect)>> =
-            const { RefCell::new(Vec::new()) };
-        static PROTOCOL_CONTENT_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
-    }
-
-    #[cfg(test)]
-    pub(crate) fn begin_protocol_panel() {
-        PROTOCOL_ROW_RECTS.with(|rects| rects.borrow_mut().clear());
-        PROTOCOL_CONTENT_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn begin_protocol_panel() {}
-
-    #[cfg(test)]
-    pub(crate) fn push_protocol_row(name: &'static str, rect: egui::Rect) {
-        PROTOCOL_ROW_RECTS.with(|rects| rects.borrow_mut().push((name, rect)));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_protocol_row<R>(_name: &'static str, _rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn protocol_rows() -> Vec<(&'static str, egui::Rect)> {
-        PROTOCOL_ROW_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_protocol_content_rect(rect: egui::Rect) {
-        PROTOCOL_CONTENT_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_protocol_content_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn protocol_content_rect() -> egui::Rect {
-        PROTOCOL_CONTENT_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn begin_highlight_table() {
-        HIGHLIGHT_TABLE_RECT.with(|cell| cell.set(egui::Rect::NOTHING));
-        HIGHLIGHT_KEYWORD_RECTS.with(|rects| rects.borrow_mut().clear());
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn begin_highlight_table() {}
-
-    #[cfg(test)]
-    pub(crate) fn set_highlight_table_rect(rect: egui::Rect) {
-        HIGHLIGHT_TABLE_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_highlight_table_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn push_highlight_keyword_rect(rect: egui::Rect) {
-        HIGHLIGHT_KEYWORD_RECTS.with(|rects| rects.borrow_mut().push(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_highlight_keyword_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn highlight_table_rect() -> egui::Rect {
-        HIGHLIGHT_TABLE_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn highlight_keyword_rects() -> Vec<egui::Rect> {
-        HIGHLIGHT_KEYWORD_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_left_content_width(width: f32) {
-        LEFT_CONTENT_WIDTH.with(|c| c.set(width));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_left_content_width(_width: f32) {}
-
-    #[cfg(test)]
-    pub(crate) fn left_content_width() -> f32 {
-        LEFT_CONTENT_WIDTH.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_send_panel_rect(rect: egui::Rect) {
-        SEND_PANEL_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_send_panel_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn send_panel_rect() -> egui::Rect {
-        SEND_PANEL_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_editor_rect(rect: egui::Rect) {
-        EDITOR_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_editor_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn editor_rect() -> egui::Rect {
-        EDITOR_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_serial_content_rect(rect: egui::Rect) {
-        SERIAL_CONTENT_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_serial_content_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn serial_content_rect() -> egui::Rect {
-        SERIAL_CONTENT_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_open_button_rect(rect: egui::Rect) {
-        OPEN_BUTTON_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_open_button_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn open_button_rect() -> egui::Rect {
-        OPEN_BUTTON_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_refresh_button_rect(rect: egui::Rect) {
-        REFRESH_BUTTON_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_refresh_button_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn refresh_button_rect() -> egui::Rect {
-        REFRESH_BUTTON_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_custom_baud_button_rect(rect: egui::Rect) {
-        CUSTOM_BAUD_BUTTON_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_custom_baud_button_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn custom_baud_button_rect() -> egui::Rect {
-        CUSTOM_BAUD_BUTTON_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn begin_custom_baud_manager() {
-        CUSTOM_BAUD_WINDOW_RECT.with(|c| c.set(egui::Rect::NOTHING));
-        CUSTOM_BAUD_INPUT_RECT.with(|c| c.set(egui::Rect::NOTHING));
-        CUSTOM_BAUD_ADD_RECT.with(|c| c.set(egui::Rect::NOTHING));
-        CUSTOM_BAUD_DELETE_RECTS.with(|rects| rects.borrow_mut().clear());
-        CUSTOM_BAUD_HEADER_RECT.with(|c| c.set(egui::Rect::NOTHING));
-        CUSTOM_BAUD_TITLE_RECT.with(|c| c.set(egui::Rect::NOTHING));
-        CUSTOM_BAUD_CLOSE_RECT.with(|c| c.set(egui::Rect::NOTHING));
-        CUSTOM_BAUD_BUTTON_LABEL.with(|c| c.borrow_mut().clear());
-        CUSTOM_BAUD_ICON_SHAPES.with(|c| c.set(0));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn begin_custom_baud_manager() {}
-
-    #[cfg(test)]
-    pub(crate) fn set_custom_baud_window_rect(rect: egui::Rect) {
-        CUSTOM_BAUD_WINDOW_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_custom_baud_window_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn custom_baud_window_rect() -> egui::Rect {
-        CUSTOM_BAUD_WINDOW_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_custom_baud_input_rect(rect: egui::Rect) {
-        CUSTOM_BAUD_INPUT_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_custom_baud_input_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn custom_baud_input_rect() -> egui::Rect {
-        CUSTOM_BAUD_INPUT_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_custom_baud_add_rect(rect: egui::Rect) {
-        CUSTOM_BAUD_ADD_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_custom_baud_add_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn custom_baud_add_rect() -> egui::Rect {
-        CUSTOM_BAUD_ADD_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn push_custom_baud_delete_rect(baud: u32, rect: egui::Rect) {
-        CUSTOM_BAUD_DELETE_RECTS.with(|rects| rects.borrow_mut().push((baud, rect)));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_custom_baud_delete_rect<R>(_baud: u32, _rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn custom_baud_delete_rects() -> Vec<(u32, egui::Rect)> {
-        CUSTOM_BAUD_DELETE_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_custom_baud_header_rect(rect: egui::Rect) {
-        CUSTOM_BAUD_HEADER_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_custom_baud_header_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn custom_baud_header_rect() -> egui::Rect {
-        CUSTOM_BAUD_HEADER_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_custom_baud_title_rect(rect: egui::Rect) {
-        CUSTOM_BAUD_TITLE_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_custom_baud_title_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn custom_baud_title_rect() -> egui::Rect {
-        CUSTOM_BAUD_TITLE_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_custom_baud_close_rect(rect: egui::Rect) {
-        CUSTOM_BAUD_CLOSE_RECT.with(|c| c.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_custom_baud_close_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn custom_baud_close_rect() -> egui::Rect {
-        CUSTOM_BAUD_CLOSE_RECT.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_custom_baud_button_label(label: &str) {
-        CUSTOM_BAUD_BUTTON_LABEL.with(|c| *c.borrow_mut() = label.to_owned());
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_custom_baud_button_label(_label: &str) {}
-
-    #[cfg(test)]
-    pub(crate) fn custom_baud_button_label() -> String {
-        CUSTOM_BAUD_BUTTON_LABEL.with(|c| c.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_custom_baud_icon_shapes(shapes: usize) {
-        CUSTOM_BAUD_ICON_SHAPES.with(|c| c.set(shapes));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_custom_baud_icon_shapes(_shapes: usize) {}
-
-    #[cfg(test)]
-    pub(crate) fn custom_baud_icon_shapes() -> usize {
-        CUSTOM_BAUD_ICON_SHAPES.with(|c| c.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn begin_serial_combos() {
-        SERIAL_COMBO_RECTS.with(|rects| rects.borrow_mut().clear());
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn begin_serial_combos() {}
-
-    #[cfg(test)]
-    pub(crate) fn push_serial_combo_rect(name: &'static str, rect: egui::Rect) {
-        SERIAL_COMBO_RECTS.with(|rects| rects.borrow_mut().push((name, rect)));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_serial_combo_rect<R>(_name: &'static str, _rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn serial_combo_rects() -> Vec<(&'static str, egui::Rect)> {
-        SERIAL_COMBO_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn begin_send_toolbar() {
-        SEND_TOOLBAR_RECTS.with(|rects| rects.borrow_mut().clear());
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn begin_send_toolbar() {}
-
-    #[cfg(test)]
-    pub(crate) fn push_send_toolbar_rect(name: &'static str, rect: egui::Rect) {
-        SEND_TOOLBAR_RECTS.with(|rects| rects.borrow_mut().push((name, rect)));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_send_toolbar_rect<R>(_name: &'static str, _rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn send_toolbar_rects() -> Vec<(&'static str, egui::Rect)> {
-        SEND_TOOLBAR_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn begin_multi_headers() {
-        MULTI_HEADER_RECTS.with(|rects| rects.borrow_mut().clear());
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn begin_multi_headers() {}
-
-    /// Forget last frame's "being sent" markers.
-    ///
-    /// Called at the top of the panel rather than where they are drawn: the
-    /// status line is drawn above the table, so a reset inside the table would
-    /// wipe it immediately.
-    #[cfg(test)]
-    pub(crate) fn begin_multi_panel() {
-        MULTI_ACTIVE_ROW_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
-        MULTI_DELAY_BAR_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
-        MULTI_ADD_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
-        MULTI_DELETE_RECTS.with(|rects| rects.borrow_mut().clear());
-        MULTI_HANDLE_RECTS.with(|rects| rects.borrow_mut().clear());
-        MULTI_ROW_RECTS.with(|rects| rects.borrow_mut().clear());
-        MULTI_SEND_RECTS.with(|rects| rects.borrow_mut().clear());
-        MULTI_NEWLINE_ALL_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
-        MULTI_STATUS_TEXT.with(|text| text.borrow_mut().clear());
-        MULTI_TABLE_VIEWPORT.with(|rect| rect.set(egui::Rect::NOTHING));
-        MULTI_TABLE_CONTENT.with(|size| size.set(egui::Vec2::ZERO));
-        MULTI_TABLE_SCROLLBARS.with(|bars| bars.set([false; 2]));
-        MULTI_LAST_ROW_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
-        MULTI_SEND_STATUS_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn begin_multi_panel() {}
-
-    #[cfg(test)]
-    pub(crate) fn push_multi_header_rect(rect: egui::Rect) {
-        MULTI_HEADER_RECTS.with(|rects| rects.borrow_mut().push(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_multi_header_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn multi_header_rects() -> Vec<egui::Rect> {
-        MULTI_HEADER_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_multi_active_row_rect(rect: egui::Rect) {
-        MULTI_ACTIVE_ROW_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_multi_active_row_rect<R>(_rect: R) {}
-
-    /// The row the panel marked as being sent, or `Rect::NOTHING` if none.
-    #[cfg(test)]
-    pub(crate) fn multi_active_row_rect() -> egui::Rect {
-        MULTI_ACTIVE_ROW_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_multi_delay_bar_rect(rect: egui::Rect) {
-        MULTI_DELAY_BAR_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_multi_delay_bar_rect<R>(_rect: R) {}
-
-    /// The delay countdown strip the panel painted, or `Rect::NOTHING`.
-    #[cfg(test)]
-    pub(crate) fn multi_delay_bar_rect() -> egui::Rect {
-        MULTI_DELAY_BAR_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_multi_add_rect(rect: egui::Rect) {
-        MULTI_ADD_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_multi_add_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn multi_add_rect() -> egui::Rect {
-        MULTI_ADD_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn push_multi_delete_rect(index: usize, rect: egui::Rect) {
-        MULTI_DELETE_RECTS.with(|rects| rects.borrow_mut().push((index, rect)));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_multi_delete_rect<R>(_index: usize, _rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn multi_delete_rects() -> Vec<(usize, egui::Rect)> {
-        MULTI_DELETE_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn push_multi_handle_rect(index: usize, rect: egui::Rect) {
-        MULTI_HANDLE_RECTS.with(|rects| rects.borrow_mut().push((index, rect)));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_multi_handle_rect<R>(_index: usize, _rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn multi_handle_rects() -> Vec<(usize, egui::Rect)> {
-        MULTI_HANDLE_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn push_multi_row_rect(index: usize, rect: egui::Rect) {
-        MULTI_ROW_RECTS.with(|rects| rects.borrow_mut().push((index, rect)));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_multi_row_rect<R>(_index: usize, _rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn multi_row_rects() -> Vec<(usize, egui::Rect)> {
-        MULTI_ROW_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn push_multi_send_rect(index: usize, rect: egui::Rect) {
-        MULTI_SEND_RECTS.with(|rects| rects.borrow_mut().push((index, rect)));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_multi_send_rect<R>(_index: usize, _rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn multi_send_rects() -> Vec<(usize, egui::Rect)> {
-        MULTI_SEND_RECTS.with(|rects| rects.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_multi_newline_all_rect(rect: egui::Rect) {
-        MULTI_NEWLINE_ALL_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_multi_newline_all_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn multi_newline_all_rect() -> egui::Rect {
-        MULTI_NEWLINE_ALL_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_multi_status_text(text: &str) {
-        MULTI_STATUS_TEXT.with(|cell| *cell.borrow_mut() = text.to_owned());
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_multi_status_text(_text: &str) {}
-
-    #[cfg(test)]
-    pub(crate) fn multi_status_text() -> String {
-        MULTI_STATUS_TEXT.with(|cell| cell.borrow().clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_multi_table(
-        viewport: egui::Rect,
-        content: egui::Vec2,
-        scrollbars: [bool; 2],
-    ) {
-        MULTI_TABLE_VIEWPORT.with(|cell| cell.set(viewport));
-        MULTI_TABLE_CONTENT.with(|cell| cell.set(content));
-        MULTI_TABLE_SCROLLBARS.with(|cell| cell.set(scrollbars));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_multi_table<R, V, S>(_viewport: R, _content: V, _scrollbars: S) {}
-
-    /// The scroll viewport/content dimensions and whether egui laid out a
-    /// horizontal or vertical scroll bar.
-    #[cfg(test)]
-    pub(crate) fn multi_table() -> (egui::Rect, egui::Vec2, [bool; 2]) {
-        (
-            MULTI_TABLE_VIEWPORT.with(|cell| cell.get()),
-            MULTI_TABLE_CONTENT.with(|cell| cell.get()),
-            MULTI_TABLE_SCROLLBARS.with(|cell| cell.get()),
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_multi_last_row_rect(rect: egui::Rect) {
-        MULTI_LAST_ROW_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_multi_last_row_rect<R>(_rect: R) {}
-
-    /// The bottom-most entry row the table laid out.
-    #[cfg(test)]
-    pub(crate) fn multi_last_row_rect() -> egui::Rect {
-        MULTI_LAST_ROW_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_multi_send_status_rect(rect: egui::Rect) {
-        MULTI_SEND_STATUS_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_multi_send_status_rect<R>(_rect: R) {}
-
-    /// The send status bar under the multi-send table.
-    #[cfg(test)]
-    pub(crate) fn multi_send_status_rect() -> egui::Rect {
-        MULTI_SEND_STATUS_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_tool_panel_rect(rect: egui::Rect) {
-        TOOL_PANEL_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_tool_panel_rect<R>(_rect: R) {}
-
-    /// The room the tool panel gave its contents.
-    #[cfg(test)]
-    pub(crate) fn tool_panel_rect() -> egui::Rect {
-        TOOL_PANEL_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_bottom_status_rect(rect: egui::Rect) {
-        BOTTOM_STATUS_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_bottom_status_rect<R>(_rect: R) {}
-
-    /// The window's bottom status bar.
-    #[cfg(test)]
-    pub(crate) fn bottom_status_rect() -> egui::Rect {
-        BOTTOM_STATUS_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_font_window_rect(rect: egui::Rect) {
-        FONT_WINDOW_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_font_window_rect<R>(_rect: R) {}
-
-    /// Where the font-settings window was laid out last.
-    #[cfg(test)]
-    pub(crate) fn font_window_rect() -> egui::Rect {
-        FONT_WINDOW_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_highlight_window_rect(rect: egui::Rect) {
-        HIGHLIGHT_WINDOW_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_highlight_window_rect<R>(_rect: R) {}
-
-    /// Where the keyword-highlight window was laid out last.
-    #[cfg(test)]
-    pub(crate) fn highlight_window_rect() -> egui::Rect {
-        HIGHLIGHT_WINDOW_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_about_window_rect(rect: egui::Rect) {
-        ABOUT_WINDOW_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_about_window_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn about_window_rect() -> egui::Rect {
-        ABOUT_WINDOW_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_about_header_rect(rect: egui::Rect) {
-        ABOUT_HEADER_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_about_header_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn about_header_rect() -> egui::Rect {
-        ABOUT_HEADER_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_about_title_rect(rect: egui::Rect) {
-        ABOUT_TITLE_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_about_title_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn about_title_rect() -> egui::Rect {
-        ABOUT_TITLE_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_about_close_rect(rect: egui::Rect) {
-        ABOUT_CLOSE_RECT.with(|cell| cell.set(rect));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn set_about_close_rect<R>(_rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn about_close_rect() -> egui::Rect {
-        ABOUT_CLOSE_RECT.with(|cell| cell.get())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn begin_top_bar() {
-        TOP_BAR_RECTS.with(|rects| rects.borrow_mut().clear());
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn begin_top_bar() {}
-
-    #[cfg(test)]
-    pub(crate) fn push_top_bar_rect(name: &'static str, rect: egui::Rect) {
-        TOP_BAR_RECTS.with(|rects| rects.borrow_mut().push((name, rect)));
-    }
-    #[cfg(not(test))]
-    #[inline(always)]
-    pub(crate) fn push_top_bar_rect<R>(_name: &'static str, _rect: R) {}
-
-    #[cfg(test)]
-    pub(crate) fn top_bar_rects() -> Vec<(&'static str, egui::Rect)> {
-        TOP_BAR_RECTS.with(|rects| rects.borrow().clone())
-    }
-}
-
-/// Serial-settings panel width, in points.
-pub(crate) const LEFT_PANEL_DEFAULT: f32 = 300.0;
-pub(crate) const LEFT_PANEL_MIN: f32 = 269.0;
-pub(crate) const LEFT_PANEL_MAX: f32 = 460.0;
-const SERIAL_COMBO_WIDTH: f32 = 140.0;
-
-/// Tool panel width, in points.
-///
-/// The multi-send table carries eight columns -- a checkbox, an index, two text
-/// fields, two more checkboxes, a delay and a send button -- and its row has to
-/// fit the panel or the table grows a horizontal scroll bar that hides the send
-/// buttons.  This is the narrowest panel whose text fields are still wide
-/// enough to read an entry in, and it leaves the centre column the room its
-/// send toolbar needs at the window the app opens with.
-pub(crate) const RIGHT_PANEL_DEFAULT: f32 = 320.0;
-
-/// Narrowest the tool panel may be.
-///
-/// The floor is what the multi-send table's row needs at the interface font it
-/// ships with -- its columns at their narrowest, the seven gaps between them
-/// and two usable text fields, plus the panel's own frame.  The splitter stops
-/// here and a settings file that remembers a narrower panel is lifted to it on
-/// load, because a narrower one cannot show the table: it would scroll, which
-/// is exactly what the panel minimum exists to prevent.  (A larger interface
-/// font, or the wider English headers, can still outgrow it — dragging the
-/// splitter is then the answer, or collapsing the panel altogether.)
-pub(crate) const RIGHT_PANEL_MIN: f32 = 300.0;
-pub(crate) const RIGHT_PANEL_MAX: f32 = 760.0;
-
-/// Smallest width the centre column keeps when either side panel is dragged
-/// wide.
-///
-/// Without it the configuration and tool panels can be dragged past the point
-/// where the receive view is usable, which is the very thing collapsing them
-/// exists to avoid.  It makes [`LEFT_PANEL_MAX`] and [`RIGHT_PANEL_MAX`] *soft*
-/// maxima: they apply only when the window can spare the room.
-pub(crate) const CENTER_MIN: f32 = 320.0;
-
-/// Slack allowed for the separator lines egui draws between the panels.
-const SEPARATOR_SLACK: f32 = 4.0;
-
-/// Height of the send area.
-///
-/// `SEND_AREA_MIN` is only the floor stored in settings.  The live floor is
-/// measured from the toolbar by [`send_area_min_height`], because the toolbar
-/// grows with the interface font and may occupy two rows.
-pub(crate) const SEND_AREA_DEFAULT: f32 = 196.0;
-pub(crate) const SEND_AREA_MIN: f32 = 96.0;
-pub(crate) const SEND_AREA_MAX: f32 = 560.0;
-
-/// Height below which the send editor is no longer worth showing, in points.
-pub(crate) const SEND_EDITOR_MIN: f32 = 48.0;
-
-/// Which way a panel extends from its fixed edge.
-///
-/// The size a pointer implies depends on this: a panel anchored to the right
-/// grows as the pointer moves *left*, so the sign differs per side.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SplitterGrowth {
-    /// The settings panel: extends right from the window's left edge.
-    Rightward,
-    /// The tool panel: extends left from the window's right edge.
-    Leftward,
-    /// The send area: extends up from the centre column's bottom edge.
-    Upward,
-}
-
-impl SplitterGrowth {
-    /// How far the pointer has moved away from the panel's fixed edge since the
-    /// drag began.  Positive means "grow the panel".
-    fn growth_delta(self, pointer: egui::Pos2, origin: egui::Pos2) -> f32 {
-        match self {
-            Self::Rightward => pointer.x - origin.x,
-            Self::Leftward => origin.x - pointer.x,
-            Self::Upward => origin.y - pointer.y,
+/// It follows the desktop's button layout (left or right), supports dragging
+/// the window by the empty title area, double-click to maximise/restore and
+/// the desktop window menu on right-click.
+fn title_bar(app: &XcomApp, window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
+    #[cfg(target_os = "linux")]
+    {
+        if !matches!(
+            window.window_decorations(),
+            gpui_kit::Decorations::Client { .. }
+        ) {
+            return div().into_any_element();
         }
-    }
 
-    fn cursor(self) -> egui::CursorIcon {
-        match self {
-            Self::Upward => egui::CursorIcon::ResizeVertical,
-            _ => egui::CursorIcon::ResizeHorizontal,
-        }
-    }
-
-    /// The grab band straddling the splitter line.
-    fn band(self, boundary: f32, cross: egui::Rangef, grab: f32) -> egui::Rect {
-        match self {
-            Self::Rightward | Self::Leftward => {
-                egui::Rect::from_x_y_ranges((boundary - grab)..=(boundary + grab), cross)
-            }
-            Self::Upward => {
-                egui::Rect::from_x_y_ranges(cross, (boundary - grab)..=(boundary + grab))
-            }
-        }
-    }
-}
-
-/// Which setting a splitter writes back to.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SplitterTarget {
-    ConfigWidth,
-    ToolWidth,
-    SendHeight,
-}
-
-/// A splitter to be registered once every panel has been laid out.
-///
-/// Registering them last matters: the log view allocates a drag-sensing rect
-/// that reaches the tool panel's edge, and a widget added later wins the
-/// interaction.  Handling the splitters after the centre panel keeps them on
-/// top so the line itself is always grabbable.
-pub(crate) struct PendingSplitter {
-    pub id: &'static str,
-    pub growth: SplitterGrowth,
-    pub boundary: f32,
-    pub cross: egui::Rangef,
-    /// The panel's size before this frame, used as the drag origin.  Zero when
-    /// the panel is collapsed, so one drag rule covers both directions.
-    pub current_size: f32,
-    pub min: f32,
-    pub max: f32,
-    pub target: SplitterTarget,
-    /// Whether the panel is currently collapsed to its edge.
-    pub collapsed: bool,
-}
-
-/// A draggable splitter, drawn and tracked by the app.
-///
-/// egui's own panel resizing is not used here.  Its `default_size` is
-/// order-dependent against `min_size`/`max_size`, so a panel configured the
-/// obvious way silently falls back to its minimum, and the resulting width ends
-/// up driven by the panel's *content* -- which made the settings panel ignore
-/// attempts to shrink it, and made the tool panel snap back in the English UI
-/// where the translated labels are wider.  Owning the number makes the
-/// behaviour obvious and testable; it is persisted with the rest of the
-/// settings.
-///
-/// Register every pending splitter.  Returns nothing; drags are written
-/// straight back into the settings.
-pub(crate) fn apply_splitters(app: &mut XcomApp, ui: &mut Ui) {
-    for spec in std::mem::take(&mut app.pending_splitters) {
-        // A collapsed panel has no line to aim at, so its edge strip has to be
-        // easier to hit than the separator between two visible panels.
-        const GRAB: f32 = 6.0;
-        const COLLAPSED_GRAB: f32 = 16.0;
-        let grab = if spec.collapsed { COLLAPSED_GRAB } else { GRAB };
-        let rect = spec.growth.band(spec.boundary, spec.cross, grab);
-        let response = ui.interact(
-            rect,
-            egui::Id::new(("splitter", spec.id)),
-            egui::Sense::click_and_drag(),
+        let maximized = window.is_maximized();
+        let layout = app.button_layout;
+        log::debug!(
+            "title bar: decorations={:?} left={:?} right={:?}",
+            window.window_decorations(),
+            layout.left,
+            layout.right
         );
-        let response = if spec.collapsed {
-            response.on_hover_text(collapsed_hint(spec.target))
-        } else {
-            response
-        };
-        if spec.collapsed {
-            paint_collapsed_strip(ui, &spec, &response);
-        }
-        if response.hovered() || response.dragged() {
-            ui.ctx().set_cursor_icon(spec.growth.cursor());
-        }
 
-        // The size is tracked as a delta from where the drag started, not as an
-        // absolute distance from a fixed edge.  The edge moves as the panel
-        // resizes, so an absolute reading is recomputed differently on every
-        // frame of the gesture -- the panel overshoots and then creeps back.
-        let state_id = egui::Id::new(("splitter-drag", spec.id));
-        let current = if spec.collapsed {
-            0.0
-        } else {
-            spec.current_size
-        };
+        let left_controls: Vec<AnyElement> = layout
+            .left
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, button)| window_control(button?, index, "left", maximized))
+            .collect();
+        let right_controls: Vec<AnyElement> = layout
+            .right
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, button)| window_control(button?, index, "right", maximized))
+            .collect();
 
-        // Record the origin when the button goes down, not when egui decides a
-        // drag has begun: the threshold means those are different frames, and
-        // using the later one would make the first delta zero.
-        if response.is_pointer_button_down_on()
-            && ui.data(|data| data.get_temp::<(f32, egui::Pos2)>(state_id).is_none())
-            && let Some(pointer) = response.interact_pointer_pos()
+        let drag = div()
+            .id("title-drag")
+            .flex_1()
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .px_3()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.title_dragging = true),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.title_dragging = false),
+            )
+            .on_mouse_move(cx.listener(|this, _, window, _| {
+                if this.title_dragging {
+                    this.title_dragging = false;
+                    window.start_window_move();
+                }
+            }))
+            .on_double_click(|_, window, _| window.zoom_window())
+            .on_mouse_down(MouseButton::Right, |event, window, _| {
+                window.show_window_menu(event.position)
+            })
+            .test_support()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(SharedString::from(crate::i18n::window_title())),
+            );
+
+        return h_flex()
+            .w_full()
+            .h(px(34.0))
+            .items_center()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(cx.theme().title_bar_border)
+            .bg(cx.theme().title_bar)
+            .child(
+                h_flex()
+                    .h_full()
+                    .items_center()
+                    .flex_shrink_0()
+                    .children(left_controls),
+            )
+            .child(drag)
+            .child(
+                h_flex()
+                    .h_full()
+                    .items_center()
+                    .flex_shrink_0()
+                    .children(right_controls),
+            )
+            .into_any_element();
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (window, cx);
+        div().into_any_element()
+    }
+}
+
+/// Read the desktop's preferred window-button placement.
+///
+/// GPUI's platform reports GNOME's layout once the portal/D-Bus settings have
+/// loaded; reading gsettings here as well means the very first frame already
+/// has the controls on the right side instead of flashing them on the right
+/// and then moving them.
+pub(crate) fn read_button_layout() -> gpui_kit::WindowButtonLayout {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
+            .output()
         {
-            ui.data_mut(|data| data.insert_temp(state_id, (current, pointer)));
-        }
-
-        // A click on a collapsed strip is the discoverable way back: the drag
-        // that closed the panel is not one the user can retrace by eye.
-        if spec.collapsed && response.clicked() {
-            set_panel_open(&mut app.settings, spec.target, true);
-            app.mark_settings_dirty();
-        }
-
-        if response.dragged() {
-            let origin = ui.data(|data| data.get_temp::<(f32, egui::Pos2)>(state_id));
-            if let (Some((start_size, start_pointer)), Some(pointer)) =
-                (origin, response.interact_pointer_pos())
+            let text = String::from_utf8_lossy(&output.stdout);
+            let text = text.trim().trim_matches('\'').trim_matches('"');
+            if let Ok(layout) = gpui_kit::WindowButtonLayout::parse(text)
+                && layout
+                    .left
+                    .iter()
+                    .chain(layout.right.iter())
+                    .any(|button| matches!(button, Some(gpui_kit::WindowButton::Close)))
             {
-                // The raw size is what decides a collapse: clamping it to the
-                // panel's minimum first would make a collapse unreachable,
-                // since it can never come out below that minimum.
-                let size = start_size + spec.growth.growth_delta(pointer, start_pointer);
-                // Below a third of the panel's own minimum, the drag stops
-                // pretending: it collapses to the window edge instead of
-                // leaving an unusable sliver.  The threshold is a fixed
-                // distance, and the same one on every side, so the gesture
-                // reads the same whichever panel is dragged.
-                let collapsed = size < spec.min / COLLAPSE_FRACTION;
-                set_panel_open(&mut app.settings, spec.target, !collapsed);
-                if !collapsed {
-                    // The stored size is the one to restore to, so collapsing
-                    // must not overwrite it.
-                    set_panel_width(
-                        &mut app.settings,
-                        spec.target,
-                        size.clamp(spec.min, spec.max),
-                    );
-                }
-                app.mark_settings_dirty();
+                return layout;
             }
         }
-
-        if response.drag_stopped() || !response.is_pointer_button_down_on() {
-            ui.data_mut(|data| data.remove::<(f32, egui::Pos2)>(state_id));
-        }
+    }
+    gpui_kit::WindowButtonLayout {
+        left: [None; gpui_kit::MAX_BUTTONS_PER_SIDE],
+        right: [
+            Some(gpui_kit::WindowButton::Minimize),
+            Some(gpui_kit::WindowButton::Maximize),
+            Some(gpui_kit::WindowButton::Close),
+        ],
     }
 }
 
-/// Below this fraction of a panel's minimum width, a drag collapses it.
-const COLLAPSE_FRACTION: f32 = 3.0;
-
-/// Width of the strip drawn along the edge of a collapsed panel.
-const COLLAPSED_STRIP: f32 = 3.0;
-
-/// Show or collapse the panel a splitter controls.
-///
-/// Visibility *is* the collapsed state: the checkbox in the top bar and the
-/// drag are two ways to set the same thing, so they can never disagree.
-fn set_panel_open(settings: &mut crate::settings::Settings, target: SplitterTarget, open: bool) {
-    match target {
-        SplitterTarget::ConfigWidth => settings.show_config_panel = open,
-        SplitterTarget::ToolWidth => settings.show_tool_panel = open,
-        SplitterTarget::SendHeight => settings.show_send_area = open,
-    }
-}
-
-/// Remember the width a panel should be restored to.
-fn set_panel_width(settings: &mut crate::settings::Settings, target: SplitterTarget, width: f32) {
-    match target {
-        SplitterTarget::ConfigWidth => settings.left_panel_width = width,
-        SplitterTarget::ToolWidth => settings.right_panel_width = width,
-        SplitterTarget::SendHeight => settings.send_area_height = width,
-    }
-}
-
-/// Hover text for the strip of a collapsed panel.
-fn collapsed_hint(target: SplitterTarget) -> &'static str {
-    match target {
-        SplitterTarget::ConfigWidth => tr("展开配置面板"),
-        SplitterTarget::ToolWidth => tr("展开工具面板"),
-        SplitterTarget::SendHeight => tr("展开发送区"),
-    }
-}
-
-/// Direction a collapsed panel's chevron points, i.e. the way it expands.
-#[derive(Clone, Copy)]
-enum Chevron {
-    Left,
-    Right,
-    Up,
-}
-
-/// Draw the edge strip of a collapsed panel: a hairline that is always there,
-/// and a chevron once the pointer reaches it.
-fn paint_collapsed_strip(ui: &Ui, spec: &PendingSplitter, response: &egui::Response) {
-    let (rect, chevron_center, direction) = match spec.growth {
-        SplitterGrowth::Rightward => (
-            egui::Rect::from_x_y_ranges(
-                spec.boundary..=(spec.boundary + COLLAPSED_STRIP),
-                spec.cross,
-            ),
-            egui::pos2(spec.boundary + 12.0, spec.cross.center()),
-            Chevron::Right,
-        ),
-        SplitterGrowth::Leftward => (
-            egui::Rect::from_x_y_ranges(
-                (spec.boundary - COLLAPSED_STRIP)..=spec.boundary,
-                spec.cross,
-            ),
-            egui::pos2(spec.boundary - 12.0, spec.cross.center()),
-            Chevron::Left,
-        ),
-        SplitterGrowth::Upward => (
-            egui::Rect::from_x_y_ranges(
-                spec.cross,
-                (spec.boundary - COLLAPSED_STRIP)..=spec.boundary,
-            ),
-            egui::pos2(spec.cross.center(), spec.boundary - 12.0),
-            Chevron::Up,
-        ),
+#[cfg(target_os = "linux")]
+fn window_control(
+    button: gpui_kit::WindowButton,
+    index: usize,
+    side: &'static str,
+    maximized: bool,
+) -> Option<AnyElement> {
+    use gpui_kit::WindowButton;
+    let (icon, label) = match button {
+        WindowButton::Minimize => (IconName::WindowMinimize, tr("最小化")),
+        WindowButton::Maximize if maximized => (IconName::WindowRestore, tr("还原")),
+        WindowButton::Maximize => (IconName::WindowMaximize, tr("最大化")),
+        WindowButton::Close => (IconName::WindowClose, tr("关闭")),
     };
-
-    let visuals = ui.visuals();
-    let active = response.hovered() || response.dragged();
-    let strip = if active {
-        visuals.selection.bg_fill
-    } else {
-        visuals.widgets.noninteractive.bg_stroke.color
-    };
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::ZERO, strip);
-
-    if active {
-        // Painted rather than written: the UI falls back to a CJK face for
-        // symbols, and a face without the glyph renders tofu.
-        paint_chevron(ui, chevron_center, direction, visuals.selection.bg_fill);
-    }
-}
-
-/// Paint a small `›` / `‹` / `˄` out of two line segments.
-fn paint_chevron(ui: &Ui, center: egui::Pos2, direction: Chevron, color: egui::Color32) {
-    let tip = 3.0;
-    let half = 4.5;
-    let stroke = egui::Stroke::new(1.8, color);
-    let (start, elbow, end) = match direction {
-        Chevron::Right => (
-            egui::pos2(center.x - tip, center.y - half),
-            egui::pos2(center.x + tip, center.y),
-            egui::pos2(center.x - tip, center.y + half),
-        ),
-        Chevron::Left => (
-            egui::pos2(center.x + tip, center.y - half),
-            egui::pos2(center.x - tip, center.y),
-            egui::pos2(center.x + tip, center.y + half),
-        ),
-        Chevron::Up => (
-            egui::pos2(center.x - half, center.y + tip),
-            egui::pos2(center.x, center.y - tip),
-            egui::pos2(center.x + half, center.y + tip),
-        ),
-    };
-    let painter = ui.painter();
-    painter.line_segment([start, elbow], stroke);
-    painter.line_segment([elbow, end], stroke);
-}
-
-/// Colour used for a status message of the given severity.
-fn level_color(level: Level) -> egui::Color32 {
-    match level {
-        Level::Info => egui::Color32::from_rgb(0x9A, 0xA0, 0xA6),
-        Level::Success => egui::Color32::from_rgb(0x4C, 0xAF, 0x50),
-        Level::Warning => egui::Color32::from_rgb(0xFF, 0xA7, 0x26),
-        Level::Error => egui::Color32::from_rgb(0xE5, 0x53, 0x53),
-    }
-}
-
-/// A small filled circle, used for the connection and handshake indicators.
-fn led(ui: &mut Ui, on: bool, on_color: egui::Color32) {
-    let size = egui::vec2(10.0, 10.0);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let color = if on {
-        on_color
-    } else {
-        ui.visuals().weak_text_color()
-    };
-    ui.painter().circle_filled(rect.center(), 4.0, color);
-}
-
-/// A labelled combo box.  Returns `true` when the selection changed.
-fn combo<T: PartialEq + Copy>(
-    ui: &mut Ui,
-    id: &str,
-    current: &mut T,
-    options: &[T],
-    label: impl Fn(T) -> String,
-) -> bool {
-    combo_response(ui, id, current, options, label).0
-}
-
-/// As [`combo`], but never wider than the room left on the current row.
-///
-/// A combo box is a horizontal child, so egui's wrapping row cannot move it to
-/// the next line after it has started laying it out.  Capping the requested
-/// width to what is actually available keeps a wide choice control from
-/// painting past a narrow panel.
-fn combo_capped<T: PartialEq + Copy>(
-    ui: &mut Ui,
-    id: &str,
-    current: &mut T,
-    options: &[T],
-    label: impl Fn(T) -> String,
-    max_width: f32,
-) -> bool {
-    let width = ui.available_width().min(max_width);
-    let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(label(*current))
-        .width(width)
-        .show_ui(ui, |ui| {
-            for option in options {
-                if ui
-                    .selectable_value(current, *option, label(*option))
-                    .clicked()
-                {
-                    changed = true;
-                }
-            }
-        });
-    changed
-}
-
-/// As [`combo`], but also hands back the response rect so a test can measure
-/// where the control actually landed.
-fn combo_response<T: PartialEq + Copy>(
-    ui: &mut Ui,
-    id: &str,
-    current: &mut T,
-    options: &[T],
-    label: impl Fn(T) -> String,
-) -> (bool, egui::Rect) {
-    let mut changed = false;
-    let response = egui::ComboBox::from_id_salt(id)
-        .selected_text(label(*current))
-        .width(SERIAL_COMBO_WIDTH)
-        .show_ui(ui, |ui| {
-            for option in options {
-                if ui
-                    .selectable_value(current, *option, label(*option))
-                    .clicked()
-                {
-                    changed = true;
-                }
+    Some(
+        Button::new(SharedString::from(format!(
+            "window-{side}-{index}-{}",
+            button.id()
+        )))
+        .ghost()
+        .icon(icon)
+        .tooltip(label)
+        .w(px(36.0))
+        .h_full()
+        .rounded(ButtonRounded::None)
+        .on_click(move |_, window, cx| match button {
+            WindowButton::Minimize => window.minimize_window(),
+            WindowButton::Maximize => window.zoom_window(),
+            WindowButton::Close => {
+                window.remove_window();
+                cx.quit();
             }
         })
-        .response;
-    (changed, response.rect)
-}
-
-/// Let the user choose one installed family, with `None` meaning “automatic”.
-fn font_combo(ui: &mut Ui, id: &str, current: &mut Option<String>) -> bool {
-    let mut changed = false;
-    let selected_text = current.clone().unwrap_or_else(|| tr("自动").to_owned());
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(selected_text)
-        .width(170.0)
-        .height(280.0)
-        .show_ui(ui, |ui| {
-            if ui.selectable_label(current.is_none(), tr("自动")).clicked() {
-                *current = None;
-                changed = true;
-            }
-            for family in crate::fonts::available_families() {
-                let selected = current.as_deref() == Some(family.as_str());
-                if ui.selectable_label(selected, family.clone()).clicked() {
-                    *current = Some(family);
-                    changed = true;
-                }
-            }
-        });
-    changed
-}
-
-// ---------------------------------------------------------------------------
-// Menu bar
-// ---------------------------------------------------------------------------
-
-/// A drop-down menu item, with its keyboard shortcut at the right edge.
-fn menu_item(ui: &mut Ui, label: &str, shortcut: &str) -> bool {
-    let button = if shortcut.is_empty() {
-        egui::Button::new(label)
-    } else {
-        egui::Button::new(label).shortcut_text(shortcut)
-    };
-    ui.add(button).clicked()
-}
-
-/// A menu item that opens a dialog, marked with the conventional ellipsis.
-fn menu_dialog_item(ui: &mut Ui, label: &'static str) -> bool {
-    menu_dialog_item_shortcut(ui, label, "")
-}
-
-/// As [`menu_dialog_item`], with the shortcut shown at the right edge.
-fn menu_dialog_item_shortcut(ui: &mut Ui, label: &'static str, shortcut: &str) -> bool {
-    menu_item(ui, &format!("{}…", tr(label)), shortcut)
-}
-
-/// egui temp-data key for the custom-baud dialog.
-///
-/// The serial panel draws the dialog and the Tools menu asks for it, so both
-/// routes have to agree on where "open" is stored.
-fn custom_baud_manager_id() -> egui::Id {
-    egui::Id::new("custom_baud_manager")
-}
-
-/// Center a dialog on the first frame it opens.
-///
-/// egui remembers a window's position by id, so a dialog opened again would
-/// reappear wherever it was last dragged.  The one-shot flag lives in egui's
-/// temporary memory: it is set on the opening frame and cleared when the
-/// window closes, so every menu-driven opening starts centered while the
-/// window stays movable afterwards.
-fn center_on_open<'open>(
-    window: egui::Window<'open>,
-    ctx: &Context,
-    id: egui::Id,
-) -> egui::Window<'open> {
-    let key = id.with("center_on_open");
-    let already_open = ctx.data(|data| data.get_temp::<bool>(key)).unwrap_or(false);
-    let window = window.pivot(egui::Align2::CENTER_CENTER);
-    if already_open {
-        window
-    } else {
-        ctx.data_mut(|data| data.insert_temp(key, true));
-        window.current_pos(ctx.content_rect().center())
-    }
-}
-
-/// Note that a dialog is closed, so the next opening centers it again.
-fn dialog_closed(ctx: &Context, id: egui::Id) {
-    ctx.data_mut(|data| data.insert_temp(id.with("center_on_open"), false));
-}
-
-/// The application menu bar.
-///
-/// Configuration that used to sit in one crowded strip is organised the way a
-/// desktop application would: commands live in the menu of the thing they act
-/// on, toggles are check items under View, and settings that need room for
-/// labels and colour pickers live in their own windows.
-pub(crate) fn menu_bar(app: &mut XcomApp, ui: &mut Ui) {
-    egui::Panel::top("menu_bar").show(ui, |ui| {
-        probe::begin_top_bar();
-        egui::MenuBar::new().ui(ui, |ui| {
-            let file = ui.menu_button(tr("文件"), |ui| file_menu(app, ui));
-            probe::push_top_bar_rect("file", file.response.rect);
-            let edit = ui.menu_button(tr("编辑"), |ui| edit_menu(app, ui));
-            probe::push_top_bar_rect("edit", edit.response.rect);
-            let view = ui.menu_button(tr("视图"), |ui| view_menu(app, ui));
-            probe::push_top_bar_rect("view", view.response.rect);
-            let tools = ui.menu_button(tr("工具"), |ui| tools_menu(app, ui));
-            probe::push_top_bar_rect("tools", tools.response.rect);
-            let help = ui.menu_button(tr("帮助"), |ui| help_menu(app, ui));
-            probe::push_top_bar_rect("help", help.response.rect);
-        });
-    });
-}
-
-fn file_menu(app: &mut XcomApp, ui: &mut Ui) {
-    // Save / Save As carry the shortcuts users expect from desktop apps.
-    if menu_dialog_item_shortcut(ui, "保存接收数据", "Ctrl+S") {
-        save_log(app);
-    }
-    if menu_dialog_item_shortcut(ui, "保存原始数据", "Ctrl+Shift+S") {
-        save_raw_log(app);
-    }
-    ui.separator();
-    if menu_dialog_item(ui, "日志文件") {
-        app.show_log_file = true;
-    }
-    ui.separator();
-    if menu_dialog_item(ui, "发送文件")
-        && let Some(path) = pick_open_file(tr("选择要发送的文件"))
-    {
-        app.start_file_send(path);
-    }
-    ui.separator();
-    if menu_item(ui, tr("退出"), "Ctrl+Q") {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-    }
-}
-
-fn edit_menu(app: &mut XcomApp, ui: &mut Ui) {
-    let copy = ui.add_enabled(
-        app.log_view.has_selection(),
-        egui::Button::new(tr("复制选中")).shortcut_text("Ctrl+C"),
-    );
-    if copy.clicked() {
-        copy_selection(app, ui);
-    }
-    if menu_item(ui, tr("全选"), "Ctrl+A") {
-        let store = &app.log;
-        app.log_view.select_all(store);
-    }
-    ui.separator();
-    if menu_item(ui, tr("清除接收"), "") {
-        app.clear_receive();
-    }
-    if menu_item(ui, tr("清除发送"), "") {
-        clear_send(app);
-    }
-}
-
-fn view_menu(app: &mut XcomApp, ui: &mut Ui) {
-    // Every entry is a submenu: the layout switches live under 面板, the
-    // receive-view switches under 显示, and the three choice lists keep their
-    // own menus.  This keeps the top level short and predictable.
-    ui.menu_button(tr("面板"), |ui| {
-        let mut changed = false;
-        changed |= ui
-            .checkbox(&mut app.settings.show_config_panel, tr("配置面板"))
-            .changed();
-        changed |= ui
-            .checkbox(&mut app.settings.show_tool_panel, tr("工具面板"))
-            .changed();
-        changed |= ui
-            .checkbox(&mut app.settings.show_send_area, tr("发送区"))
-            .changed();
-        if changed {
-            app.mark_settings_dirty();
-        }
-    });
-    ui.menu_button(tr("显示"), |ui| display_menu(app, ui));
-    ui.menu_button(tr("编码"), |ui| encoding_menu(app, ui));
-    ui.menu_button(tr("主题"), |ui| {
-        for mode in ThemeMode::ALL {
-            if ui
-                .selectable_label(
-                    app.settings.theme == mode,
-                    format!("{} {}", mode.icon(), tr(mode.label())),
-                )
-                .clicked()
-            {
-                app.settings.theme = mode;
-                app.mark_settings_dirty();
-                ui.close();
-            }
-        }
-    });
-    ui.menu_button(tr("语言"), |ui| {
-        for candidate in Lang::ALL {
-            if ui
-                .selectable_label(i18n::lang() == candidate, candidate.label())
-                .clicked()
-            {
-                i18n::set_lang(candidate);
-                app.settings.lang = Some(candidate);
-                app.mark_settings_dirty();
-                ui.close();
-            }
-        }
-    });
-}
-
-/// The receive view's switches, grouped so every option is one click away.
-///
-/// Options with more than two states get a submenu of their own (display mode,
-/// HEX layout, line spacing); the full page remains at the bottom for fonts,
-/// colours and keyword rules.
-fn display_menu(app: &mut XcomApp, ui: &mut Ui) {
-    let mut display = app.settings.display;
-
-    ui.menu_button(tr("显示模式"), |ui| {
-        for (mode, label) in [(ViewMode::Text, "文本"), (ViewMode::Hex, "16进制显示")] {
-            if ui
-                .selectable_label(display.mode == mode, tr(label))
-                .clicked()
-            {
-                display.mode = mode;
-                ui.close();
-            }
-        }
-    });
-
-    if display.mode == ViewMode::Hex {
-        ui.menu_button(tr("HEX 布局"), |ui| {
-            for (style, label) in [(HexStyle::Stream, "连续"), (HexStyle::Dump, "16 字节/行")]
-            {
-                if ui
-                    .selectable_label(display.hex_style == style, tr(label))
-                    .clicked()
-                {
-                    display.hex_style = style;
-                    ui.close();
-                }
-            }
-            ui.separator();
-            let mut upper = display.upper_hex;
-            if ui.checkbox(&mut upper, tr("大写")).changed() {
-                display.upper_hex = upper;
-            }
-            if display.hex_style == HexStyle::Dump {
-                ui.horizontal(|ui| {
-                    ui.label(tr("每行字节"));
-                    let mut per_row = display.hex_bytes_per_row;
-                    if ui
-                        .add(egui::DragValue::new(&mut per_row).range(1..=64))
-                        .changed()
-                    {
-                        display.hex_bytes_per_row = per_row;
-                    }
-                });
-            }
-        });
-    }
-
-    let mut markers = display.markers;
-    if ui
-        .checkbox(&mut markers, tr("方向标记"))
-        .on_hover_text(tr("接收的数据以 -> 开头，发送的数据以 <- 开头"))
-        .changed()
-    {
-        display.markers = markers;
-    }
-    let mut timestamp = display.timestamp;
-    if ui
-        .checkbox(&mut timestamp, tr("时间戳"))
-        .on_hover_text(tr("以回车换行断帧；未收全的一帧先显示当前时间，收全后定帧"))
-        .changed()
-    {
-        display.timestamp = timestamp;
-    }
-    let mut wrap = display.wrap;
-    if ui.checkbox(&mut wrap, tr("自动换行")).changed() {
-        display.wrap = wrap;
-    }
-    let mut auto_scroll = app.settings.auto_scroll;
-    if ui
-        .checkbox(&mut auto_scroll, tr("自动滚动到最新"))
-        .changed()
-    {
-        app.set_auto_scroll(auto_scroll);
-    }
-    let mut echo = app.settings.echo_sent;
-    if ui
-        .checkbox(&mut echo, tr("回显发送"))
-        .on_hover_text(tr("把发出的内容显示在接收区，便于确认是否真的发出"))
-        .changed()
-    {
-        app.settings.echo_sent = echo;
-        app.mark_settings_dirty();
-    }
-
-    ui.separator();
-    if menu_dialog_item(ui, "字体设置") {
-        app.show_font_settings = true;
-    }
-    if menu_dialog_item(ui, "接收区配色") {
-        app.show_log_colors = true;
-    }
-    if menu_dialog_item(ui, "关键字高亮") {
-        app.show_highlight = true;
-    }
-
-    app.set_display_options(display);
-}
-
-/// Receive and transmit encodings, as two short submenus.
-fn encoding_menu(app: &mut XcomApp, ui: &mut Ui) {
-    ui.menu_button(tr("接收编码"), |ui| {
-        if ui
-            .selectable_label(app.settings.encoding.is_none(), tr("自动识别"))
-            .clicked()
-        {
-            app.set_encoding(None);
-        }
-        for id in EncodingId::ALL {
-            if ui
-                .selectable_label(app.settings.encoding == Some(id), tr(id.label()))
-                .clicked()
-            {
-                app.set_encoding(Some(id));
-            }
-        }
-    });
-
-    ui.menu_button(tr("发送编码"), |ui| {
-        if ui
-            .selectable_label(app.settings.tx_encoding.is_none(), tr("跟随接收编码"))
-            .clicked()
-        {
-            app.settings.tx_encoding = None;
-            app.mark_settings_dirty();
-        }
-        for id in EncodingId::ALL {
-            if ui
-                .selectable_label(app.settings.tx_encoding == Some(id), tr(id.label()))
-                .clicked()
-            {
-                app.settings.tx_encoding = Some(id);
-                app.mark_settings_dirty();
-            }
-        }
-    });
-}
-
-fn tools_menu(app: &mut XcomApp, ui: &mut Ui) {
-    // Radio-style: the active tool tab is the one currently selected, so the
-    // menu also answers "which tool am I looking at".
-    let multi_active = app.side_tab == SideTab::Multi && app.settings.show_tool_panel;
-    if ui.selectable_label(multi_active, tr("多条发送")).clicked() {
-        app.side_tab = SideTab::Multi;
-        app.settings.show_tool_panel = true;
-        app.mark_settings_dirty();
-    }
-    let protocol_active = app.side_tab == SideTab::Protocol && app.settings.show_tool_panel;
-    if ui
-        .selectable_label(protocol_active, tr("协议传输"))
-        .clicked()
-    {
-        app.side_tab = SideTab::Protocol;
-        app.settings.show_tool_panel = true;
-        app.mark_settings_dirty();
-    }
-    ui.separator();
-    if menu_dialog_item(ui, "自定义波特率") {
-        app.settings.show_config_panel = true;
-        app.mark_settings_dirty();
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(custom_baud_manager_id(), true));
-    }
-    ui.separator();
-    // Destructive and irreversible, so it never runs straight from the menu.
-    if menu_dialog_item(ui, "恢复默认设置") {
-        app.show_reset_confirm = true;
-    }
-}
-
-fn help_menu(app: &mut XcomApp, ui: &mut Ui) {
-    if menu_dialog_item(ui, "快捷键") {
-        app.show_shortcuts = true;
-    }
-    if menu_item(ui, tr("关于 XCOM"), "") {
-        app.show_about = true;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Appearance windows
-// ---------------------------------------------------------------------------
-
-/// The font grid shared by the font-settings window.
-fn font_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
-    let mut fonts = app.settings.fonts.clone();
-    let mut font_changed = false;
-    egui::Grid::new("font_grid")
-        .num_columns(2)
-        .spacing([8.0, 6.0])
-        .show(ui, |ui| {
-            ui.label(tr("界面字体"));
-            let mut family = fonts.ui_family.clone();
-            font_changed |= font_combo(ui, "ui_font_family", &mut family);
-            fonts.ui_family = family;
-            ui.end_row();
-
-            ui.label(tr("界面字号"));
-            let mut size = fonts.ui_size;
-            font_changed |= ui
-                .add(egui::Slider::new(&mut size, 9.0..=24.0).fixed_decimals(0))
-                .changed();
-            fonts.ui_size = size;
-            ui.end_row();
-
-            ui.label(tr("接收区字体"));
-            let mut family = fonts.receive_family.clone();
-            font_changed |= font_combo(ui, "receive_font_family", &mut family);
-            fonts.receive_family = family;
-            ui.end_row();
-
-            ui.label(tr("接收区字号"));
-            let mut size = fonts.receive_size;
-            font_changed |= ui
-                .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
-                .changed();
-            fonts.receive_size = size;
-            ui.end_row();
-
-            ui.label(tr("发送区字体"));
-            let mut family = fonts.send_family.clone();
-            font_changed |= font_combo(ui, "send_font_family", &mut family);
-            fonts.send_family = family;
-            ui.end_row();
-
-            ui.label(tr("发送区字号"));
-            let mut size = fonts.send_size;
-            font_changed |= ui
-                .add(egui::Slider::new(&mut size, 8.0..=32.0).fixed_decimals(0))
-                .changed();
-            fonts.send_size = size;
-            ui.end_row();
-        });
-    if font_changed {
-        fonts.normalize();
-        app.settings.fonts = fonts;
-        app.mark_settings_dirty();
-    }
-
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.label(tr("行距"));
-        let mut spacing = app.settings.line_spacing;
-        if ui
-            .add(
-                egui::Slider::new(
-                    &mut spacing,
-                    crate::settings::LINE_SPACING_MIN..=crate::settings::LINE_SPACING_MAX,
-                )
-                .fixed_decimals(0),
-            )
-            .changed()
-        {
-            app.settings.line_spacing = spacing;
-            app.mark_settings_dirty();
-        }
-    });
-    ui.small(tr("行距 0 表示使用字体默认行高。"));
-    ui.small(tr("字体修改会立即应用到对应的文本区。"));
-}
-
-/// The receive-area colours, with a live sample using the effective palette.
-fn log_colors_ui(app: &mut XcomApp, ui: &mut Ui) {
-    let mut colors = app.settings.log_colors;
-    if ui
-        .checkbox(&mut colors.enabled, tr("自定义接收区配色"))
-        .changed()
-    {
-        app.settings.log_colors = colors;
-        app.mark_settings_dirty();
-    }
-    if colors.enabled {
-        ui.horizontal(|ui| {
-            ui.label(tr("字色"));
-            if ui.color_edit_button_srgb(&mut colors.foreground).changed() {
-                app.settings.log_colors = colors;
-                app.mark_settings_dirty();
-            }
-            ui.label(tr("底色"));
-            if ui.color_edit_button_srgb(&mut colors.background).changed() {
-                app.settings.log_colors = colors;
-                app.mark_settings_dirty();
-            }
-        });
-    }
-    ui.separator();
-    let palette = theme::log_palette(ui.ctx(), app.settings.theme, app.settings.log_colors);
-    ui.label(tr("预览"));
-    ui.label(
-        RichText::new(tr("接收区示例"))
-            .monospace()
-            .color(palette.foreground)
-            .background_color(palette.background),
-    );
-}
-
-/// The font-settings window (View → Display → Font settings…).
-pub(crate) fn font_settings_window(app: &mut XcomApp, ctx: &Context) {
-    let id = egui::Id::new("font_settings_dialog");
-    if !app.show_font_settings {
-        dialog_closed(ctx, id);
-        return;
-    }
-    let mut open = true;
-    let mut close_requested = false;
-    let window = egui::Window::new(tr("字体设置"))
-        .id(id)
-        .title_bar(false)
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_size([520.0, 360.0])
-        .min_size([380.0, 260.0]);
-    let window = center_on_open(window, ctx, id).show(ctx, |ui| {
-        let header = dialog::header(ui, tr("字体设置"), None);
-        if header.close_clicked {
-            close_requested = true;
-        }
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| font_settings_ui(app, ui));
-    });
-    if let Some(window) = window {
-        probe::set_font_window_rect(window.response.rect);
-    }
-    if !open || close_requested {
-        app.show_font_settings = false;
-    }
-}
-
-/// The receive-colours window (View → Display → Receive colours…).
-pub(crate) fn log_colors_window(app: &mut XcomApp, ctx: &Context) {
-    let id = egui::Id::new("log_colors_dialog");
-    if !app.show_log_colors {
-        dialog_closed(ctx, id);
-        return;
-    }
-    let mut open = true;
-    let mut close_requested = false;
-    let window = egui::Window::new(tr("接收区配色"))
-        .id(id)
-        .title_bar(false)
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_size([440.0, 260.0])
-        .min_size([340.0, 200.0]);
-    center_on_open(window, ctx, id).show(ctx, |ui| {
-        let header = dialog::header(ui, tr("接收区配色"), None);
-        if header.close_clicked {
-            close_requested = true;
-        }
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| log_colors_ui(app, ui));
-    });
-    if !open || close_requested {
-        app.show_log_colors = false;
-    }
-}
-
-/// The keyword-highlight window (View → Display → Keyword highlighting…).
-pub(crate) fn highlight_window(app: &mut XcomApp, ctx: &Context) {
-    let id = egui::Id::new("highlight_dialog");
-    if !app.show_highlight {
-        dialog_closed(ctx, id);
-        return;
-    }
-    let mut open = true;
-    let mut close_requested = false;
-    let window = egui::Window::new(tr("关键字高亮"))
-        .id(id)
-        .title_bar(false)
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_size([800.0, 600.0])
-        .min_size([420.0, 320.0]);
-    let window = center_on_open(window, ctx, id).show(ctx, |ui| {
-        let header = dialog::header(ui, tr("关键字高亮"), None);
-        if header.close_clicked {
-            close_requested = true;
-        }
-        ui.separator();
-        highlight_settings_ui(app, ui);
-    });
-    if let Some(window) = window {
-        probe::set_highlight_window_rect(window.response.rect);
-    }
-    if !open || close_requested {
-        app.show_highlight = false;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Keyword highlighting
-// ---------------------------------------------------------------------------
-
-/// Add, edit and remove the receive view's keyword rules.
-///
-/// This is the body of the keyword-highlight window.  The rules are saved with
-/// the rest of the settings, and the log re-reads them every frame so changes
-/// also apply to data already on screen.
-fn highlight_settings_ui(app: &mut XcomApp, ui: &mut Ui) {
-    probe::begin_highlight_table();
-
-    let mut settings = app.settings.highlights.clone();
-    let mut changed = false;
-
-    // A manual table rather than `Grid`: Grid sizes its first column from the
-    // header text, which left a long keyword field clamped to a short cell.
-    // The keyword column takes whatever the page leaves after the fixed
-    // columns, so the table adapts to the resizable settings window.
-    const INDEX_COL: f32 = 30.0;
-    const ENABLE_COL: f32 = 34.0;
-    const COLOR_COL: f32 = 52.0;
-    const ACTION_COL: f32 = 52.0;
-    const COL_GAP: f32 = 8.0;
-    let body_font = egui::TextStyle::Body.resolve(ui.style());
-    let row_height = ui
-        .spacing()
-        .interact_size
-        .y
-        .max(ui.ctx().fonts_mut(|fonts| fonts.row_height(&body_font)) + 8.0);
-    let rule_count = settings.rules.len();
-
-    let mut remove = None;
-    let table = egui::Frame::group(ui.style()).show(ui, |ui| {
-        let table_width = ui.available_width();
-        let keyword_col =
-            (table_width - INDEX_COL - ENABLE_COL - COLOR_COL - ACTION_COL - COL_GAP * 4.0)
-                .max(200.0);
-        ui.set_width(table_width);
-
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = COL_GAP;
-            ui.add_sized(
-                [INDEX_COL, row_height],
-                egui::Label::new(RichText::new("#").strong().monospace()),
-            );
-            ui.add_sized(
-                [ENABLE_COL, row_height],
-                egui::Label::new(RichText::new(tr("启用")).strong()),
-            );
-            ui.add_sized(
-                [keyword_col, row_height],
-                egui::Label::new(RichText::new(tr("关键字")).strong()),
-            );
-            ui.add_sized(
-                [COLOR_COL, row_height],
-                egui::Label::new(RichText::new(tr("颜色")).strong()),
-            );
-            ui.add_sized(
-                [ACTION_COL, row_height],
-                egui::Label::new(RichText::new(tr("操作")).strong()),
-            );
-        });
-        ui.separator();
-
-        // Leave room for the Add row and the help text below the table, so
-        // those stay visible while only the rule list scrolls.
-        let rows_height = (ui.available_height() - 96.0).max(row_height * 3.0);
-        egui::ScrollArea::vertical()
-            .max_height(rows_height)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if settings.rules.is_empty() {
-                    ui.weak(tr("暂无关键字"));
-                }
-                for (index, rule) in settings.rules.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = COL_GAP;
-                        ui.add_sized(
-                            [INDEX_COL, row_height],
-                            egui::Label::new(
-                                RichText::new(format!("#{}", index + 1))
-                                    .monospace()
-                                    .color(ui.visuals().weak_text_color()),
-                            ),
-                        );
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(ENABLE_COL, row_height),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                changed |= ui
-                                    .add(egui::Checkbox::without_text(&mut rule.enabled))
-                                    .on_hover_text(tr("启用此规则"))
-                                    .changed();
-                            },
-                        );
-                        let keyword = ui.add_sized(
-                            [keyword_col, row_height],
-                            egui::TextEdit::singleline(&mut rule.text)
-                                .hint_text(if rule.regex {
-                                    tr("正则表达式")
-                                } else {
-                                    tr("关键字")
-                                })
-                                .font(egui::TextStyle::Monospace),
-                        );
-                        probe::push_highlight_keyword_rect(keyword.rect);
-                        changed |= keyword.changed();
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(COLOR_COL, row_height),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                changed |= ui.color_edit_button_srgb(&mut rule.color).changed();
-                            },
-                        );
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(ACTION_COL, row_height),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                let toggle = ui
-                                    .add_sized(
-                                        [24.0, row_height],
-                                        egui::Button::new(egui::RichText::new(".*").monospace())
-                                            .selected(rule.regex),
-                                    )
-                                    .on_hover_text(tr("按正则表达式匹配"));
-                                if toggle.clicked() {
-                                    rule.regex = !rule.regex;
-                                    changed = true;
-                                }
-                                if ui
-                                    .add_sized([20.0, row_height], egui::Button::new("×"))
-                                    .on_hover_text(tr("删除"))
-                                    .clicked()
-                                {
-                                    remove = Some(index);
-                                }
-                            },
-                        );
-                    });
-                    if rule.regex
-                        && !rule.text.is_empty()
-                        && let Err(err) = crate::highlight::validate_regex(&rule.text)
-                    {
-                        ui.label(
-                            RichText::new(tr("正则无效"))
-                                .small()
-                                .color(level_color(Level::Error)),
-                        )
-                        .on_hover_text(err);
-                    }
-                    if index + 1 < rule_count {
-                        ui.separator();
-                    }
-                }
-            });
-    });
-    probe::set_highlight_table_rect(table.response.rect);
-    if let Some(index) = remove {
-        settings.rules.remove(index);
-        changed = true;
-    }
-    ui.horizontal(|ui| {
-        if ui.button(tr("添加关键字")).clicked() {
-            settings.rules.push(HighlightRule::default());
-            changed = true;
-        }
-        ui.weak(crate::i18n::tr1("{} 条规则", settings.rules.len()));
-    });
-    ui.small(tr(
-        "勾选行首的启用开关后规则才生效；默认按字面匹配、区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
-    ));
-
-    // Fill the window: the footer's height depends on how the help text wraps,
-    // and without this the window would shrink or grow with the wrapped line
-    // count instead of keeping the size the user dragged it to.
-    let remaining = ui.available_height();
-    if remaining > 0.0 {
-        ui.add_space(remaining);
-    }
-
-    if changed {
-        app.settings.highlights = settings;
-        app.mark_settings_dirty();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Left configuration panel
-// ---------------------------------------------------------------------------
-
-pub(crate) fn left_panel(app: &mut XcomApp, ui: &mut Ui) {
-    // Measured before the panel is added: this is the whole width the three
-    // columns have to share, which is what caps the panel.
-    let available = ui.available_rect_before_wrap();
-    let max = left_panel_max(app, available.width());
-
-    if !app.settings.show_config_panel {
-        probe::set_left_content_width(0.0);
-        app.pending_splitters.push(collapsed_splitter(
-            "config_panel",
-            SplitterGrowth::Rightward,
-            SplitterTarget::ConfigWidth,
-            available,
-            LEFT_PANEL_MIN,
-            max,
-        ));
-        return;
-    }
-
-    let width = app.settings.left_panel_width.clamp(LEFT_PANEL_MIN, max);
-    let panel = egui::Panel::left("config_panel")
-        .resizable(false)
-        .exact_size(width)
-        .show(ui, |ui| {
-            // Fill the panel rather than shrinking to the content, so the
-            // scrollbar sits against the panel edge and the whole panel
-            // scrolls.  This is presentation only -- the splitter below does
-            // not depend on it (measured, not assumed).
-            let scroll = egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    serial_section(app, ui);
-                    ui.add_space(6.0);
-                    statistics_section(app, ui);
-                });
-            probe::set_left_content_width(scroll.inner_rect.width());
-        });
-
-    let outer = panel.response.rect;
-    app.pending_splitters.push(PendingSplitter {
-        id: "config_panel",
-        growth: SplitterGrowth::Rightward,
-        boundary: outer.right(),
-        cross: outer.y_range(),
-        current_size: width,
-        min: LEFT_PANEL_MIN,
-        max,
-        target: SplitterTarget::ConfigWidth,
-        collapsed: false,
-    });
-}
-
-/// The widest the configuration panel may be dragged to.
-///
-/// The centre column keeps [`CENTER_MIN`], so this maximum shrinks as the tool
-/// panel grows and as the window narrows.  The floor at the panel's own minimum
-/// keeps the clamp well-formed on a window too narrow to honour either — there
-/// the centre simply gives way, which is unavoidable rather than a choice.
-fn left_panel_max(app: &XcomApp, available: f32) -> f32 {
-    let tool = if app.settings.show_tool_panel {
-        app.settings.right_panel_width
-    } else {
-        0.0
-    };
-    (available - CENTER_MIN - tool - SEPARATOR_SLACK).max(LEFT_PANEL_MIN)
-}
-
-/// The splitter of a panel that is collapsed: a strip along the window edge,
-/// with no panel behind it.
-///
-/// The splitter is registered even then, because a collapsed panel has to stay
-/// draggable — otherwise the only way back would be the top bar.
-fn collapsed_splitter(
-    id: &'static str,
-    growth: SplitterGrowth,
-    target: SplitterTarget,
-    area: egui::Rect,
-    min: f32,
-    max: f32,
-) -> PendingSplitter {
-    let (boundary, cross) = match growth {
-        SplitterGrowth::Rightward => (area.left(), area.y_range()),
-        SplitterGrowth::Leftward => (area.right(), area.y_range()),
-        SplitterGrowth::Upward => (area.bottom(), area.x_range()),
-    };
-    PendingSplitter {
-        id,
-        growth,
-        boundary,
-        cross,
-        current_size: 0.0,
-        min,
-        max,
-        target,
-        collapsed: true,
-    }
-}
-
-/// Paint the "custom baud rate" icon: a tune / sliders glyph.
-///
-/// Drawn as geometry rather than a font symbol on purpose.  The UI falls back
-/// to whatever CJK face the system offers, and such a face cannot be relied on
-/// to carry a symbol like U+2699 (gear) or U+270E (pencil); a missing glyph
-/// renders as tofu.  Painting the shape keeps it identical on every platform.
-///
-/// Returns the number of painted shapes so a test can prove the icon is real.
-fn paint_tune_icon(ui: &Ui, rect: egui::Rect, color: egui::Color32) -> usize {
-    let painter = ui.painter();
-    let side = rect.size().min_elem();
-    let half = side * 0.34;
-    let center = rect.center();
-    let stroke = egui::Stroke::new(1.4, color);
-    let knob_radius = (side * 0.09).clamp(1.2, 2.6);
-    // Three rails with a knob on each: the conventional "adjust / customise"
-    // glyph.  Knobs alternate sides so the rails read as controls, not bullets.
-    let rows = [-0.70_f32, 0.0, 0.70];
-    let knobs = [0.45_f32, -0.55, 0.45];
-    let mut shapes = 0;
-    for (row, knob) in rows.iter().zip(knobs) {
-        let y = center.y + row * half;
-        painter.line_segment(
-            [
-                egui::pos2(center.x - half, y),
-                egui::pos2(center.x + half, y),
-            ],
-            stroke,
-        );
-        shapes += 1;
-        painter.circle_filled(egui::pos2(center.x + knob * half, y), knob_radius, color);
-        shapes += 1;
-    }
-    shapes
-}
-
-fn serial_section(app: &mut XcomApp, ui: &mut Ui) {
-    let open = app.link.is_open();
-    let manager_id = custom_baud_manager_id();
-    let input_id = egui::Id::new("custom_baud_input");
-    let mut manager_open = ui
-        .ctx()
-        .data(|data| data.get_temp::<bool>(manager_id).unwrap_or(false));
-    probe::begin_custom_baud_manager();
-    let serial_bounds = ui.max_rect();
-    probe::set_serial_content_rect(serial_bounds);
-    probe::begin_serial_combos();
-    egui::CollapsingHeader::new(tr("串口设置"))
-        .default_open(true)
-        .show(ui, |ui| {
-            egui::Grid::new("serial_grid")
-                .num_columns(2)
-                .spacing([8.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label(tr("串口"));
-                    ui.horizontal(|row_ui| {
-                        let ports = app.ports.ports().to_vec();
-                        let current = app.settings.serial.port.clone();
-                        let selected_text = ports
-                            .iter()
-                            .find(|p| p.name == current)
-                            .map(|p| p.display())
-                            .unwrap_or_else(|| {
-                                if current.is_empty() {
-                                    tr("（无可用串口）").to_owned()
-                                } else {
-                                    current.clone()
-                                }
-                            });
-                        let refresh_width = 24.0;
-                        let port_combo_width = (row_ui.available_width()
-                            - refresh_width
-                            - row_ui.spacing().item_spacing.x)
-                            .clamp(72.0, SERIAL_COMBO_WIDTH);
-                        let port_combo_rect = row_ui
-                            .add_enabled_ui(!open, |ui| {
-                                let port_combo = egui::ComboBox::from_id_salt("port_select")
-                                    .selected_text(selected_text)
-                                    .width(port_combo_width)
-                                    .truncate()
-                                    .show_ui(ui, |ui| {
-                                        if ports.is_empty() {
-                                            ui.weak(tr("未检测到串口"));
-                                        }
-                                        for port in &ports {
-                                            let item = ui.selectable_label(
-                                                port.name == app.settings.serial.port,
-                                                port.display(),
-                                            );
-                                            let item = item.on_hover_text(
-                                                port.detail().unwrap_or_else(|| port.display()),
-                                            );
-                                            if item.clicked() {
-                                                app.settings.serial.port = port.name.clone();
-                                                app.mark_settings_dirty();
-                                            }
-                                        }
-                                    });
-                                probe::push_serial_combo_rect("port", port_combo.response.rect);
-                                port_combo.response.rect
-                            })
-                            .inner;
-                        let refresh = row_ui
-                            .add_sized(
-                                [refresh_width, port_combo_rect.height()],
-                                egui::Button::new("↻"),
-                            )
-                            .on_hover_text(tr("刷新"));
-                        probe::set_refresh_button_rect(refresh.rect);
-                        if refresh.clicked() {
-                            app.ports.poll();
-                            app.info(tr("已刷新串口列表"));
-                        }
-                    });
-                    ui.end_row();
-
-                    // ---- baud rate ------------------------------------
-                    ui.label(tr("波特率"));
-                    ui.horizontal(|row_ui| {
-                        let choices = app.settings.serial.baud_choices();
-                        let standard = STANDARD_BAUDS.contains(&app.settings.serial.baud);
-                        let mut baud = app.settings.serial.baud;
-                        let label = if standard {
-                            baud.to_string()
-                        } else {
-                            format!("{baud}{}", tr("（自定义）"))
-                        };
-                        let manager_width = 24.0;
-                        let baud_width = (row_ui.available_width()
-                            - manager_width
-                            - row_ui.spacing().item_spacing.x)
-                            .clamp(72.0, SERIAL_COMBO_WIDTH);
-                        let baud_combo_rect = row_ui
-                            .add_enabled_ui(!open, |ui| {
-                                let combo = egui::ComboBox::from_id_salt("baud_select")
-                                    .selected_text(label)
-                                    .width(baud_width)
-                                    .truncate()
-                                    .show_ui(ui, |ui| {
-                                        for rate in choices {
-                                            if ui
-                                                .selectable_value(&mut baud, rate, rate.to_string())
-                                                .clicked()
-                                            {
-                                                app.settings.serial.baud = rate;
-                                                app.mark_settings_dirty();
-                                            }
-                                        }
-                                    });
-                                probe::push_serial_combo_rect("baud", combo.response.rect);
-                                combo.response.rect
-                            })
-                            .inner;
-                        let manage = row_ui.add_sized(
-                            [manager_width, baud_combo_rect.height()],
-                            egui::Button::new(""),
-                        );
-                        let icon_shapes =
-                            paint_tune_icon(row_ui, manage.rect, row_ui.visuals().text_color());
-                        probe::set_custom_baud_icon_shapes(icon_shapes);
-                        probe::set_custom_baud_button_label("");
-                        let manage = manage.on_hover_text(tr("自定义波特率"));
-                        probe::set_custom_baud_button_rect(manage.rect);
-                        if manage.clicked() {
-                            manager_open = true;
-                        }
-                    });
-                    ui.end_row();
-
-                    ui.label(tr("数据位"));
-                    {
-                        let mut value = app.settings.serial.data_bits;
-                        let options = DataBitsSel::ALL;
-                        ui.add_enabled_ui(!open, |ui| {
-                            if combo(ui, "data_bits", &mut value, &options, |v| {
-                                v.label().to_owned()
-                            }) {
-                                app.settings.serial.data_bits = value;
-                                app.mark_settings_dirty();
-                            }
-                            probe::push_serial_combo_rect("data_bits", ui.min_rect());
-                        });
-                    }
-                    ui.end_row();
-
-                    ui.label(tr("停止位"));
-                    {
-                        let mut value = app.settings.serial.stop_bits;
-                        let options = StopBitsSel::ALL;
-                        ui.add_enabled_ui(!open, |ui| {
-                            if combo(ui, "stop_bits", &mut value, &options, |v| {
-                                v.label().to_owned()
-                            }) {
-                                app.settings.serial.stop_bits = value;
-                                app.mark_settings_dirty();
-                            }
-                            probe::push_serial_combo_rect("stop_bits", ui.min_rect());
-                        });
-                    }
-                    ui.end_row();
-
-                    ui.label(tr("校验位"));
-                    {
-                        let mut value = app.settings.serial.parity;
-                        let options = ParitySel::ALL;
-                        ui.add_enabled_ui(!open, |ui| {
-                            if combo(ui, "parity", &mut value, &options, |v| {
-                                tr(v.label()).to_owned()
-                            }) {
-                                app.settings.serial.parity = value;
-                                app.mark_settings_dirty();
-                            }
-                            probe::push_serial_combo_rect("parity", ui.min_rect());
-                        });
-                    }
-                    ui.end_row();
-
-                    ui.label(tr("流控"));
-                    {
-                        let mut value = app.settings.serial.flow;
-                        let options = FlowSel::ALL;
-                        ui.add_enabled_ui(!open, |ui| {
-                            if combo(ui, "flow", &mut value, &options, |v| {
-                                tr(v.label()).to_owned()
-                            }) {
-                                app.settings.serial.flow = value;
-                                app.mark_settings_dirty();
-                            }
-                            probe::push_serial_combo_rect("flow", ui.min_rect());
-                        });
-                    }
-                    ui.end_row();
-
-                    ui.label(tr("DTR / RTS"));
-                    ui.horizontal(|ui| {
-                        let mut dtr = app.settings.serial.dtr;
-                        if ui.checkbox(&mut dtr, "DTR").changed() {
-                            app.settings.serial.dtr = dtr;
-                            if open && let Err(err) = app.link.set_dtr(dtr) {
-                                app.error(crate::i18n::tr1("设置 DTR 失败: {}", err));
-                            }
-                            app.mark_settings_dirty();
-                        }
-                        let mut rts = app.settings.serial.rts;
-                        if ui.checkbox(&mut rts, "RTS").changed() {
-                            app.settings.serial.rts = rts;
-                            if open && let Err(err) = app.link.set_rts(rts) {
-                                app.error(crate::i18n::tr1("设置 RTS 失败: {}", err));
-                            }
-                            app.mark_settings_dirty();
-                        }
-                    });
-                    ui.end_row();
-                });
-
-            ui.add_space(4.0);
-            let (label, color) = if open {
-                (tr("关闭串口"), egui::Color32::from_rgb(0xE5, 0x53, 0x53))
-            } else {
-                (tr("打开串口"), egui::Color32::from_rgb(0x4C, 0xAF, 0x50))
-            };
-            // Do not let the button stretch to the panel edge: a full-width
-            // button reads as a separator rather than a control.  Cap it and
-            // leave a clear gap.
-            let button_width = (serial_bounds.width() - 24.0).clamp(96.0, 168.0);
-            let button_height = 28.0_f32.max(
-                ui.ctx().fonts_mut(|fonts| {
-                    fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
-                }) + 10.0,
-            );
-            let button_center = egui::pos2(
-                serial_bounds.center().x - 16.0,
-                ui.cursor().min.y + button_height / 2.0,
-            );
-            let open_button = ui.put(
-                egui::Rect::from_center_size(
-                    button_center,
-                    egui::vec2(button_width, button_height),
-                ),
-                egui::Button::new(RichText::new(label).strong().color(color)),
-            );
-            probe::set_open_button_rect(open_button.rect);
-            if open_button.clicked() {
-                app.toggle_port();
-            }
-            ui.small(crate::i18n::tr1("当前: {}", app.settings.serial.summary()));
-            ui.small(tr("提示: 串口打开时无法修改通信参数，需先关闭串口"));
-        });
-
-    let ctx = ui.ctx().clone();
-    let mut pending_baud = ctx.data(|data| data.get_temp::<u32>(input_id).unwrap_or(115_201));
-    let mut remove_baud = None;
-    let mut close_requested = false;
-    // `title_bar(false)` drops egui's own bar, whose `TextStyle::Heading`
-    // caption (~1.4x the body) is what made this small dialog look
-    // top-heavy.  Without a title bar egui falls back to "drag anywhere", so
-    // the compact header we draw below keeps the dialog movable.
-    let was_open = manager_open;
-    let popup = egui::Window::new(tr("自定义波特率"))
-        .id(manager_id)
-        .title_bar(false)
-        .default_size([320.0, 340.0])
-        .min_size([280.0, 220.0])
-        .collapsible(false)
-        .resizable(true)
-        .open(&mut manager_open);
-    let popup = if was_open {
-        center_on_open(popup, &ctx, manager_id)
-    } else {
-        dialog_closed(&ctx, manager_id);
-        popup
-    };
-    let popup = popup.show(&ctx, |ui| {
-        ui.set_min_width(268.0);
-
-        // ── compact header ──────────────────────────────────────────
-        let paint_icon = |ui: &Ui, rect, color| paint_tune_icon(ui, rect, color);
-        let header = dialog::header(ui, tr("自定义波特率"), Some(&paint_icon));
-        probe::set_custom_baud_header_rect(header.rect);
-        probe::set_custom_baud_title_rect(header.title_rect);
-        probe::set_custom_baud_close_rect(header.close_rect);
-        if header.close_clicked {
-            close_requested = true;
-        }
-        ui.separator();
-
-        // ── add a rate ──────────────────────────────────────────────
-        let can_add = app.settings.serial.can_add_custom_baud(pending_baud);
-        ui.add_space(2.0);
-        ui.label(tr("添加波特率"));
-        ui.horizontal(|ui| {
-            let input = ui.add_sized(
-                [(ui.available_width() - 64.0).max(96.0), 24.0],
-                egui::DragValue::new(&mut pending_baud)
-                    .speed(100.0)
-                    .range(CUSTOM_BAUD_RANGE.0..=CUSTOM_BAUD_RANGE.1),
-            );
-            probe::set_custom_baud_input_rect(input.rect);
-            let add = ui.add_enabled(
-                can_add,
-                egui::Button::new(tr("添加")).min_size(egui::vec2(56.0, 24.0)),
-            );
-            probe::set_custom_baud_add_rect(add.rect);
-            if add.clicked() && app.settings.serial.add_custom_baud(pending_baud) {
-                app.mark_settings_dirty();
-            }
-        });
-        if !can_add {
-            let hint = if app.settings.serial.custom_bauds.len() >= MAX_CUSTOM_BAUDS {
-                tr("自定义波特率列表已满")
-            } else {
-                tr("该波特率已存在或为标准值")
-            };
-            ui.weak(hint);
-        }
-
-        // ── saved rates ─────────────────────────────────────────────
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(2.0);
-        ui.label(tr("已保存的自定义波特率"));
-        egui::ScrollArea::vertical()
-            .max_height(200.0)
-            .show(ui, |ui| {
-                let rates = app.settings.serial.custom_bauds.clone();
-                if rates.is_empty() {
-                    ui.weak(tr("暂无自定义波特率"));
-                }
-                for rate in rates {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(rate.to_string()).monospace());
-                        ui.weak("bps");
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let delete = ui
-                                .add_sized([24.0, 22.0], egui::Button::new("−"))
-                                .on_hover_text(tr("删除"));
-                            probe::push_custom_baud_delete_rect(rate, delete.rect);
-                            if delete.clicked() {
-                                remove_baud = Some(rate);
-                            }
-                        });
-                    });
-                }
-            });
-    });
-    if let Some(popup) = popup {
-        probe::set_custom_baud_window_rect(popup.response.rect);
-    }
-    if close_requested {
-        manager_open = false;
-    }
-    if let Some(rate) = remove_baud
-        && app.settings.serial.remove_custom_baud(rate)
-    {
-        app.mark_settings_dirty();
-    }
-    ctx.data_mut(|data| {
-        data.insert_temp(manager_id, manager_open);
-        data.insert_temp(input_id, pending_baud);
-    });
-}
-
-fn statistics_section(app: &mut XcomApp, ui: &mut Ui) {
-    egui::CollapsingHeader::new(tr("统计"))
-        .default_open(false)
-        .show(ui, |ui| {
-            egui::Grid::new("stats_grid")
-                .num_columns(2)
-                .spacing([8.0, 4.0])
-                .show(ui, |ui| {
-                    ui.label(tr("发送字节"));
-                    ui.label(app.tx_bytes.to_string());
-                    ui.end_row();
-                    ui.label(tr("接收字节"));
-                    ui.label(app.rx_bytes.to_string());
-                    ui.end_row();
-                    ui.label(tr("显示行数"));
-                    ui.label(app.log.row_count().to_string());
-                    ui.end_row();
-                    ui.label(tr("缓存字节"));
-                    ui.label(app.log.retained_bytes().to_string());
-                    ui.end_row();
-                    ui.label(tr("未显示字节"));
-                    ui.label(app.pending_rx_len().to_string());
-                    ui.end_row();
-                });
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(tr("最大保留行数"));
-                let mut rows = app.settings.max_rows;
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut rows)
-                            .speed(1000.0)
-                            .range(1_000..=5_000_000),
-                    )
-                    .changed()
-                {
-                    app.settings.max_rows = rows;
-                    app.log.set_limits(rows, app.settings.max_raw);
-                    app.mark_settings_dirty();
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(tr("最大缓存 (MB)"));
-                let mut mb = app.settings.max_raw / (1024 * 1024);
-                if ui
-                    .add(egui::DragValue::new(&mut mb).speed(1.0).range(1..=512))
-                    .changed()
-                {
-                    app.settings.max_raw = mb * 1024 * 1024;
-                    app.log
-                        .set_limits(app.settings.max_rows, app.settings.max_raw);
-                    app.mark_settings_dirty();
-                }
-            });
-        });
-}
-
-// ---------------------------------------------------------------------------
-// Centre: log view and send area
-// ---------------------------------------------------------------------------
-
-pub(crate) fn center_panel(app: &mut XcomApp, ui: &mut Ui) {
-    egui::CentralPanel::default().show(ui, |ui| {
-        // The send area sits at the bottom of the central column, so that the
-        // configuration and tool panels flank the full height of the window.
-        // Its floor depends on the interface font and on whether the action
-        // group needs a second row: a constant minimum let the separator eat
-        // into the toolbar when the user dragged it down.
-        let min_height = send_area_min_height(app, ui);
-        if app.settings.show_send_area {
-            let height = app.settings.send_area_height.max(min_height);
-            let panel = egui::Panel::bottom("send_area")
-                .resizable(false)
-                .exact_size(height)
-                .show(ui, |ui| send_area(app, ui));
-            let outer = panel.response.rect;
-            app.pending_splitters.push(PendingSplitter {
-                id: "send_area",
-                growth: SplitterGrowth::Upward,
-                boundary: outer.top(),
-                cross: outer.x_range(),
-                current_size: height,
-                min: min_height,
-                max: SEND_AREA_MAX,
-                target: SplitterTarget::SendHeight,
-                collapsed: false,
-            });
-        } else {
-            // Collapsed: keep a strip along the bottom edge so the area stays
-            // draggable (and clickable) back open.  The stored height is left
-            // untouched, so it is restored when the area reopens.
-            let area = ui.available_rect_before_wrap();
-            app.pending_splitters.push(collapsed_splitter(
-                "send_area",
-                SplitterGrowth::Upward,
-                SplitterTarget::SendHeight,
-                area,
-                min_height,
-                SEND_AREA_MAX,
-            ));
-        }
-
-        let palette = theme::log_palette(ui.ctx(), app.settings.theme, app.settings.log_colors);
-        let rect = ui.available_rect_before_wrap();
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::ZERO, palette.background);
-        let output = draw_log(app, ui, palette);
-
-        // The receive toolbar is gone; its secondary actions live in the log's
-        // context menu and report through the view's output.
-        if output.toggle_pause {
-            if app.show_paused {
-                app.resume_display();
-            } else {
-                app.show_paused = true;
-                app.info(tr("显示已暂停，数据仍在后台接收"));
-            }
-        }
-        let mut display = app.settings.display;
-        let display_changed = output.toggle_hex
-            || output.toggle_markers
-            || output.toggle_timestamp
-            || output.toggle_wrap;
-        if output.toggle_hex {
-            display.mode = if display.mode == ViewMode::Hex {
-                ViewMode::Text
-            } else {
-                ViewMode::Hex
-            };
-        }
-        if output.toggle_markers {
-            display.markers = !display.markers;
-        }
-        if output.toggle_timestamp {
-            display.timestamp = !display.timestamp;
-        }
-        if output.toggle_wrap {
-            display.wrap = !display.wrap;
-        }
-        if display_changed {
-            app.settings.display = display;
-            app.log.set_options(display);
-            app.mark_settings_dirty();
-        }
-        if output.toggle_auto_scroll {
-            app.set_auto_scroll(!app.settings.auto_scroll);
-        }
-        if output.toggle_echo {
-            app.settings.echo_sent = !app.settings.echo_sent;
-            app.mark_settings_dirty();
-        }
-        if output.open_highlight_settings {
-            app.show_highlight = true;
-        }
-        if output.clear_received {
-            app.clear_receive();
-        }
-    });
-}
-
-/// Copy the current selection to the system clipboard.
-fn copy_selection(app: &mut XcomApp, ui: &Ui) {
-    let text = {
-        let XcomApp { log, log_view, .. } = app;
-        log_view.selected_text(log)
-    };
-    match text {
-        Some(text) => {
-            ui.ctx().copy_text(text);
-            app.ok(tr("已复制选中内容到剪贴板"));
-        }
-        None => app.warn(tr("没有可复制的内容")),
-    }
-}
-
-const SEND_RIGHT_PAD: f32 = 6.0;
-
-/// Which edge of the toolbar the action group is anchored to.
-enum ActionsAnchor {
-    /// The roomy case: one row with the options, the group hugging the right.
-    Right,
-    /// The cramped case: a row of its own, the group starting at the left.
-    Left,
-}
-
-/// The single send button, rightmost of the group.
-fn send_button(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
-    let button = ui.add_sized(
-        [96.0, btn_height],
-        egui::Button::new(RichText::new(tr("发送 (Ctrl+Enter)")).strong()),
-    );
-    probe::push_send_toolbar_rect("send", button.rect);
-    if button.clicked() {
-        app.send_once();
-    }
-}
-
-/// 发送文件, or 终止发送 while a file transfer is running.
-fn file_button(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
-    let button = if app.file_send.is_some() {
-        ui.add_sized([76.0, btn_height], egui::Button::new(tr("终止发送")))
-    } else {
-        ui.add_sized([76.0, btn_height], egui::Button::new(tr("发送文件")))
-    };
-    probe::push_send_toolbar_rect("file", button.rect);
-    if button.clicked() {
-        if app.file_send.is_some() {
-            app.abort_file_send();
-        } else if let Some(path) = pick_open_file(tr("选择要发送的文件")) {
-            app.start_file_send(path);
-        }
-    }
-}
-
-fn clear_button(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
-    let button = ui.add_sized([76.0, btn_height], egui::Button::new(tr("清除发送")));
-    probe::push_send_toolbar_rect("clear", button.rect);
-    if button.clicked() {
-        clear_send(app);
-    }
-}
-
-/// Empty the send buffer and reset the session counters.
-fn clear_send(app: &mut XcomApp) {
-    app.settings.send.buffer.clear();
-    app.tx_bytes = 0;
-    app.rx_bytes = 0;
-    app.mark_settings_dirty();
-    app.info(tr("已清除发送区与收发计数"));
-}
-
-/// The history dropdown, leftmost of the group.
-fn history_button(app: &mut XcomApp, ui: &mut Ui) {
-    let history = egui::ComboBox::from_id_salt("send_history")
-        .selected_text(tr("历史"))
-        .width(68.0)
-        .show_ui(ui, |ui| {
-            if app.settings.send.history.is_empty() {
-                ui.weak(tr("暂无历史"));
-            }
-            let history = app.settings.send.history.clone();
-            for entry in history {
-                let preview: String = entry.chars().take(40).collect();
-                if ui.selectable_label(false, preview).clicked() {
-                    app.settings.send.buffer = entry;
-                    app.mark_settings_dirty();
-                }
-            }
-        });
-    probe::push_send_toolbar_rect("history", history.response.rect);
-}
-
-/// Lay out 历史 · 清除发送 · 发送文件 · 发送, in that reading order.
-///
-/// The group is added in reverse for a right-to-left ui, which places the first
-/// widget at its *right* edge; a left-anchored row needs the natural order.
-fn send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32, anchor: ActionsAnchor) {
-    ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
-    ui.spacing_mut().interact_size.y = btn_height;
-
-    match anchor {
-        ActionsAnchor::Right => {
-            send_button(app, ui, btn_height);
-            file_button(app, ui, btn_height);
-            clear_button(app, ui, btn_height);
-            history_button(app, ui);
-        }
-        ActionsAnchor::Left => {
-            history_button(app, ui);
-            clear_button(app, ui, btn_height);
-            file_button(app, ui, btn_height);
-            send_button(app, ui, btn_height);
-        }
-    }
-}
-
-fn right_aligned_send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
-    let avail_w = (ui.available_width() - SEND_RIGHT_PAD).max(0.0);
-    ui.allocate_ui_with_layout(
-        egui::vec2(avail_w, btn_height),
-        egui::Layout::right_to_left(egui::Align::Center),
-        |ui| send_actions(app, ui, btn_height, ActionsAnchor::Right),
-    );
-}
-
-/// The cramped case: the group takes a row of its own and starts at the left
-/// edge, so it lines up with the 发送区 options above it.
-fn left_aligned_send_actions(app: &mut XcomApp, ui: &mut Ui, btn_height: f32) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), btn_height),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| send_actions(app, ui, btn_height, ActionsAnchor::Left),
-    );
-}
-
-/// Height of one send-toolbar row at the current interface font.
-///
-/// Checkboxes and buttons grow with the interface font, so a fixed row height
-/// would clip them as soon as the user chose a larger size.
-fn send_toolbar_row_height(app: &XcomApp, ui: &Ui) -> f32 {
-    28.0_f32.max(
-        ui.ctx().fonts_mut(|fonts| {
-            fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
-        }) + 10.0,
+        .into_any_element(),
     )
 }
 
-/// Width the send action group needs on one row, at the current font.
-///
-/// The three buttons are laid out at fixed widths; the history combo is at
-/// least 68 points but grows with its label, which differs between languages.
-fn send_actions_width(ui: &Ui) -> f32 {
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let label = ui.ctx().fonts_mut(|fonts| {
-        fonts
-            .layout_no_wrap(tr("历史").to_owned(), font, egui::Color32::WHITE)
-            .size()
-            .x
-    });
-    let history = (label
-        + ui.spacing().icon_width
-        + ui.spacing().icon_spacing
-        + 2.0 * ui.spacing().button_padding.x)
-        .max(68.0);
-    // 发送 + 发送文件 + 清除发送 + 历史, with three 6-point gaps.
-    96.0 + 76.0 + 76.0 + history + 18.0
-}
-
-/// The smallest send panel that still shows the whole toolbar and an editor.
-///
-/// The toolbar may occupy one or two rows depending on the labels and the
-/// panel width, each row grows with the interface font, and a file
-/// transmission adds a progress bar.  A constant minimum cannot cover those
-/// cases, so the separator could be dragged down until the toolbar was
-/// clipped.  Sum the parts the panel itself will lay out: its frame margins,
-/// two toolbar rows, the gap before the editor, the optional progress bar and
-/// the editor's own floor.  Reserving both rows is deliberate: the editor takes
-/// any extra room on a wide window, and the floor can then never undercut a
-/// toolbar that wrapped at run time.
-fn send_area_min_height(app: &XcomApp, ui: &Ui) -> f32 {
-    let frame = egui::Frame::side_top_panel(ui.style());
-    let margin = frame.total_margin().sum();
-    let row = send_toolbar_row_height(app, ui);
-    let gap = ui.spacing().item_spacing.y;
-    let rows = 2.0;
-    let progress = if app.file_send.is_some() {
-        16.0 + gap
-    } else {
-        0.0
-    };
-    // One point of slack: egui rounds the panel's edges independently, and a
-    // floor that lands exactly on the boundary can clip the editor's last row.
-    (margin.y + rows * row + (rows - 1.0) * gap + gap + progress + SEND_EDITOR_MIN + 1.0)
-        .clamp(SEND_AREA_MIN, SEND_AREA_MAX)
-}
-
-/// Lay out only the send editor and report the height it took, so a test can
-/// observe that dragging the separator really resizes it.
-fn send_area(app: &mut XcomApp, ui: &mut Ui) {
-    probe::set_send_panel_rect(ui.max_rect());
-    probe::begin_send_toolbar();
-
-    // Toolbar row height: tall enough that text/checkboxes are not clipped.
-    let btn_height = send_toolbar_row_height(app, ui);
-    let mut actions_on_second_row = false;
-
-    ui.horizontal(|ui| {
-        ui.set_height(btn_height);
-        ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
-
-        // ── Left: label + configuration controls ────────────────────────────
-        let section_label = ui.label(RichText::new(tr("发送区")).strong());
-        probe::push_send_toolbar_rect("section", section_label.rect);
-        ui.separator();
-
-        let mut hex = app.settings.send.hex;
-        let hex_control = ui.checkbox(&mut hex, tr("16进制发送"));
-        probe::push_send_toolbar_rect("hex", hex_control.rect);
-        if hex_control.changed() {
-            app.settings.send.hex = hex;
-            app.mark_settings_dirty();
-        }
-        let mut newline = app.settings.send.append_newline;
-        let newline_control = ui.checkbox(&mut newline, tr("发送新行"));
-        probe::push_send_toolbar_rect("newline", newline_control.rect);
-        if newline_control.changed() {
-            app.settings.send.append_newline = newline;
-            app.mark_settings_dirty();
-        }
-        if app.settings.send.append_newline {
-            let mut cr = app.settings.send.newline_cr;
-            let mut lf = app.settings.send.newline_lf;
-            let a = ui.checkbox(&mut cr, "CR").changed();
-            let b = ui.checkbox(&mut lf, "LF").changed();
-            if a || b {
-                app.settings.send.newline_cr = cr;
-                app.settings.send.newline_lf = lf;
-                app.mark_settings_dirty();
-            }
-        }
-
-        // The interval is configured before the box is ticked, so it comes
-        // first and locks once sending starts.
-        let can_edit_interval = app.link.is_open() && !app.settings.send.timed;
-        let interval_label = ui.label(tr("定时间隔"));
-        probe::push_send_toolbar_rect("interval_label", interval_label.rect);
-        let mut period = app.settings.send.period_ms;
-        let interval = ui.add_enabled(
-            can_edit_interval,
-            egui::DragValue::new(&mut period)
-                .speed(10.0)
-                .range(1..=3_600_000)
-                .suffix(" ms"),
-        );
-        probe::push_send_toolbar_rect("interval", interval.rect);
-        if interval.changed() {
-            app.settings.send.period_ms = period;
-            app.mark_settings_dirty();
-        }
-
-        let mut timed = app.settings.send.timed;
-        let can_timed = app.link.is_open();
-        let timed_control =
-            ui.add_enabled(can_timed, egui::Checkbox::new(&mut timed, tr("定时发送")));
-        probe::push_send_toolbar_rect("timed", timed_control.rect);
-        if timed_control.changed() {
-            // A run state: no need to persist it.
-            app.settings.send.timed = timed;
-        }
-
-        // Decide from the room actually left after the options were laid out,
-        // not from a width guess: when the group does not fit, the whole row
-        // moves below instead of the first buttons overlapping the options.
-        if ui.available_width() >= send_actions_width(ui) + SEND_RIGHT_PAD {
-            right_aligned_send_actions(app, ui, btn_height);
-        } else {
-            actions_on_second_row = true;
-        }
-    });
-
-    if actions_on_second_row {
-        ui.horizontal(|ui| {
-            ui.set_height(btn_height);
-            left_aligned_send_actions(app, ui, btn_height);
-        });
-    }
-
-    if let Some(send) = app.file_send.as_ref() {
-        let progress = send.progress();
-        let remaining = send.remaining();
-        let name = send.path.clone();
-        ui.add(
-            egui::ProgressBar::new(progress)
-                .text(crate::i18n::tr2("{} · 剩余 {} 字节", name, remaining))
-                .desired_height(16.0),
-        );
-    }
-
-    // Fill whatever height the user has dragged the send area to.  A fixed
-    // `desired_rows` left the editor four rows tall no matter how the panel
-    // was resized, which reads as "dragging does nothing".
-    let available = ui.available_size();
-    let editor_size = egui::vec2(available.x, available.y.max(SEND_EDITOR_MIN));
-    let editor = ui.add(
-        egui::TextEdit::multiline(&mut app.settings.send.buffer)
-            .font(crate::fonts::send_font_id(app.settings.fonts.send_size))
-            .desired_width(editor_size.x)
-            // One row plus `min_size`: the editor fills the room the panel
-            // gives it instead of insisting on four rows and overflowing the
-            // panel when the user drags the separator all the way down.
-            .desired_rows(1)
-            .min_size(editor_size)
-            .hint_text(if app.settings.send.hex {
-                tr("输入十六进制，如 01 02 0A（可省略空格）")
+fn edge_strip(
+    id: &'static str,
+    label: &'static str,
+    left: bool,
+    cx: &mut Context<XcomApp>,
+    split: Entity<gpui_kit::component::resizable::ResizableState>,
+) -> AnyElement {
+    div()
+        .id(id)
+        .test_support()
+        .w(px(14.0))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(cx.theme().sidebar)
+        .text_color(cx.theme().muted_foreground)
+        .cursor_pointer()
+        .when(left, |this| {
+            this.border_r_1().border_color(cx.theme().border)
+        })
+        .when(!left, |this| {
+            this.border_l_1().border_color(cx.theme().border)
+        })
+        .on_click(cx.listener(move |this, _, window, cx| {
+            if left {
+                this.settings.show_config_panel = true;
+                this.settings.left_panel_width = this.settings.left_panel_width.max(240.0);
             } else {
-                tr("输入要发送的内容")
-            }),
-    );
-    probe::set_editor_rect(editor.rect);
-}
-
-// ---------------------------------------------------------------------------
-// Right: multi-send and protocol pages
-// ---------------------------------------------------------------------------
-
-pub(crate) fn tool_panel(app: &mut XcomApp, ui: &mut Ui) {
-    // Whatever the configuration panel left behind: the tool panel is laid out
-    // second, so this is the space that is actually still free.
-    let available = ui.available_rect_before_wrap();
-    // The panel cannot go below the width the multi-send table's row needs of
-    // it -- a narrower one would grow a horizontal scroll bar, which is what
-    // hides the send buttons.  The width follows the interface font and the
-    // language, so it is measured, not a constant.
-    let min = RIGHT_PANEL_MIN.max(multi_table_min_width(ui, app.settings.fonts.ui_size));
-    let max = (available.width() - CENTER_MIN - SEPARATOR_SLACK).max(min);
-
-    if !app.settings.show_tool_panel {
-        app.pending_splitters.push(collapsed_splitter(
-            "tool_panel",
-            SplitterGrowth::Leftward,
-            SplitterTarget::ToolWidth,
-            available,
-            min,
-            max,
-        ));
-        return;
-    }
-
-    let width = app.settings.right_panel_width.clamp(min, max);
-    let panel = egui::Panel::right("tool_panel")
-        .resizable(false)
-        .exact_size(width)
-        .show(ui, |ui| {
-            probe::set_tool_panel_rect(ui.max_rect());
-            ui.horizontal(|ui| {
-                if ui
-                    .selectable_label(app.side_tab == SideTab::Multi, tr("多条发送"))
-                    .clicked()
-                {
-                    app.side_tab = SideTab::Multi;
+                this.settings.show_tool_panel = true;
+                this.settings.right_panel_width = this.settings.right_panel_width.max(260.0);
+            }
+            split.update(cx, |state, cx| {
+                let sizes: Vec<f32> = state.sizes().iter().map(|s| f32::from(*s)).collect();
+                if sizes.len() < 3 {
+                    return;
                 }
-                if ui
-                    .selectable_label(app.side_tab == SideTab::Protocol, tr("协议传输"))
-                    .clicked()
-                {
-                    app.side_tab = SideTab::Protocol;
+                let total: f32 = sizes.iter().sum();
+                if left {
+                    state.resize_panel(0, px(240.0), window, cx);
+                } else {
+                    let center = (total - sizes[0] - 260.0).max(1.0);
+                    state.resize_panel(1, px(center), window, cx);
                 }
             });
-            ui.separator();
-            match app.side_tab {
-                SideTab::Multi => multi_panel(app, ui),
-                SideTab::Protocol => protocol_panel(app, ui),
+            this.mark_settings_dirty();
+            cx.notify();
+        }))
+        .child(div().text_sm().child(SharedString::from(label)))
+        .into_any_element()
+}
+
+fn send_strip(
+    cx: &mut Context<XcomApp>,
+    split: Entity<gpui_kit::component::resizable::ResizableState>,
+) -> AnyElement {
+    div()
+        .id("send-strip")
+        .test_support()
+        .w_full()
+        .h(px(14.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().sidebar)
+        .text_color(cx.theme().muted_foreground)
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.settings.show_send_area = true;
+            this.settings.send_area_height = this.settings.send_area_height.max(120.0);
+            split.update(cx, |state, cx| {
+                let sizes: Vec<f32> = state.sizes().iter().map(|s| f32::from(*s)).collect();
+                if sizes.len() < 2 {
+                    return;
+                }
+                let total: f32 = sizes.iter().sum();
+                let log = (total - 120.0).max(1.0);
+                state.resize_panel(0, px(log), window, cx);
+            });
+            this.mark_settings_dirty();
+            cx.notify();
+        }))
+        .child(div().text_sm().child(SharedString::from(tr("发送区"))))
+        .into_any_element()
+}
+
+pub fn render(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
+    use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
+
+    let theme = cx.theme().clone();
+    let weak = cx.entity().downgrade();
+    let left_width = px(app.settings.left_panel_width);
+    let right_width = px(app.settings.right_panel_width);
+    let send_height = px(app.settings.send_area_height);
+    let show_config = app.settings.show_config_panel;
+    let show_tool = app.settings.show_tool_panel;
+    let show_send = app.settings.show_send_area;
+    let main_split = app.main_split.clone();
+    let center_split = app.center_split.clone();
+
+    let mut center_column = v_flex().flex_1().min_w(px(0.0));
+    let center = v_resizable("center-column")
+        .with_state(&center_split)
+        .child(resizable_panel().child(app.render_log(window, cx)))
+        .child(
+            resizable_panel()
+                .visible(show_send)
+                .size(send_height)
+                .size_range(px(1.0)..px(560.0))
+                .fixed()
+                .child(send_area(app, window, cx)),
+        )
+        .on_resize({
+            let weak = weak.clone();
+            move |state, _window, cx| {
+                let sizes = state.read(cx).sizes();
+                let Some(height) = sizes.get(1).copied() else {
+                    return;
+                };
+                let height = f32::from(height);
+                let _ = weak.update(cx, |this, cx| {
+                    if this.settings.show_send_area {
+                        if height < 100.0 {
+                            this.settings.show_send_area = false;
+                            this.mark_settings_dirty();
+                            cx.notify();
+                        } else if height > 120.0
+                            && (this.settings.send_area_height - height).abs() > 0.5
+                        {
+                            this.settings.send_area_height = height;
+                            this.mark_settings_dirty();
+                        }
+                    }
+                });
+            }
+        });
+    center_column = center_column.child(center);
+    if !show_send {
+        center_column = center_column.child(send_strip(cx, center_split.clone()));
+    }
+
+    let body_group = h_resizable("main-columns")
+        .with_state(&main_split)
+        .child(
+            resizable_panel()
+                .visible(show_config)
+                .size(left_width)
+                .size_range(px(1.0)..px(460.0))
+                .fixed()
+                .child(left_panel(app, cx)),
+        )
+        .child(resizable_panel().child(center_column))
+        .child(
+            resizable_panel()
+                .visible(show_tool)
+                .size(right_width)
+                .size_range(px(1.0)..px(760.0))
+                .fixed()
+                .child(tool_panel(app, window, cx)),
+        )
+        .on_resize({
+            let weak = weak.clone();
+            move |state, _window, cx| {
+                let sizes = state.read(cx).sizes().to_vec();
+                let _ = weak.update(cx, |this, cx| {
+                    if let Some(width) = sizes.first().copied() {
+                        let width = f32::from(width);
+                        if this.settings.show_config_panel {
+                            if width < 120.0 {
+                                this.settings.show_config_panel = false;
+                                this.mark_settings_dirty();
+                                cx.notify();
+                            } else if width > 140.0
+                                && (this.settings.left_panel_width - width).abs() > 0.5
+                            {
+                                this.settings.left_panel_width = width;
+                                this.mark_settings_dirty();
+                            }
+                        }
+                    }
+                    if let Some(width) = sizes.get(2).copied() {
+                        let width = f32::from(width);
+                        if this.settings.show_tool_panel {
+                            if width < 120.0 {
+                                this.settings.show_tool_panel = false;
+                                this.mark_settings_dirty();
+                                cx.notify();
+                            } else if width > 140.0
+                                && (this.settings.right_panel_width - width).abs() > 0.5
+                            {
+                                this.settings.right_panel_width = width;
+                                this.mark_settings_dirty();
+                            }
+                        }
+                    }
+                });
             }
         });
 
-    let outer = panel.response.rect;
-    app.pending_splitters.push(PendingSplitter {
-        id: "tool_panel",
-        growth: SplitterGrowth::Leftward,
-        boundary: outer.left(),
-        cross: outer.y_range(),
-        current_size: width,
-        min: RIGHT_PANEL_MIN,
-        max,
-        target: SplitterTarget::ToolWidth,
-        collapsed: false,
+    let mut body = h_flex().items_stretch().flex_1().min_h(px(0.0));
+    if !show_config {
+        body = body.child(edge_strip(
+            "config-strip",
+            "›",
+            true,
+            cx,
+            main_split.clone(),
+        ));
+    }
+    body = body.child(body_group);
+    if !show_tool {
+        body = body.child(edge_strip("tool-strip", "‹", false, cx, main_split.clone()));
+    }
+
+    v_flex()
+        .size_full()
+        .bg(theme.background)
+        .text_color(theme.foreground)
+        .child(title_bar(app, window, cx))
+        .child(menu_bar(app, cx))
+        .child(body)
+        .child(status_bar(app, cx))
+        .into_any_element()
+}
+pub(crate) fn run_action(
+    weak: WeakEntity<XcomApp>,
+    action: Action,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(entity) = weak.upgrade() else {
+        return;
+    };
+    entity.update(cx, |this, cx| {
+        this.apply_action(action, window, cx);
+        cx.notify();
     });
 }
 
-/// Lay out one row of the send status bar, exactly `height` tall.
-///
-/// The bar's height is what the table's height is derived from, so a row that
-/// grew with its contents — a wrapped label, a taller font — would push the bar
-/// out of the panel and under the window's status bar.  Content that does not
-/// fit is truncated rather than allowed to widen the row.
-fn status_row<R>(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), height),
-        egui::Sense::hover(),
-    );
-    let mut row = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    add(&mut row)
-}
-
-/// How wide the seven columns that do not grow would like to be, and how
-/// narrow the widget inside each may get.
-///
-/// The floors are not taste: egui refuses to lay a text field out narrower than
-/// 24 points, and a delay field with its unit needs room of its own.  A column
-/// also has to hold its header, which is text and is measured — see
-/// [`multi_column_widths`].
-const MULTI_FIXED_COLUMNS: [(f32, f32); 7] = [
-    (30.0, 16.0), // 启用
-    (24.0, 18.0), // #
-    (30.0, 16.0), // HEX
-    (32.0, 16.0), // 新行
-    (58.0, 42.0), // 延迟
-    (52.0, 38.0), // 发送
-    (24.0, 20.0), // 删除
-];
-
-/// The narrowest a text column may get, header text aside.
-const MULTI_TEXT_MIN: f32 = 32.0;
-
-/// The width a text column wants before the panel is judged roomy enough: a few
-/// characters of the entry, wide enough to see what is being typed.
-const MULTI_TEXT_COMFORT: f32 = 50.0;
-
-/// The gap between the multi-send table's columns.
-const MULTI_COLUMN_GAP: f32 = 5.0;
-
-/// Leave a little room at the right edge: egui lays out each column in a
-/// separate centered child and rounds its edges independently.  Without this,
-/// accumulated sub-pixel rounding can put the last column a fraction beyond the
-/// viewport and egui shows a horizontal scrollbar.
-const MULTI_COLUMN_END_GUTTER: f32 = 1.0;
-
-/// The columns of the multi-send table, in one place.
-///
-/// The order a row lays them out is 启用, `#`, 内容, 备注, HEX, 新行, 延迟, 发送,
-/// 删除, and the fixed columns are at `0, 1, 4, 5, 6, 7, 8` of it.
-const MULTI_FIXED_AT: [usize; 7] = [0, 1, 4, 5, 6, 7, 8];
-
-/// The header text above each column, in row order.
-const MULTI_HEADERS: [&str; 9] = ["启用", "#", "内容", "备注", "HEX", "新行", "延迟", "", ""];
-
-/// What each header measures at the interface font in use, in row order.
-///
-/// A header wider than its column widens the whole row instead of being
-/// clipped, and what a header measures depends on the interface font and on the
-/// language — “Content” is twice the width of 内容 — so it cannot be a
-/// constant.
-fn multi_header_widths(ctx: &egui::Context, ui_size: f32) -> [f32; 9] {
-    multi_header_widths_in(ctx, ui_size, i18n::lang())
-}
-
-/// What each header measures in one explicit language.
-fn multi_header_widths_in(ctx: &egui::Context, ui_size: f32, language: Lang) -> [f32; 9] {
-    let font = egui::FontId::proportional(ui_size);
-    MULTI_HEADERS.map(|header| {
-        ctx.fonts_mut(|fonts| {
-            fonts
-                .layout_no_wrap(
-                    i18n::tr_lang(language, header).to_owned(),
-                    font.clone(),
-                    egui::Color32::WHITE,
-                )
-                .size()
-                .x
-        })
+fn action_item(
+    label: impl Into<SharedString>,
+    action: Action,
+    weak: WeakEntity<XcomApp>,
+) -> PopupMenuItem {
+    PopupMenuItem::new(label).on_click(move |_, window, cx| {
+        run_action(weak.clone(), action, window, cx);
     })
 }
 
-/// The narrowest each column may be: the widget inside it and the header above.
-fn multi_column_floors(headers: [f32; 9]) -> [f32; 9] {
-    // A header sits flush in its cell, so it needs a point of its own on top of
-    // its text: the cell is as wide as the label and would otherwise round over.
-    let header_room = |index: usize| headers[index].ceil() + 1.0;
-    let mut floor = [0.0_f32; 9];
-    for (slot, index) in MULTI_FIXED_AT.into_iter().enumerate() {
-        floor[index] = MULTI_FIXED_COLUMNS[slot].1.max(header_room(index));
-    }
-    for index in [2, 3] {
-        floor[index] = MULTI_TEXT_MIN.max(header_room(index));
-    }
-    floor
+fn check_item(
+    label: impl Into<SharedString>,
+    checked: bool,
+    action: Action,
+    weak: WeakEntity<XcomApp>,
+) -> PopupMenuItem {
+    action_item(label, action, weak).checked(checked)
 }
 
-/// The narrowest the multi-send table's row can be made.
-fn multi_row_floor(headers: [f32; 9]) -> f32 {
-    let floor = multi_column_floors(headers);
-    let fixed: f32 = MULTI_FIXED_AT.iter().map(|index| floor[*index]).sum();
-    fixed + floor[2].max(floor[3]) * 2.0 + MULTI_COLUMN_GAP * 8.0 + MULTI_COLUMN_END_GUTTER
+fn choice_item(
+    label: impl Into<SharedString>,
+    choice: Choice,
+    checked: bool,
+    weak: WeakEntity<XcomApp>,
+) -> PopupMenuItem {
+    PopupMenuItem::new(label)
+        .checked(checked)
+        .on_click(move |_, _, cx| {
+            let choice = choice.clone();
+            let _ = weak.update(cx, |this, cx| this.apply_choice(choice, cx));
+        })
 }
 
-/// The narrowest the tool panel can be and still show the whole multi-send
-/// table.
-///
-/// The panel hands its contents its own width less its frame, and draws a
-/// separator line inside the edge it resizes from; both come off the table's
-/// row.  The panel's floor and the splitter's minimum are taken from here, so
-/// neither can leave the table narrower than it can be — at whatever interface
-/// font is in use.
-///
-/// The measurement is taken across *every* supported language, not just the
-/// active one, and the widest header wins.  Otherwise the panel resized when
-/// the user switched between Chinese and English: the English headers are
-/// wider, so the same stored width produced a visibly narrower panel in
-/// Chinese.
-pub(crate) fn multi_table_min_width(ui: &Ui, ui_size: f32) -> f32 {
-    let frame = egui::Frame::side_top_panel(ui.style());
-    // The frame's margins, the separator line, and a point to spare so the row
-    // does not end up rounding over the edge.
-    let insets = frame.total_margin().sum().x + 1.0 + 1.0;
-    let headers = Lang::ALL
-        .into_iter()
-        .map(|language| multi_header_widths_in(ui.ctx(), ui_size, language))
-        .fold([0.0_f32; 9], |widest, widths| {
-            std::array::from_fn(|index| widest[index].max(widths[index]))
-        });
-    multi_row_floor(headers) + insets
+/// A dropdown button whose items apply one [`Choice`].
+pub(crate) fn choice_button(
+    id: impl Into<gpui_kit::ElementId>,
+    label: impl Into<SharedString>,
+    items: Vec<(String, Choice, bool)>,
+    weak: WeakEntity<XcomApp>,
+) -> impl IntoElement {
+    Button::new(id)
+        .label(label)
+        .dropdown_menu(move |menu, _window, _cx| {
+            let mut menu = menu;
+            for (text, choice, checked) in items.clone() {
+                menu = menu.item(choice_item(text, choice, checked, weak.clone()));
+            }
+            menu
+        })
 }
 
-/// Widths for the multi-send table's columns, in the order a row lays them out:
-/// 启用, `#`, 内容, 备注, HEX, 新行, 延迟, 发送.
-///
-/// The nine columns and the eight gaps between them must add up to the table's
-/// width and no more: one point over and the table grows a horizontal scroll
-/// bar, which puts the send buttons and the delay fields out of reach.  So the
-/// two text columns take what the seven fixed ones leave, 62/38 and never below
-/// [`MULTI_TEXT_MIN`]; when that is not enough for two usable text fields the
-/// fixed columns give up room in proportion to what each can spare.
-///
-/// `headers` is the measured width of each column's header.  A header wider
-/// than its column widens the whole row instead of being clipped, and what a
-/// header measures depends on the interface font and on the language — “Content”
-/// is twice the width of 内容 — so it cannot be a constant.
-///
-/// The flag is `true` when even the floors are too wide, so the panel is
-/// narrower than the table can ever be and a horizontal scroll bar is the
-/// honest answer.
-fn multi_column_widths(viewport: f32, gap: f32, headers: [f32; 9]) -> ([f32; 9], bool) {
-    let gaps = gap * 8.0;
-    let floor = multi_column_floors(headers);
-    let mut ideal = floor;
-    for (slot, index) in MULTI_FIXED_AT.into_iter().enumerate() {
-        ideal[index] = MULTI_FIXED_COLUMNS[slot].0.max(floor[index]);
-    }
+fn menu_bar(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
+    let weak = cx.entity().downgrade();
+    let is_open = app.link.is_open();
+    let has_selection = app.log_view.has_selection();
+    let display = app.settings.display;
+    let auto_scroll = app.settings.auto_scroll;
+    let echo_sent = app.settings.echo_sent;
+    let paused = app.show_paused;
+    let show_config = app.settings.show_config_panel;
+    let show_tool = app.settings.show_tool_panel;
+    let show_send = app.settings.show_send_area;
+    let encoding = app.settings.encoding;
+    let tx_encoding = app.settings.tx_encoding;
+    let theme = app.settings.theme;
+    let lang = crate::i18n::lang();
+    let log_active = app.log_file.is_active();
 
-    let fixed_ideal: f32 = MULTI_FIXED_AT.iter().map(|i| ideal[*i]).sum();
-    let fixed_floor: f32 = MULTI_FIXED_AT.iter().map(|i| floor[*i]).sum();
-    let text_min = floor[2].max(floor[3]);
-    let text_comfort = MULTI_TEXT_COMFORT.max(text_min);
+    let file_weak = weak.clone();
+    let edit_weak = weak.clone();
+    let view_weak = weak.clone();
+    let tools_weak = weak.clone();
+    let help_weak = weak.clone();
 
-    let mut widths = ideal;
-    let mut free = viewport - gaps - fixed_ideal;
-    if free < 2.0 * text_comfort {
-        // Squeeze the fixed columns towards their floors, each giving up the
-        // same fraction of the room it has to give.  A panel too narrow for two
-        // comfortable text fields is better off with narrower checkboxes and a
-        // narrower delay field than with text fields nothing can be read in.
-        let slack = (fixed_ideal - fixed_floor).max(1.0);
-        let need = (2.0 * text_comfort - free).min(fixed_ideal - fixed_floor);
-        for index in MULTI_FIXED_AT {
-            widths[index] = ideal[index] - (ideal[index] - floor[index]) * need / slack;
-        }
-        free = viewport - gaps - MULTI_FIXED_AT.iter().map(|i| widths[*i]).sum::<f32>();
-    }
-
-    // Below two usable text columns there is nothing left to squeeze, and the
-    // table is wider than its panel by construction.
-    let overflows = free < 2.0 * text_min - 0.5;
-    let text_floor = if free >= 2.0 * text_comfort {
-        text_comfort
-    } else {
-        text_min
-    };
-    let content = if overflows {
-        text_min
-    } else {
-        // `free` is at least two text columns wide here, so both fit; the
-        // ordering keeps the halves honest when it is only just wide enough.
-        (free * 0.62).min(free - text_floor).max(text_floor)
-    };
-    widths[2] = content;
-    widths[3] = if overflows { text_min } else { free - content };
-
-    (widths, overflows)
-}
-
-/// The strip inside a delay cell that carries the countdown.
-///
-/// It sits on the cell's bottom edge rather than behind the number: the
-/// `DragValue` stays fully legible and editable while the bar drains.
-fn delay_countdown_bar(cell: egui::Rect) -> egui::Rect {
-    egui::Rect::from_min_max(
-        egui::pos2(cell.left() + 1.0, cell.bottom() - 4.0),
-        egui::pos2(cell.right() - 1.0, cell.bottom() - 1.0),
-    )
-}
-
-/// Paint the remaining part of a delay as a colour bar.
-///
-/// The full strip is the faint track; the solid part is what is still to wait,
-/// so the bar shrinks towards zero as the next entry becomes due.
-fn paint_delay_countdown(
-    ui: &Ui,
-    cell: egui::Rect,
-    countdown: MultiCountdown,
-    colour: egui::Color32,
-) {
-    let bar = delay_countdown_bar(cell);
-    let track = egui::Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 48);
-    ui.painter()
-        .rect_filled(bar, egui::CornerRadius::ZERO, track);
-    let remaining = countdown.remaining.clamp(0.0, 1.0);
-    let filled = egui::Rect::from_min_max(
-        bar.min,
-        egui::pos2(bar.left() + bar.width() * remaining, bar.bottom()),
-    );
-    ui.painter()
-        .rect_filled(filled, egui::CornerRadius::ZERO, colour);
-}
-
-fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
-    probe::begin_multi_panel();
-    let running = app.multi_run_active();
-    let scroll_to_last_id = egui::Id::new("xcom_multi_scroll_to_last");
-
-    ui.horizontal_wrapped(|ui| {
-        let add = ui
-            .add_enabled(!running, egui::Button::new(tr("添加条目")))
-            .on_hover_text(tr("在列表末尾添加一条空条目"));
-        probe::set_multi_add_rect(add.rect);
-        if add.clicked() {
-            // The multi-send panel keeps its own HEX/newline settings: a new
-            // row starts bare and uses the panel's CR/LF controls, not the
-            // single-send area's.
-            app.settings.multi.add_entry();
-            app.mark_settings_dirty();
-            ui.ctx()
-                .data_mut(|data| data.insert_temp(scroll_to_last_id, true));
-        }
-        let import = ui.add_enabled(!running, egui::Button::new(tr("导入条目")));
-        if import.clicked()
-            && let Some(path) = pick_open_file(tr("导入发送条目"))
-        {
-            match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    let multi = &mut app.settings.multi;
-                    match multi.import_json(&text) {
-                        Ok(count) => {
-                            // The multi panel owns its CR/LF; importing rows
-                            // must not pull in the send area's settings.
-                            app.mark_settings_dirty();
-                            app.ok(crate::i18n::tr1("已导入 {} 个条目", count));
-                        }
-                        Err(err) => app.error(err),
-                    }
-                }
-                Err(err) => app.error(crate::i18n::tr1("读取文件失败: {}", err)),
-            }
-        }
-        if ui.button(tr("导出条目")).clicked()
-            && let Some(path) = pick_save_file(tr("导出发送条目"), "xcom-entries.json", "json")
-        {
-            let multi = &app.settings.multi;
-            match multi.export_json() {
-                Ok(text) => match std::fs::write(&path, text) {
-                    Ok(()) => app.ok(crate::i18n::tr1("已导出到 {}", path.display())),
-                    Err(err) => app.error(crate::i18n::tr1("写入失败: {}", err)),
-                },
-                Err(err) => app.error(err),
-            }
-        }
-        let can_send = app.link.is_open() && !running;
-        if ui
-            .add_enabled(can_send, egui::Button::new(tr("发送已勾选")))
-            .on_hover_text(tr("按顺序发送整个列表里所有已勾选且非空的条目"))
-            .clicked()
-        {
-            app.start_multi_run(false, std::time::Instant::now());
-        }
-
-        let mut loop_enabled = app.settings.multi.loop_enabled;
-        let can_loop = app.link.is_open();
-        if ui
-            .add_enabled(
-                can_loop,
-                egui::Checkbox::new(&mut loop_enabled, tr("循环发送")),
-            )
-            .changed()
-        {
-            app.settings.multi.loop_enabled = loop_enabled;
-            if loop_enabled {
-                app.start_multi_run(true, std::time::Instant::now());
-            } else {
-                app.stop_multi_run(Level::Info, tr("已停止循环发送"));
-            }
-            app.mark_settings_dirty();
-        }
-    });
-
-    ui.horizontal_wrapped(|ui| {
-        ui.label(tr("循环次数"));
-        let mut forever = app.settings.multi.loop_count.is_none();
-        if ui.checkbox(&mut forever, tr("无限循环")).changed() {
-            // The new limit applies from the current progress, not from zero:
-            // the loop is already under way and a change is a hot update.  An
-            // idle panel has no progress to keep, so its stale count clears.
-            app.settings.multi.loop_count = if forever { None } else { Some(10) };
-            if !app.multi_run_active() {
-                app.multi_cycles = 0;
-            }
-            app.mark_settings_dirty();
-        }
-        match app.settings.multi.loop_count {
-            None => {
-                ui.label(
-                    RichText::new(tr("不限次数"))
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
-                );
-            }
-            Some(limit) => {
-                let mut value = limit;
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut value)
-                            .speed(1.0)
-                            .range(1..=1_000_000),
-                    )
-                    .changed()
-                {
-                    app.settings.multi.loop_count = Some(value);
-                    if !app.multi_run_active() {
-                        app.multi_cycles = 0;
-                    }
-                    app.mark_settings_dirty();
-                }
-            }
-        }
-    });
-
-    ui.horizontal_wrapped(|ui| {
-        ui.label(tr("多条换行"))
-            .on_hover_text(tr("仅用于多条发送，不影响发送区"));
-        let mut cr = app.settings.multi.newline_cr;
-        let mut lf = app.settings.multi.newline_lf;
-        let a = ui
-            .checkbox(&mut cr, tr("新行 CR"))
-            .on_hover_text(tr("仅用于多条发送，不影响发送区"))
-            .changed();
-        let b = ui
-            .checkbox(&mut lf, tr("新行 LF"))
-            .on_hover_text(tr("仅用于多条发送，不影响发送区"))
-            .changed();
-        if a || b {
-            app.settings.multi.newline_cr = cr;
-            app.settings.multi.newline_lf = lf;
-            app.mark_settings_dirty();
-        }
-        let has_entries = !app.settings.multi.entries.is_empty();
-        let mut all_newline =
-            has_entries && app.settings.multi.entries.iter().all(|entry| entry.newline);
-        let all_newline_control = ui
-            .add_enabled(
-                has_entries,
-                egui::Checkbox::new(&mut all_newline, tr("全部加新行")),
-            )
-            .on_hover_text(tr(
-                "把每一行的「新行」设置改成同一状态；换行字节由多条发送自己的 CR/LF 决定",
-            ));
-        probe::set_multi_newline_all_rect(all_newline_control.rect);
-        if all_newline_control.changed() {
-            for entry in &mut app.settings.multi.entries {
-                entry.newline = all_newline;
-            }
-            app.mark_settings_dirty();
-        }
-    });
-
-    ui.separator();
-
-    // ---- entries ----------------------------------------------------------
-    // Re-read the run state: the loop checkbox above may just have started one,
-    // and structural edits must be off from that frame onward.
-    let running = app.multi_run_active();
-    // A row's 新行 flag only produces bytes when the multi panel's own CR/LF
-    // has at least one half enabled.  The tooltip should tell the truth.
-    let multi_newline = app.settings.multi.newline_cr || app.settings.multi.newline_lf;
-    let active_colours = theme::active_entry_colors(ui.ctx(), app.settings.theme);
-    let mut send_request: Option<usize> = None;
-    let mut dirty = false;
-
-    // egui's `Grid` reuses the previous frame's column widths as a *floor*
-    // (`child_size.max(prev_width)`), so a table built with it can grow but
-    // never shrink -- dragging the splitter back left the columns too wide and
-    // pushed the send button off the edge.  Laying the rows out by hand with
-    // explicit widths is what makes them track the panel in both directions.
-    /// The gap under a table row, and between the send status bar's two rows.
-    const ROW_GAP: f32 = 4.0;
-
-    let row_height = 20.0_f32.max(
-        ui.ctx().fonts_mut(|fonts| {
-            fonts.row_height(&egui::FontId::proportional(app.settings.fonts.ui_size))
-        }) + 4.0,
-    );
-
-    // The whole row -- nine columns and the eight gaps between them -- has to
-    // fit the table.  A row one point wider grows a horizontal scroll bar,
-    // which takes the send buttons out of reach and eats into the bottom of the
-    // table, hiding the very entry the bar was scrolled to show.
-    let header_widths = multi_header_widths(ui.ctx(), app.settings.fonts.ui_size);
-    let table_width = (ui.available_width() - MULTI_COLUMN_END_GUTTER).max(0.0);
-    let (columns, columns_overflow) =
-        multi_column_widths(table_width, MULTI_COLUMN_GAP, header_widths);
-    let [
-        enable_w,
-        index_w,
-        text_width,
-        note_width,
-        hex_w,
-        newline_w,
-        delay_w,
-        send_w,
-        delete_w,
-    ] = columns;
-
-    // The send status bar is pinned under the table: a rule and one line
-    // carrying the loop state, the loop count and the entry in flight.  Its
-    // height is fixed, so the table's height does not move when a run starts or
-    // stops; text that does not fit is truncated rather than allowed to wrap
-    // into a second line.
-    let bar_height = row_height + ROW_GAP;
-    let status_height = bar_height + ui.spacing().item_spacing.y;
-
-    let mut table_height = (ui.available_height() - status_height).max(row_height);
-    if columns_overflow {
-        // Reserve the horizontal scrollbar's thickness when it is non-floating.
-        table_height = (table_height - ui.spacing().scroll.allocated_width()).max(row_height);
-    }
-
-    let entries_len = app.settings.multi.entries.len();
-    let active_index = app.multi_run_sent().map(|sent| sent.index);
-    // Taken once for the whole table so every row reads the same instant.
-    let countdown = app.multi_delay_countdown(std::time::Instant::now());
-    let scroll_to_last = ui
-        .ctx()
-        .data(|data| data.get_temp::<bool>(scroll_to_last_id).unwrap_or(false));
-    let mut remove: Option<usize> = None;
-    let mut reorder: Option<(usize, usize)> = None;
-
-    let table = egui::ScrollArea::both()
-        .auto_shrink([false, false])
-        .max_height(table_height)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(MULTI_COLUMN_GAP, ROW_GAP);
-            probe::begin_multi_headers();
-
-            ui.horizontal(|ui| {
-                for (width, header) in columns.into_iter().zip(MULTI_HEADERS) {
-                    let header = ui.add_sized(
-                        [width, row_height],
-                        egui::Label::new(RichText::new(tr(header)).strong()),
-                    );
-                    probe::push_multi_header_rect(header.rect);
-                }
-            });
-
-            if entries_len == 0 {
-                ui.weak(tr("暂无条目，点击上方“添加条目”"));
-            }
-
-            for index in 0..entries_len {
-                let Some(entry) = app.settings.multi.entry_mut(index) else {
-                    continue;
-                };
-                let active = active_index == Some(index);
-                let stripe = index % 2 == 1;
-                let mut row_rect = egui::Rect::NOTHING;
-                let row = ui.horizontal(|ui| {
-                    let row = egui::Rect::from_min_size(
-                        ui.cursor().min,
-                        egui::vec2(ui.available_width(), row_height),
-                    );
-                    row_rect = row;
-                    if stripe {
-                        ui.painter().rect_filled(
-                            row,
-                            egui::CornerRadius::ZERO,
-                            ui.visuals().faint_bg_color,
-                        );
-                    }
-                    if active {
-                        // Painted over the zebra stripe, so the marker reads the
-                        // same on both: a wash for the row, and a solid bar on
-                        // its leading edge.
-                        ui.painter().rect_filled(
-                            row,
-                            egui::CornerRadius::ZERO,
-                            active_colours.wash,
-                        );
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_max(
-                                row.min,
-                                egui::pos2(row.min.x + 3.0, row.max.y),
-                            ),
-                            egui::CornerRadius::ZERO,
-                            active_colours.bar,
-                        );
-                    }
-                    let mut row_changed = false;
-                    row_changed |= ui
-                        .add_sized(
-                            [enable_w, row_height],
-                            egui::Checkbox::new(&mut entry.enabled, ""),
-                        )
-                        .changed();
-
-                    // The number is also the drag handle: dragging it moves
-                    // the entry.  Structural edits are off while a run is in
-                    // flight, so the queue's indices cannot shift under it.
-                    let number = format!("{index}");
-                    let handle = if running {
-                        ui.add_sized([index_w, row_height], egui::Label::new(number))
-                    } else {
-                        ui.dnd_drag_source(egui::Id::new(("xcom_multi_drag", index)), index, |ui| {
-                            ui.add_sized([index_w, row_height], egui::Label::new(number))
-                        })
-                        .response
-                        .on_hover_text(tr("拖动调整顺序"))
-                    };
-                    probe::push_multi_handle_rect(index, handle.rect);
-
-                    row_changed |= ui
-                        .add_sized(
-                            [text_width, row_height],
-                            egui::TextEdit::singleline(&mut entry.text).hint_text(if entry.hex {
-                                "01 02 0A"
-                            } else {
-                                tr("指令")
-                            }),
-                        )
-                        .changed();
-                    row_changed |= ui
-                        .add_sized(
-                            [note_width, row_height],
-                            egui::TextEdit::singleline(&mut entry.note).hint_text(tr("备注")),
-                        )
-                        .changed();
-                    row_changed |= ui
-                        .add_sized([hex_w, row_height], egui::Checkbox::new(&mut entry.hex, ""))
-                        .changed();
-                    row_changed |= ui
-                        .add_sized(
-                            [newline_w, row_height],
-                            egui::Checkbox::new(&mut entry.newline, ""),
-                        )
-                        .changed();
-                    let mut delay = entry.delay_ms;
-                    let delay_control = ui.add_sized(
-                        [delay_w, row_height],
-                        egui::DragValue::new(&mut delay)
-                            .speed(5.0)
-                            .range(0..=3_600_000)
-                            .suffix(" ms"),
-                    );
-                    if delay_control.changed() {
-                        entry.delay_ms = delay;
-                        dirty = true;
-                    }
-                    if let Some(countdown) = countdown
-                        && countdown.index == index
-                    {
-                        paint_delay_countdown(
-                            ui,
-                            delay_control.rect,
-                            countdown,
-                            active_colours.bar,
-                        );
-                        probe::set_multi_delay_bar_rect(delay_countdown_bar(delay_control.rect));
-                        delay_control.on_hover_text(crate::i18n::tr1(
-                            "延迟倒计时：剩余 {} ms",
-                            countdown.remaining_ms,
+    h_flex()
+        .w_full()
+        .h(px(32.0))
+        .px_2()
+        .gap_1()
+        .items_center()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().title_bar)
+        .child(
+            Button::new("menu-file")
+                .ghost()
+                .label(tr("文件"))
+                .dropdown_menu(move |menu, _window, _cx| {
+                    let weak = file_weak.clone();
+                    menu.item(action_item(
+                        if is_open {
+                            tr("关闭串口")
+                        } else {
+                            tr("打开串口")
+                        },
+                        Action::TogglePort,
+                        weak.clone(),
+                    ))
+                    .item(action_item(
+                        tr("刷新串口列表"),
+                        Action::RefreshPorts,
+                        weak.clone(),
+                    ))
+                    .separator()
+                    .item(action_item(
+                        tr("日志文件…"),
+                        Action::ShowLogFile,
+                        weak.clone(),
+                    ))
+                    .item(action_item(
+                        tr("保存接收数据…"),
+                        Action::SaveReceived,
+                        weak.clone(),
+                    ))
+                    .item(action_item(
+                        tr("保存原始数据…"),
+                        Action::SaveRaw,
+                        weak.clone(),
+                    ))
+                    .separator()
+                    .item(action_item(tr("退出"), Action::Quit, weak.clone()))
+                }),
+        )
+        .child(
+            Button::new("menu-edit")
+                .ghost()
+                .label(tr("编辑"))
+                .dropdown_menu(move |menu, _window, _cx| {
+                    let weak = edit_weak.clone();
+                    menu.item({
+                        let item = action_item(tr("复制选中"), Action::CopySelection, weak.clone());
+                        item.disabled(!has_selection)
+                    })
+                    .item(action_item(tr("全选"), Action::SelectAll, weak.clone()))
+                    .separator()
+                    .item(action_item(
+                        tr("清除接收"),
+                        Action::ClearReceive,
+                        weak.clone(),
+                    ))
+                    .item(action_item(tr("清除发送"), Action::ClearSend, weak.clone()))
+                    .separator()
+                    .item(action_item(
+                        tr("恢复默认设置…"),
+                        Action::ResetSettings,
+                        weak.clone(),
+                    ))
+                    .item(action_item(
+                        tr("快捷键…"),
+                        Action::ShowShortcuts,
+                        weak.clone(),
+                    ))
+                }),
+        )
+        .child(
+            Button::new("menu-view")
+                .ghost()
+                .label(tr("视图"))
+                .dropdown_menu(move |menu, window, cx| {
+                    let panels_weak = view_weak.clone();
+                    let display_weak = view_weak.clone();
+                    let encoding_weak = view_weak.clone();
+                    let theme_weak = view_weak.clone();
+                    let language_weak = view_weak.clone();
+                    menu.submenu(tr("面板"), window, cx, move |menu, _, _| {
+                        menu.item(check_item(
+                            tr("配置面板"),
+                            show_config,
+                            Action::ToggleConfigPanel,
+                            panels_weak.clone(),
+                        ))
+                        .item(check_item(
+                            tr("工具面板"),
+                            show_tool,
+                            Action::ToggleToolPanel,
+                            panels_weak.clone(),
+                        ))
+                        .item(check_item(
+                            tr("发送区"),
+                            show_send,
+                            Action::ToggleSendArea,
+                            panels_weak.clone(),
+                        ))
+                    })
+                    .submenu(tr("显示"), window, cx, move |menu, _, _| {
+                        menu.item(check_item(
+                            tr("16进制显示"),
+                            display.mode == crate::logstore::ViewMode::Hex,
+                            Action::ToggleHex,
+                            display_weak.clone(),
+                        ))
+                        .item(check_item(
+                            tr("暂停显示"),
+                            paused,
+                            Action::TogglePause,
+                            display_weak.clone(),
+                        ))
+                        .item(check_item(
+                            tr("回显发送"),
+                            echo_sent,
+                            Action::ToggleEcho,
+                            display_weak.clone(),
+                        ))
+                        .separator()
+                        .item(check_item(
+                            tr("方向标记"),
+                            display.markers,
+                            Action::ToggleMarkers,
+                            display_weak.clone(),
+                        ))
+                        .item(check_item(
+                            tr("时间戳"),
+                            display.timestamp,
+                            Action::ToggleTimestamp,
+                            display_weak.clone(),
+                        ))
+                        .item(check_item(
+                            tr("自动换行"),
+                            display.wrap,
+                            Action::ToggleWrap,
+                            display_weak.clone(),
+                        ))
+                        .item(check_item(
+                            tr("自动滚动到最新"),
+                            auto_scroll,
+                            Action::ToggleAutoScroll,
+                            display_weak.clone(),
+                        ))
+                        .separator()
+                        .item(action_item(
+                            tr("字体设置…"),
+                            Action::ShowFontSettings,
+                            display_weak.clone(),
+                        ))
+                        .item(action_item(
+                            tr("接收区配色…"),
+                            Action::ShowLogColors,
+                            display_weak.clone(),
+                        ))
+                        .item(action_item(
+                            tr("关键字高亮…"),
+                            Action::ShowHighlight,
+                            display_weak.clone(),
+                        ))
+                    })
+                    .submenu(tr("编码"), window, cx, move |menu, window, cx| {
+                        let mut menu = menu.item(choice_item(
+                            tr("自动识别"),
+                            Choice::Encoding(None),
+                            encoding.is_none(),
+                            encoding_weak.clone(),
                         ));
-                    }
-                    let send_hint = if entry.newline && multi_newline {
-                        tr("发送此条目（含新行）")
+                        for id in crate::encoding::EncodingId::ALL {
+                            menu = menu.item(choice_item(
+                                id.label(),
+                                Choice::Encoding(Some(id)),
+                                encoding == Some(id),
+                                encoding_weak.clone(),
+                            ));
+                        }
+                        let tx_weak = encoding_weak.clone();
+                        menu.separator().submenu(
+                            tr("发送编码"),
+                            window,
+                            cx,
+                            move |menu, _, _| {
+                                let mut menu = menu.item(choice_item(
+                                    tr("跟随接收编码"),
+                                    Choice::TxEncoding(None),
+                                    tx_encoding.is_none(),
+                                    tx_weak.clone(),
+                                ));
+                                for id in crate::encoding::EncodingId::ALL {
+                                    menu = menu.item(choice_item(
+                                        id.label(),
+                                        Choice::TxEncoding(Some(id)),
+                                        tx_encoding == Some(id),
+                                        tx_weak.clone(),
+                                    ));
+                                }
+                                menu
+                            },
+                        )
+                    })
+                    .submenu(tr("主题"), window, cx, move |menu, _, _| {
+                        let mut menu = menu;
+                        for mode in crate::theme::ThemeMode::ALL {
+                            menu = menu.item(choice_item(
+                                mode.label(),
+                                Choice::Theme(mode),
+                                theme == mode,
+                                theme_weak.clone(),
+                            ));
+                        }
+                        menu
+                    })
+                    .submenu(tr("语言"), window, cx, move |menu, _, _| {
+                        let mut menu = menu;
+                        for language in crate::i18n::Lang::ALL {
+                            menu = menu.item(choice_item(
+                                language.label(),
+                                Choice::Language(language),
+                                lang == language,
+                                language_weak.clone(),
+                            ));
+                        }
+                        menu
+                    })
+                }),
+        )
+        .child(
+            Button::new("menu-tools")
+                .ghost()
+                .label(tr("工具"))
+                .dropdown_menu(move |menu, _window, _cx| {
+                    let weak = tools_weak.clone();
+                    menu.item(action_item(
+                        tr("自定义波特率…"),
+                        Action::ShowCustomBaud,
+                        weak.clone(),
+                    ))
+                    .item(action_item(tr("发送文件…"), Action::SendFile, weak.clone()))
+                    .separator()
+                    .item(if log_active {
+                        action_item(tr("停止日志记录"), Action::StopLogFile, weak.clone())
                     } else {
-                        tr("发送此条目（不含新行）")
-                    };
-                    let send = ui
-                        .add_sized([send_w, row_height], egui::Button::new(tr("发送")))
-                        .on_hover_text(send_hint);
-                    probe::push_multi_send_rect(index, send.rect);
-                    if send.clicked() {
-                        send_request = Some(index);
-                    }
-                    let delete = ui
-                        .add_enabled_ui(!running, |ui| {
-                            ui.add_sized([delete_w, row_height], egui::Button::new("×"))
-                        })
-                        .inner
-                        .on_hover_text(tr("删除条目"));
-                    probe::push_multi_delete_rect(index, delete.rect);
-                    if delete.clicked() {
-                        remove = Some(index);
-                    }
-                    if row_changed {
-                        dirty = true;
-                    }
-                });
+                        action_item(tr("开始日志记录"), Action::StartLogFile, weak.clone())
+                    })
+                    .item(action_item(
+                        tr("日志文件设置…"),
+                        Action::ShowLogFile,
+                        weak.clone(),
+                    ))
+                }),
+        )
+        .child(
+            Button::new("menu-help")
+                .ghost()
+                .label(tr("帮助"))
+                .dropdown_menu(move |menu, _window, _cx| {
+                    let weak = help_weak.clone();
+                    menu.item(action_item(
+                        tr("快捷键…"),
+                        Action::ShowShortcuts,
+                        weak.clone(),
+                    ))
+                    .item(action_item(
+                        tr("关于 XCOM…"),
+                        Action::ShowAbout,
+                        weak.clone(),
+                    ))
+                }),
+        )
+        .into_any_element()
+}
 
-                // Reorder by dragging the number: the pointer's half of the
-                // hovered row decides whether the entry lands above or below
-                // it.
-                if let Some(payload) = row.response.dnd_hover_payload::<usize>() {
-                    let after = ui.input(|input| {
-                        input
-                            .pointer
-                            .interact_pos()
-                            .is_some_and(|pos| pos.y > row.response.rect.center().y)
-                    });
-                    let y = if after {
-                        row.response.rect.bottom()
-                    } else {
-                        row.response.rect.top()
-                    };
-                    ui.painter().hline(
-                        row.response.rect.x_range(),
-                        y,
-                        egui::Stroke::new(2.0, active_colours.bar),
-                    );
-                    let _ = payload;
-                }
-                if let Some(payload) = row.response.dnd_release_payload::<usize>() {
-                    let after = ui.input(|input| {
-                        input
-                            .pointer
-                            .interact_pos()
-                            .is_some_and(|pos| pos.y > row.response.rect.center().y)
-                    });
-                    reorder = Some((*payload, index + usize::from(after)));
-                }
-
-                probe::push_multi_row_rect(index, row_rect);
-                if scroll_to_last && index + 1 == entries_len {
-                    row.response.scroll_to_me(Some(egui::Align::Max));
-                }
-                if active {
-                    probe::set_multi_active_row_rect(row_rect);
-                }
-                probe::set_multi_last_row_rect(row_rect);
+fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
+    let is_open = app.link.is_open();
+    let weak = cx.entity().downgrade();
+    let current_port = app.settings.serial.port.clone();
+    let ports = app.ports.ports().to_vec();
+    let mut port_items: Vec<(String, Choice, bool)> = ports
+        .iter()
+        .map(|port| {
+            (
+                port.display(),
+                Choice::Port(port.name.clone()),
+                port.name == current_port,
+            )
+        })
+        .collect();
+    if !ports.iter().any(|port| port.name == current_port) && !current_port.is_empty() {
+        port_items.push((
+            current_port.clone(),
+            Choice::Port(current_port.clone()),
+            true,
+        ));
+    }
+    if port_items.is_empty() {
+        port_items.push((
+            tr("（无可用串口）").to_owned(),
+            Choice::Port(String::new()),
+            true,
+        ));
+    }
+    let baud_items: Vec<(String, Choice, bool)> = app
+        .settings
+        .serial
+        .baud_choices()
+        .into_iter()
+        .map(|rate| {
+            let label = if crate::serial::config::STANDARD_BAUDS.contains(&rate) {
+                rate.to_string()
+            } else {
+                format!("{rate}{}", tr("（自定义）"))
+            };
+            (label, Choice::Baud(rate), rate == app.settings.serial.baud)
+        })
+        .collect();
+    let data_bits: Vec<(String, Choice, bool)> = crate::serial::DataBitsSel::ALL
+        .into_iter()
+        .map(|value| {
+            (
+                value.label().to_owned(),
+                Choice::DataBits(value),
+                value == app.settings.serial.data_bits,
+            )
+        })
+        .collect();
+    let parity: Vec<(String, Choice, bool)> = crate::serial::ParitySel::ALL
+        .into_iter()
+        .map(|value| {
+            (
+                tr(value.label()).to_owned(),
+                Choice::Parity(value),
+                value == app.settings.serial.parity,
+            )
+        })
+        .collect();
+    let stop_bits: Vec<(String, Choice, bool)> = crate::serial::StopBitsSel::ALL
+        .into_iter()
+        .map(|value| {
+            (
+                value.label().to_owned(),
+                Choice::StopBits(value),
+                value == app.settings.serial.stop_bits,
+            )
+        })
+        .collect();
+    let flow: Vec<(String, Choice, bool)> = crate::serial::FlowSel::ALL
+        .into_iter()
+        .map(|value| {
+            (
+                tr(value.label()).to_owned(),
+                Choice::Flow(value),
+                value == app.settings.serial.flow,
+            )
+        })
+        .collect();
+    let port_label = ports
+        .iter()
+        .find(|port| port.name == current_port)
+        .map(|port| port.display())
+        .unwrap_or_else(|| {
+            if current_port.is_empty() {
+                tr("（无可用串口）").to_owned()
+            } else {
+                current_port.clone()
             }
         });
+    let dtr = app.settings.serial.dtr;
+    let rts = app.settings.serial.rts;
+    let summary = app.settings.serial.summary();
 
-    let scrollbars = [
-        ui.ctx().read_response(table.id.with(0)).is_some(),
-        ui.ctx().read_response(table.id.with(1)).is_some(),
-    ];
-    probe::set_multi_table(table.inner_rect, table.content_size, scrollbars);
-    ui.ctx()
-        .data_mut(|data| data.insert_temp(scroll_to_last_id, false));
-
-    if let Some((from, insertion)) = reorder {
-        app.settings.multi.move_entry(from, insertion);
-        dirty = true;
-    }
-    if let Some(index) = remove {
-        app.settings.multi.remove_entry(index);
-        dirty = true;
-    }
-
-    // ---- send status bar --------------------------------------------------
-    // Pinned under the table and always visible, so the table keeps its height
-    // as a run starts and stops.  The bar is one row whatever the run: the
-    // fixed height is what the table's height is derived from, and a bar that
-    // wrapped would move the table boundary under a running loop.  Only
-    // read-only state lives here; the loop count is edited with the controls
-    // above.
-    let status = ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), bar_height),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            // The height is the table's arithmetic, not a hope: whatever the
-            // rows do, the region is this tall.
-            ui.set_min_height(bar_height);
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let (rule, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), ROW_GAP),
-                egui::Sense::hover(),
-            );
-            ui.painter().hline(
-                rule.x_range(),
-                rule.center().y,
-                ui.visuals().widgets.noninteractive.bg_stroke,
-            );
-
-            let running = app.multi_run_active();
-            let looping = app.settings.multi.loop_enabled;
-            status_row(ui, row_height, |ui| {
-                ui.label(tr("循环"));
-                if running && looping {
-                    ui.label(
-                        RichText::new(tr("循环中"))
-                            .strong()
-                            .color(active_colours.bar),
-                    );
+    v_flex()
+        .id("left-panel-scroll")
+        .w_full()
+        .h_full()
+        .gap_2()
+        .p_3()
+        .overflow_y_scroll()
+        .border_r_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().sidebar)
+        .child(section_title(tr("串口设置"), cx))
+        .child(field_row(
+            tr("串口"),
+            choice_button("port", port_label, port_items, weak.clone()).into_any_element(),
+            cx,
+        ))
+        .child(
+            h_flex()
+                .gap_1()
+                .child(
+                    Button::new("refresh-ports")
+                        .label("↻")
+                        .tooltip(tr("刷新"))
+                        .small()
+                        .ghost()
+                        .disabled(is_open)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.ports.poll();
+                            this.info(tr("已刷新串口列表"));
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("custom-baud")
+                        .label(tr("自定义波特率…"))
+                        .small()
+                        .outline()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_custom_baud(window, cx);
+                        })),
+                ),
+        )
+        .child(field_row(
+            tr("波特率"),
+            choice_button(
+                "baud",
+                format!("{}", app.settings.serial.baud),
+                baud_items,
+                weak.clone(),
+            )
+            .into_any_element(),
+            cx,
+        ))
+        .child(field_row(
+            tr("数据位"),
+            choice_button(
+                "data-bits",
+                app.settings.serial.data_bits.label(),
+                data_bits,
+                weak.clone(),
+            )
+            .into_any_element(),
+            cx,
+        ))
+        .child(field_row(
+            tr("停止位"),
+            choice_button(
+                "stop-bits",
+                app.settings.serial.stop_bits.label(),
+                stop_bits,
+                weak.clone(),
+            )
+            .into_any_element(),
+            cx,
+        ))
+        .child(field_row(
+            tr("校验"),
+            choice_button(
+                "parity",
+                tr(app.settings.serial.parity.label()),
+                parity,
+                weak.clone(),
+            )
+            .into_any_element(),
+            cx,
+        ))
+        .child(field_row(
+            tr("流控"),
+            choice_button(
+                "flow",
+                tr(app.settings.serial.flow.label()),
+                flow,
+                weak.clone(),
+            )
+            .into_any_element(),
+            cx,
+        ))
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Switch::new("dtr")
+                        .checked(dtr)
+                        .label("DTR")
+                        .on_change(cx.listener(|this, value, _, cx| {
+                            this.settings.serial.dtr = *value;
+                            this.apply_line_state(cx);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Switch::new("rts")
+                        .checked(rts)
+                        .label("RTS")
+                        .on_change(cx.listener(|this, value, _, cx| {
+                            this.settings.serial.rts = *value;
+                            this.apply_line_state(cx);
+                            cx.notify();
+                        })),
+                ),
+        )
+        .child(
+            Button::new("toggle-port")
+                .label(if is_open {
+                    tr("关闭串口")
                 } else {
-                    ui.label(RichText::new(tr("未循环")).color(ui.visuals().weak_text_color()));
-                }
-                ui.separator();
-                ui.label(tr("循环次数"));
-                match app.settings.multi.loop_count {
-                    None => {
-                        ui.label(
-                            RichText::new(tr("不限次数"))
-                                .small()
-                                .color(ui.visuals().weak_text_color()),
-                        );
-                    }
-                    Some(limit) => {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(crate::i18n::tr2(
-                                    "已完成 {} / {} 次",
-                                    app.multi_cycles,
-                                    limit,
-                                ))
-                                .small()
-                                .color(ui.visuals().weak_text_color()),
-                            )
-                            .truncate(),
-                        );
-                    }
-                }
+                    tr("打开串口")
+                })
+                .when(is_open, |button| button.danger())
+                .when(!is_open, |button| button.primary())
+                .w_full()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.toggle_port();
+                    cx.notify();
+                })),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from(summary)),
+        )
+        .child(section_title(tr("统计"), cx))
+        .child(info_row(tr("发送字节"), &app.tx_bytes.to_string(), cx))
+        .child(info_row(tr("接收字节"), &app.rx_bytes.to_string(), cx))
+        .child(info_row(
+            tr("显示行数"),
+            &app.log.row_count().to_string(),
+            cx,
+        ))
+        .child(info_row(
+            tr("缓存字节"),
+            &app.log.retained_bytes().to_string(),
+            cx,
+        ))
+        .child(field_row(
+            tr("最大保留行数"),
+            Input::new(&app.inputs.max_rows)
+                .w(px(96.0))
+                .into_any_element(),
+            cx,
+        ))
+        .child(field_row(
+            tr("最大缓存 (MB)"),
+            Input::new(&app.inputs.max_raw_mb)
+                .w(px(64.0))
+                .into_any_element(),
+            cx,
+        ))
+        .into_any_element()
+}
 
-                ui.separator();
-                ui.label(tr("当前条目"));
-                match app.multi_run_sent() {
-                    Some(sent) => {
-                        let text = crate::i18n::tr3(
-                            "正在发送 #{} ({} / {})",
-                            sent.index,
-                            sent.ordinal,
-                            sent.round_len,
-                        );
-                        probe::set_multi_status_text(&text);
-                        // The entry in flight is the part that gives way when
-                        // the panel is too narrow for the whole line.
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(text).strong().color(active_colours.bar),
-                            )
-                            .truncate(),
-                        );
-                    }
-                    None => {
-                        ui.label(RichText::new(tr("空闲")).color(ui.visuals().weak_text_color()));
-                    }
-                }
-            });
-        },
-    );
-    probe::set_multi_send_status_rect(status.response.rect);
+fn field_row(label: &'static str, control: AnyElement, cx: &mut Context<XcomApp>) -> AnyElement {
+    h_flex()
+        .w_full()
+        .justify_between()
+        .gap_2()
+        .child(
+            div()
+                .text_sm()
+                .flex_shrink_0()
+                .child(SharedString::from(label)),
+        )
+        .child(div().flex_1().min_w(px(0.0)).child(control))
+        .text_color(cx.theme().foreground)
+        .into_any_element()
+}
 
-    if dirty {
-        app.mark_settings_dirty();
+fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
+    let open = app.link.is_open();
+    let send = app.settings.send.clone();
+    let weak = cx.entity().downgrade();
+    let history = app.settings.send.history.clone();
+    let history_weak = weak.clone();
+    let mono = cx.theme().mono_font_family.clone();
+    let text_font = crate::fonts::send_font(&app.settings.fonts, &mono);
+    let file_progress = app
+        .file_send
+        .as_ref()
+        .map(|send| (send.progress(), send.remaining(), send.path.clone()));
+
+    let mut toolbar = h_flex()
+        .gap_2()
+        .items_center()
+        .flex_wrap()
+        .child(
+            Checkbox::new("send-hex")
+                .label(tr("16进制发送"))
+                .checked(send.hex)
+                .on_change(cx.listener(|this, value, _, cx| {
+                    this.settings.send.hex = *value;
+                    this.mark_settings_dirty();
+                    cx.notify();
+                })),
+        )
+        .child(
+            Checkbox::new("send-newline")
+                .label(tr("发送新行"))
+                .checked(send.append_newline)
+                .on_change(cx.listener(|this, value, _, cx| {
+                    this.settings.send.append_newline = *value;
+                    this.mark_settings_dirty();
+                    cx.notify();
+                })),
+        );
+    if send.append_newline {
+        toolbar = toolbar
+            .child(
+                Checkbox::new("send-cr")
+                    .label("CR")
+                    .checked(send.newline_cr)
+                    .on_change(cx.listener(|this, value, _, cx| {
+                        this.settings.send.newline_cr = *value;
+                        this.mark_settings_dirty();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Checkbox::new("send-lf")
+                    .label("LF")
+                    .checked(send.newline_lf)
+                    .on_change(cx.listener(|this, value, _, cx| {
+                        this.settings.send.newline_lf = *value;
+                        this.mark_settings_dirty();
+                        cx.notify();
+                    })),
+            );
     }
-    if let Some(index) = send_request {
-        app.send_multi_entry(index, false);
+    toolbar = toolbar
+        .child(div().text_sm().child(SharedString::from(tr("定时间隔"))))
+        .child(
+            Input::new(&app.inputs.send_period)
+                .w(px(88.0))
+                .disabled(send.timed),
+        )
+        .child(
+            Switch::new("timed")
+                .label(tr("定时发送"))
+                .checked(send.timed)
+                .disabled(!open)
+                .on_change(cx.listener(|this, value, _, cx| {
+                    if this.link.is_open() {
+                        this.settings.send.timed = *value;
+                        this.last_timed_send = None;
+                    } else if *value {
+                        this.warn(tr("串口未打开"));
+                    }
+                    cx.notify();
+                })),
+        )
+        .child(
+            Button::new("send")
+                .label(tr("发送"))
+                .primary()
+                .disabled(!open)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.send_once();
+                    cx.notify();
+                })),
+        )
+        .child(
+            Button::new("clear-send")
+                .label(tr("清除发送"))
+                .outline()
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::ClearSend, window, cx);
+                })),
+        )
+        .child(
+            Button::new("history")
+                .label(tr("历史"))
+                .outline()
+                .dropdown_menu(move |menu, _window, _cx| {
+                    let mut menu = menu;
+                    if history.is_empty() {
+                        menu = menu.item(PopupMenuItem::new(tr("暂无历史")).disabled(true));
+                    }
+                    for (index, entry) in history.clone().into_iter().enumerate() {
+                        let preview: String = entry.chars().take(40).collect();
+                        menu = menu.item(PopupMenuItem::new(preview).on_click({
+                            let weak = history_weak.clone();
+                            move |_, window, cx| {
+                                run_action(weak.clone(), Action::UseHistory(index), window, cx);
+                            }
+                        }));
+                    }
+                    menu
+                }),
+        )
+        .child(
+            Button::new("send-file")
+                .label(tr("发送文件"))
+                .outline()
+                .disabled(!open)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::SendFile, window, cx);
+                })),
+        );
+    if file_progress.is_some() {
+        toolbar = toolbar.child(
+            Button::new("abort-file")
+                .label(tr("终止发送"))
+                .danger()
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::AbortFileSend, window, cx);
+                })),
+        );
+    }
+
+    let mut area = v_flex()
+        .h_full()
+        .gap_2()
+        .p_2()
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .child(toolbar)
+        .child(
+            Textarea::new(&app.send_input)
+                .flex_1()
+                .min_h(px(56.0))
+                .font_family(text_font.family.clone())
+                .text_size(px(app.settings.fonts.send_size)),
+        );
+
+    if let Some((ratio, remaining, path)) = file_progress {
+        area = area.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    gpui_kit::component::progress::Progress::new("file-send-progress")
+                        .value(ratio)
+                        .flex_1(),
+                )
+                .child(div().text_sm().child(SharedString::from(crate::i18n::tr2(
+                    "{} · 剩余 {} 字节",
+                    path,
+                    remaining,
+                )))),
+        );
+    }
+    area.into_any_element()
+}
+
+fn tool_panel(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
+    v_flex()
+        .w_full()
+        .h_full()
+        .border_l_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().sidebar)
+        .child(
+            h_flex()
+                .p_2()
+                .gap_1()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(tab_button(
+                    "tab-multi",
+                    tr("多条发送"),
+                    app.side_tab == SideTab::Multi,
+                    cx,
+                    |this| this.side_tab = SideTab::Multi,
+                ))
+                .child(tab_button(
+                    "tab-protocol",
+                    tr("协议传输"),
+                    app.side_tab == SideTab::Protocol,
+                    cx,
+                    |this| this.side_tab = SideTab::Protocol,
+                )),
+        )
+        .child(match app.side_tab {
+            SideTab::Multi => multi_panel(app, window, cx),
+            SideTab::Protocol => protocol_panel(app, window, cx),
+        })
+        .into_any_element()
+}
+
+/// Drag payload for reordering a multi-send row.
+#[derive(Clone)]
+struct DragEntry(usize);
+
+impl gpui_kit::Render for DragEntry {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().accent)
+            .text_color(cx.theme().accent_foreground)
+            .child(SharedString::from(format!("#{}", self.0)))
     }
 }
 
-fn protocol_panel(app: &mut XcomApp, ui: &mut Ui) {
-    let running = app.protocol.is_running();
-    let mut config = app.protocol.config().clone();
-    probe::begin_protocol_panel();
+fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
+    let running = app.multi_run_active();
+    let open = app.link.is_open();
+    let entries = app.settings.multi.entries.clone();
+    let entries_len = entries.len();
+    let loop_count = app.settings.multi.loop_count;
+    let loop_enabled = app.settings.multi.loop_enabled;
+    let cycles = app.multi_cycles;
+    let sent = app.multi_run_sent();
+    let countdown = app.multi_delay_countdown(std::time::Instant::now());
+    let active = crate::theme::active_entry_colors(cx, app.settings.theme);
+    let newline_cr = app.settings.multi.newline_cr;
+    let newline_lf = app.settings.multi.newline_lf;
+    let all_newline = !entries.is_empty() && entries.iter().all(|entry| entry.newline);
+    let weak = cx.entity().downgrade();
+    let mut toolbar = h_flex().gap_1().flex_wrap();
 
-    // The panel is narrow, and these are one control per row rather than a
-    // packed grid.  A `ComboBox` is itself a horizontal child: on a wrapped row
-    // with too little room left, egui hands that child the remaining width and
-    // then paints the fixed-width combo past the panel edge instead of wrapping
-    // it.  Giving each control a row of its own — and capping the combo to the
-    // room actually left — keeps the English labels inside the panel.
-    let identity = ui.horizontal_wrapped(|ui| {
-        ui.label(tr("地址"));
-        ui.add(
-            egui::DragValue::new(&mut config.address)
-                .range(0..=255)
-                .speed(1.0),
+    toolbar = toolbar
+        .child(
+            Button::new("multi-add")
+                .label(tr("添加条目"))
+                .small()
+                .outline()
+                .disabled(running)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::MultiAdd, window, cx);
+                })),
+        )
+        .child(
+            Button::new("multi-import")
+                .label(tr("导入"))
+                .small()
+                .outline()
+                .disabled(running)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::MultiImport, window, cx);
+                })),
+        )
+        .child(
+            Button::new("multi-export")
+                .label(tr("导出"))
+                .small()
+                .outline()
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::MultiExport, window, cx);
+                })),
+        )
+        .child(
+            Button::new("multi-send-checked")
+                .label(tr("发送已勾选"))
+                .small()
+                .primary()
+                .disabled(!open || running)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::MultiSendChecked, window, cx);
+                })),
+        )
+        .child(
+            Switch::new("multi-loop")
+                .label(tr("循环发送"))
+                .checked(loop_enabled)
+                .disabled(!open)
+                .on_change(cx.listener(|this, value, _, cx| {
+                    if this.multi_run_active() {
+                        this.stop_multi_run(Level::Info, tr("已停止循环发送"));
+                    } else if *value && this.link.is_open() {
+                        this.settings.multi.loop_enabled = true;
+                        this.start_multi_run(true, std::time::Instant::now());
+                    } else if *value {
+                        this.warn(tr("串口未打开"));
+                    }
+                    cx.notify();
+                })),
         );
-        ui.label(tr("功能"));
-        ui.add(
-            egui::DragValue::new(&mut config.function)
-                .range(0..=255)
-                .speed(1.0),
+
+    let loop_row = h_flex()
+        .gap_2()
+        .items_center()
+        .flex_wrap()
+        .child(div().text_sm().child(SharedString::from(tr("循环次数"))))
+        .child(
+            Input::new(&app.inputs.loop_count)
+                .w(px(72.0))
+                .disabled(loop_count.is_none()),
+        )
+        .child(
+            Switch::new("multi-forever")
+                .label(tr("无限循环"))
+                .checked(loop_count.is_none())
+                .on_change(cx.listener(|this, value, window, cx| {
+                    let next = if *value {
+                        None
+                    } else {
+                        Some(this.settings.multi.loop_count.unwrap_or(10))
+                    };
+                    this.settings.multi.loop_count = next;
+                    let text = next.map(|n| n.to_string()).unwrap_or_default();
+                    this.inputs
+                        .loop_count
+                        .update(cx, |state, cx| state.set_value(text, window, cx));
+                    if !this.multi_run_active() {
+                        this.multi_cycles = 0;
+                    }
+                    this.mark_settings_dirty();
+                    cx.notify();
+                })),
+        )
+        .child(div().text_sm().child(SharedString::from(tr("多条换行"))))
+        .child(
+            Checkbox::new("multi-cr")
+                .label("CR")
+                .checked(newline_cr)
+                .on_change(cx.listener(|this, value, _, cx| {
+                    this.settings.multi.newline_cr = *value;
+                    this.mark_settings_dirty();
+                    cx.notify();
+                })),
+        )
+        .child(
+            Checkbox::new("multi-lf")
+                .label("LF")
+                .checked(newline_lf)
+                .on_change(cx.listener(|this, value, _, cx| {
+                    this.settings.multi.newline_lf = *value;
+                    this.mark_settings_dirty();
+                    cx.notify();
+                })),
+        )
+        .child(
+            Checkbox::new("multi-newline-all")
+                .label(tr("全部加新行"))
+                .checked(all_newline)
+                .disabled(entries.is_empty() || running)
+                .on_change(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::MultiNewlineAll, window, cx);
+                })),
         );
-    });
-    probe::push_protocol_row("identity", identity.response.rect);
 
-    let checksum = ui.horizontal_wrapped(|ui| {
-        ui.label(tr("校验"));
-        let mut kind = config.checksum;
-        if combo_capped(
-            ui,
-            "protocol_checksum",
-            &mut kind,
-            &ChecksumKind::ALL,
-            |c| tr(c.label()).to_owned(),
-            SERIAL_COMBO_WIDTH,
-        ) {
-            config.checksum = kind;
-        }
-    });
-    probe::push_protocol_row("checksum", checksum.response.rect);
-
-    let period = ui.horizontal_wrapped(|ui| {
-        ui.label(tr("帧周期"));
-        ui.add(
-            egui::DragValue::new(&mut config.frame_period_ms)
-                .speed(10.0)
-                .range(1..=600_000)
-                .suffix(" ms"),
-        );
-    });
-    probe::push_protocol_row("period", period.response.rect);
-
-    let retries = ui.horizontal_wrapped(|ui| {
-        ui.label(tr("最大重发"));
-        ui.add(
-            egui::DragValue::new(&mut config.max_retries)
-                .speed(1.0)
-                .range(0..=255),
-        );
-    });
-    probe::push_protocol_row("retries", retries.response.rect);
-
-    let data_len = ui.horizontal_wrapped(|ui| {
-        ui.label(tr("最大数据长度"));
-        ui.add(
-            egui::DragValue::new(&mut config.max_data_len)
-                .speed(1.0)
-                .range(1..=255),
-        );
-    });
-    probe::push_protocol_row("data_len", data_len.response.rect);
-
-    let options = ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut config.auto_send, tr("自动发送"));
-        ui.checkbox(&mut config.show_raw, tr("显示原始帧"));
-        ui.checkbox(&mut config.auto_wrap, tr("自动换行"));
-    });
-    probe::push_protocol_row("options", options.response.rect);
-
-    if let Some(warning) = config.period_warning(app.settings.serial.baud) {
-        ui.colored_label(level_color(Level::Warning), warning);
-    }
-
-    let previous = app.protocol.config().clone();
-    if config != previous {
-        app.settings.protocol = config.clone();
-        app.protocol.set_config(config);
-        app.mark_settings_dirty();
-    }
-
-    ui.separator();
-    ui.label(RichText::new(tr("发送数据")).strong());
-    ui.add(
-        egui::TextEdit::multiline(&mut app.settings.protocol_data)
-            .font(egui::TextStyle::Monospace)
-            .desired_rows(3)
-            .desired_width(f32::INFINITY)
-            .hint_text(tr("十六进制，如 00 00 00 0A")),
-    );
-
-    let actions = ui.horizontal_wrapped(|ui| {
-        let enabled = app.link.is_open();
-        if ui
-            .add_enabled(enabled && !running, egui::Button::new(tr("单次发送")))
-            .clicked()
-        {
-            protocol_start(app, TaskKind::Single);
-        }
-        if ui
-            .add_enabled(enabled && !running, egui::Button::new(tr("自动发送")))
-            .clicked()
-        {
-            protocol_start(app, TaskKind::Auto);
-        }
-        if ui
-            .add_enabled(enabled && !running, egui::Button::new(tr("文件发送")))
-            .clicked()
-            && let Some(path) = pick_open_file(tr("选择要传输的文件"))
-        {
-            match std::fs::read(&path) {
-                Ok(data) => start_protocol_file(app, data, &path),
-                Err(err) => app.error(crate::i18n::tr1("读取文件失败: {}", err)),
-            }
-        }
-        if ui
-            .add_enabled(running, egui::Button::new(tr("停止")))
-            .clicked()
-        {
-            app.protocol.stop(tr("用户已停止传输"));
-            app.protocol_progress = None;
-        }
-        if let Some(kind) = app.protocol.task_kind() {
-            ui.label(
-                RichText::new(crate::i18n::tr1("正在{}", tr(kind.label())))
-                    .color(level_color(Level::Info)),
+    let mut rows: Vec<AnyElement> = Vec::with_capacity(entries_len);
+    for index in 0..entries_len {
+        let entry = &entries[index];
+        let inputs = &app.multi_inputs[index];
+        let is_active = sent.is_some_and(|sent| sent.index == index);
+        let row = v_flex()
+            .id(("multi-drop", index))
+            .on_drop({
+                let weak = weak.clone();
+                move |drag: &DragEntry, window, cx| {
+                    run_action(
+                        weak.clone(),
+                        Action::MultiMove {
+                            from: drag.0,
+                            to: index,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            })
+            .p_2()
+            .gap_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .when(index % 2 == 1, |this| {
+                this.bg(cx.theme().muted.opacity(0.25))
+            })
+            .when(is_active, |this| this.bg(active.wash))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Checkbox::new(("multi-enabled", index))
+                            .checked(entry.enabled)
+                            .on_change(cx.listener(move |this, value, _, cx| {
+                                if let Some(entry) = this.settings.multi.entries.get_mut(index) {
+                                    entry.enabled = *value;
+                                    this.mark_settings_dirty();
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(if running {
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .w(px(20.0))
+                            .child(SharedString::from(index.to_string()))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .id(("multi-drag", index))
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .w(px(20.0))
+                            .child(SharedString::from(index.to_string()))
+                            .on_drag(DragEntry(index), |drag, _, _, cx| cx.new(|_| drag.clone()))
+                            .into_any_element()
+                    })
+                    .child(Input::new(&inputs.text).flex_1().min_w(px(60.0)))
+                    .child(
+                        Checkbox::new(("multi-hex", index))
+                            .label("HEX")
+                            .checked(entry.hex)
+                            .on_change(cx.listener(move |this, value, _, cx| {
+                                if let Some(entry) = this.settings.multi.entries.get_mut(index) {
+                                    entry.hex = *value;
+                                    this.mark_settings_dirty();
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Checkbox::new(("multi-newline", index))
+                            .label(tr("新行"))
+                            .checked(entry.newline)
+                            .on_change(cx.listener(move |this, value, _, cx| {
+                                if let Some(entry) = this.settings.multi.entries.get_mut(index) {
+                                    entry.newline = *value;
+                                    this.mark_settings_dirty();
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new(("multi-delete", index))
+                            .label("×")
+                            .tooltip(tr("删除条目"))
+                            .small()
+                            .ghost()
+                            .disabled(running)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.apply_action(Action::MultiRemove(index), window, cx);
+                            })),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Input::new(&inputs.note).flex_1().min_w(px(40.0)))
+                    .child(
+                        v_flex()
+                            .w(px(84.0))
+                            .gap(px(1.0))
+                            .child(Input::new(&inputs.delay).w_full())
+                            .when(
+                                countdown.is_some_and(|countdown| countdown.index == index),
+                                |this| {
+                                    let remaining = countdown.map_or(0.0, |c| c.remaining);
+                                    this.child(
+                                        div()
+                                            .h(px(3.0))
+                                            .w_full()
+                                            .rounded_full()
+                                            .bg(active.bar.opacity(0.3))
+                                            .child(
+                                                div()
+                                                    .h_full()
+                                                    .w(relative(remaining))
+                                                    .rounded_full()
+                                                    .bg(active.bar),
+                                            ),
+                                    )
+                                },
+                            ),
+                    )
+                    .child(
+                        Button::new(("multi-send", index))
+                            .label(tr("发送"))
+                            .small()
+                            .disabled(!open)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.apply_action(Action::MultiSendOne(index), window, cx);
+                            })),
+                    ),
             );
-        }
-    });
-    probe::push_protocol_row("actions", actions.response.rect);
+        rows.push(row.into_any_element());
+    }
 
-    if let Some((sent, total)) = app.protocol_progress {
+    let status = h_flex()
+        .gap_2()
+        .p_2()
+        .text_sm()
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .child(SharedString::from(if running && loop_enabled {
+            tr("循环中")
+        } else {
+            tr("未循环")
+        }))
+        .child(SharedString::from(match loop_count {
+            None => tr("不限次数").to_owned(),
+            Some(limit) => crate::i18n::tr2("已完成 {} / {} 次", cycles, limit),
+        }))
+        .child(SharedString::from(match sent {
+            Some(sent) => crate::i18n::tr3(
+                "正在发送 #{} ({} / {})",
+                sent.index,
+                sent.ordinal,
+                sent.round_len,
+            ),
+            None => tr("空闲").to_owned(),
+        }));
+
+    v_flex()
+        .flex_1()
+        .min_h(px(0.0))
+        .child(div().p_2().child(toolbar))
+        .child(div().px_2().pb_2().child(loop_row))
+        .child(
+            div()
+                .id("multi-scroll")
+                .flex_1()
+                .min_h(px(0.0))
+                .overflow_y_scroll()
+                .children(rows),
+        )
+        .child(status)
+        .into_any_element()
+}
+
+fn protocol_panel(
+    app: &mut XcomApp,
+    _window: &mut Window,
+    cx: &mut Context<XcomApp>,
+) -> AnyElement {
+    let config = app.settings.protocol.clone();
+    let running = app.protocol.is_running();
+    let open = app.link.is_open();
+    let weak = cx.entity().downgrade();
+    let mono = cx.theme().mono_font_family.clone();
+    let text_font = crate::fonts::send_font(&app.settings.fonts, &mono);
+    let checksum_items: Vec<(String, Choice, bool)> = crate::protocol::ChecksumKind::ALL
+        .into_iter()
+        .map(|kind| {
+            (
+                tr(kind.label()).to_owned(),
+                Choice::Checksum(kind),
+                kind == config.checksum,
+            )
+        })
+        .collect();
+    let warning = config.period_warning(app.settings.serial.baud);
+    let progress = app.protocol_progress;
+    let log = app
+        .protocol_log
+        .iter()
+        .map(|line| (line.level, line.text.clone(), line.stamp.clone()))
+        .collect::<Vec<_>>();
+    let task = app.protocol.task_kind().map(|kind| tr(kind.label()));
+
+    let mut actions = h_flex()
+        .gap_1()
+        .flex_wrap()
+        .child(
+            Button::new("proto-single")
+                .label(tr("单次发送"))
+                .small()
+                .primary()
+                .disabled(!open || running)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::ProtocolSingle, window, cx);
+                })),
+        )
+        .child(
+            Button::new("proto-auto")
+                .label(tr("自动发送"))
+                .small()
+                .outline()
+                .disabled(!open || running)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::ProtocolAuto, window, cx);
+                })),
+        )
+        .child(
+            Button::new("proto-file")
+                .label(tr("文件发送"))
+                .small()
+                .outline()
+                .disabled(!open || running)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::ProtocolFile, window, cx);
+                })),
+        )
+        .child(
+            Button::new("proto-stop")
+                .label(tr("停止"))
+                .small()
+                .danger()
+                .disabled(!running)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.apply_action(Action::ProtocolStop, window, cx);
+                })),
+        );
+    if let Some(task) = task {
+        actions = actions.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().info)
+                .child(SharedString::from(crate::i18n::tr1("正在{}", task))),
+        );
+    }
+
+    let mut layout = v_flex()
+        .id("protocol-panel")
+        .flex_1()
+        .min_h(px(0.0))
+        .gap_2()
+        .p_2()
+        .child(field_row(
+            tr("地址"),
+            Input::new(&app.inputs.protocol_address)
+                .w(px(56.0))
+                .into_any_element(),
+            cx,
+        ))
+        .child(field_row(
+            tr("功能"),
+            Input::new(&app.inputs.protocol_function)
+                .w(px(56.0))
+                .into_any_element(),
+            cx,
+        ))
+        .child(field_row(
+            tr("校验"),
+            choice_button(
+                "checksum",
+                tr(config.checksum.label()),
+                checksum_items,
+                weak.clone(),
+            )
+            .into_any_element(),
+            cx,
+        ))
+        .child(field_row(
+            tr("帧周期"),
+            Input::new(&app.inputs.protocol_period)
+                .w(px(88.0))
+                .into_any_element(),
+            cx,
+        ))
+        .child(field_row(
+            tr("最大重发"),
+            Input::new(&app.inputs.protocol_retries)
+                .w(px(56.0))
+                .into_any_element(),
+            cx,
+        ))
+        .child(field_row(
+            tr("最大数据长度"),
+            Input::new(&app.inputs.protocol_data_len)
+                .w(px(56.0))
+                .into_any_element(),
+            cx,
+        ))
+        .child(
+            h_flex()
+                .gap_2()
+                .flex_wrap()
+                .child(
+                    Checkbox::new("proto-auto-send")
+                        .label(tr("自动发送"))
+                        .checked(config.auto_send)
+                        .on_change(cx.listener(|this, value, _, cx| {
+                            this.settings.protocol.auto_send = *value;
+                            this.protocol.set_config(this.settings.protocol.clone());
+                            this.mark_settings_dirty();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Checkbox::new("proto-raw")
+                        .label(tr("显示原始帧"))
+                        .checked(config.show_raw)
+                        .on_change(cx.listener(|this, value, _, cx| {
+                            this.settings.protocol.show_raw = *value;
+                            this.protocol.set_config(this.settings.protocol.clone());
+                            this.mark_settings_dirty();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Checkbox::new("proto-wrap")
+                        .label(tr("自动换行"))
+                        .checked(config.auto_wrap)
+                        .on_change(cx.listener(|this, value, _, cx| {
+                            this.settings.protocol.auto_wrap = *value;
+                            this.protocol.set_config(this.settings.protocol.clone());
+                            this.mark_settings_dirty();
+                            cx.notify();
+                        })),
+                ),
+        );
+    if let Some(warning) = warning {
+        layout = layout.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().warning)
+                .child(SharedString::from(warning)),
+        );
+    }
+    layout = layout
+        .child(div().text_sm().child(SharedString::from(tr("发送数据"))))
+        .child(
+            Textarea::new(&app.protocol_input)
+                .h(px(84.0))
+                .w_full()
+                .font_family(text_font.family.clone())
+                .text_size(px(app.settings.fonts.send_size)),
+        )
+        .child(actions);
+    if let Some((sent, total)) = progress {
         let ratio = if total == 0 {
             0.0
         } else {
             sent as f32 / total as f32
         };
-        ui.add(
-            egui::ProgressBar::new(ratio)
-                .text(crate::i18n::tr2("{} / {} 字节", sent, total))
-                .desired_height(16.0),
+        layout = layout.child(
+            gpui_kit::component::progress::Progress::new("protocol-progress")
+                .value(ratio)
+                .w_full(),
         );
     }
-
-    ui.separator();
-    let response_header = ui.horizontal(|ui| {
-        ui.label(RichText::new(tr("响应区")).strong());
-        if ui.button(tr("清除")).clicked() {
-            app.protocol_log.clear();
-        }
-        ui.label(
-            RichText::new(crate::i18n::tr1("{} 条", app.protocol_log.len()))
-                .small()
-                .color(ui.visuals().weak_text_color()),
-        );
-    });
-    probe::push_protocol_row("response_header", response_header.response.rect);
-
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            if app.protocol_log.is_empty() {
-                ui.weak(tr("暂无协议交互记录"));
-            }
-            for line in &app.protocol_log {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new(&line.stamp)
-                            .monospace()
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                    ui.label(
-                        RichText::new(&line.text)
-                            .monospace()
-                            .small()
-                            .color(level_color(line.level)),
-                    );
-                });
-            }
-        });
-    probe::set_protocol_content_rect(ui.min_rect());
-}
-
-fn protocol_start(app: &mut XcomApp, kind: TaskKind) {
-    let raw = app.settings.protocol_data.clone();
-    let data = if raw.trim().is_empty() {
-        Vec::new()
-    } else {
-        match crate::hex::parse(&raw) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                app.error(crate::i18n::tr1("数据格式错误: {}", err));
-                return;
-            }
-        }
-    };
-    if data.is_empty() && kind != TaskKind::File {
-        app.warn(tr("请先输入要发送的数据"));
-        return;
-    }
-    app.protocol_log.clear();
-    let now = std::time::Instant::now();
-    match kind {
-        TaskKind::Single => app.protocol.start_single(data, now),
-        TaskKind::Auto => app.protocol.start_auto(data, now),
-        TaskKind::File => {}
-    }
-    app.info(crate::i18n::tr1("已启动{}", tr(kind.label())));
-}
-
-fn start_protocol_file(app: &mut XcomApp, data: Vec<u8>, path: &std::path::Path) {
-    app.protocol_log.clear();
-    app.protocol.start_file(data, std::time::Instant::now());
-    app.info(crate::i18n::tr1("已启动文件传输: {}", path.display()));
-}
-
-// ---------------------------------------------------------------------------
-// Status bar
-// ---------------------------------------------------------------------------
-
-pub(crate) fn status_bar(app: &mut XcomApp, ui: &mut Ui) {
-    let panel = egui::Panel::bottom("status_bar").show(ui, |ui| {
-        // One row, never wrapping: the bar's height is part of the centre
-        // column's layout, so anything that can make it taller (a long hint,
-        // a growing counter) resizes the receive area underneath it.  Labels
-        // that do not fit are clipped instead.
-        ui.horizontal(|ui| {
-            let open = app.link.is_open();
-            led(ui, open, egui::Color32::from_rgb(0x4C, 0xAF, 0x50));
-            if open {
-                ui.label(
-                    RichText::new(format!(
-                        "{} [{}]",
-                        app.settings.serial.port,
-                        app.settings.serial.summary()
-                    ))
-                    .monospace(),
-                );
-            } else {
-                ui.label(RichText::new(tr("未连接")).color(ui.visuals().weak_text_color()));
-            }
-
-            ui.separator();
-            ui.label(RichText::new(crate::i18n::tr1("编码 {}", app.encoding_label())).monospace());
-            // Auto-detection context, moved here from the Encoding submenu so
-            // the menu is only choices.
-            if app.settings.encoding.is_none() {
-                ui.separator();
-                ui.label(
-                    RichText::new(crate::i18n::tr1("已分析 {} 字节", app.auto.total()))
+    layout = layout
+        .child(
+            h_flex()
+                .justify_between()
+                .child(div().text_sm().child(SharedString::from(tr("响应区"))))
+                .child(
+                    Button::new("proto-clear")
+                        .label(tr("清除"))
                         .small()
-                        .monospace()
-                        .color(ui.visuals().weak_text_color()),
-                );
-            }
+                        .ghost()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.protocol_log.clear();
+                            cx.notify();
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .id("protocol-log")
+                .flex_1()
+                .min_h(px(64.0))
+                .overflow_y_scroll()
+                .children(log.into_iter().map(|(level, text, stamp)| {
+                    h_flex()
+                        .gap_2()
+                        .items_start()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(stamp)),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(level_color(level, cx))
+                                .child(SharedString::from(text)),
+                        )
+                        .into_any_element()
+                })),
+        );
+    layout.into_any_element()
+}
 
-            ui.separator();
-            ui.label(
-                RichText::new(crate::i18n::tr2(
-                    "发送: {}  接收: {}",
-                    app.tx_bytes,
-                    app.rx_bytes,
-                ))
-                .monospace(),
-            );
+fn level_color(level: Level, cx: &Context<XcomApp>) -> gpui_kit::Hsla {
+    match level {
+        Level::Error => cx.theme().danger,
+        Level::Warning => cx.theme().warning,
+        Level::Success => cx.theme().success,
+        Level::Info => cx.theme().foreground,
+    }
+}
 
-            ui.separator();
-            for (name, state) in [
-                ("CTS", app.signals.cts),
-                ("DSR", app.signals.dsr),
-                ("DCD", app.signals.dcd),
-                ("RI", app.signals.ri),
-            ] {
-                ui.label(RichText::new(name).small().monospace());
-                led(ui, state, egui::Color32::from_rgb(0x4C, 0xAF, 0x50));
-            }
+fn tab_button(
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+    cx: &mut Context<XcomApp>,
+    apply: fn(&mut XcomApp),
+) -> AnyElement {
+    Button::new(id)
+        .label(label)
+        .small()
+        .selected(selected)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            apply(this);
+            cx.notify();
+        }))
+        .into_any_element()
+}
 
-            if app.show_paused {
-                ui.separator();
-                ui.label(
-                    RichText::new(crate::i18n::tr1(
+fn status_bar(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
+    let theme = cx.theme().clone();
+    h_flex()
+        .w_full()
+        .h(px(30.0))
+        .px_3()
+        .gap_3()
+        .items_center()
+        .border_t_1()
+        .border_color(theme.border)
+        .bg(theme.title_bar)
+        .text_sm()
+        .child(div().child(if app.link.is_open() {
+            SharedString::from(format!(
+                "{} [{}]",
+                app.settings.serial.port,
+                app.settings.serial.summary()
+            ))
+        } else {
+            SharedString::from(tr("未连接"))
+        }))
+        .child(div().child(SharedString::from(format!(
+            "{} {}",
+            tr("编码"),
+            app.encoding_label()
+        ))))
+        .child(div().child(SharedString::from(format!(
+            "{} {}  {} {}",
+            tr("发送:"),
+            app.tx_bytes,
+            tr("接收:"),
+            app.rx_bytes
+        ))))
+        .child(
+            h_flex().gap_2().children(
+                [
+                    ("CTS", app.signals.cts),
+                    ("DSR", app.signals.dsr),
+                    ("DCD", app.signals.dcd),
+                    ("RI", app.signals.ri),
+                ]
+                .into_iter()
+                .map(|(name, on)| {
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().size_2().rounded_full().bg(if on {
+                            cx.theme().success
+                        } else {
+                            cx.theme().muted_foreground
+                        }))
+                        .child(div().text_sm().child(SharedString::from(name)))
+                }),
+            ),
+        )
+        .when(app.show_paused, |this| {
+            this.child(
+                div()
+                    .text_color(cx.theme().warning)
+                    .child(SharedString::from(crate::i18n::tr1(
                         "已暂停（缓存 {} 字节）",
                         app.pending_rx_len(),
-                    ))
-                    .color(level_color(Level::Warning)),
-                );
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string())
-                        .monospace(),
-                );
-                if let Some(message) = app.latest_message() {
-                    ui.separator();
-                    ui.label(
-                        RichText::new(&message.text)
-                            .color(level_color(message.level))
-                            .small(),
-                    );
-                }
-            });
-        });
-    });
-    probe::set_bottom_status_rect(panel.response.rect);
+                    ))),
+            )
+        })
+        .child(div().flex_1())
+        .when_some(app.latest_message(), |this, message| {
+            this.child(
+                div()
+                    .text_color(level_color(message.level, cx))
+                    .child(SharedString::from(message.text.clone())),
+            )
+        })
+        .child(div().child(SharedString::from(
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        )))
+        .into_any_element()
 }
 
-// ---------------------------------------------------------------------------
-// About
-// ---------------------------------------------------------------------------
-
-pub(crate) fn about_window(app: &mut XcomApp, ctx: &Context) {
-    let id = egui::Id::new("about_dialog");
-    if !app.show_about {
-        dialog_closed(ctx, id);
-        return;
-    }
-    let mut open = true;
-    let mut close_requested = false;
-    // The title bar is egui's own by default, and it hard-codes its close
-    // button on the right with no way to mirror it.  Drawing the header here is
-    // what lets the button follow the desktop's layout; with no title bar of
-    // its own, egui keeps the window draggable from anywhere.
-    let window = egui::Window::new(tr("关于 XCOM"))
-        .id(id)
-        .title_bar(false)
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_size([480.0, 560.0])
-        .min_size([360.0, 240.0]);
-    let window = center_on_open(window, ctx, id).show(ctx, |ui| {
-        let header = dialog::header(ui, tr("关于 XCOM"), None);
-            probe::set_about_header_rect(header.rect);
-            probe::set_about_title_rect(header.title_rect);
-            probe::set_about_close_rect(header.close_rect);
-            if header.close_clicked {
-                close_requested = true;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.label(RichText::new(tr("XCOM 串口调试助手")).strong().size(16.0));
-                    ui.label(crate::i18n::tr1("版本 {}", env!("CARGO_PKG_VERSION")));
-                    ui.separator();
-                    ui.label(tr(
-                        "使用 Rust + egui 开发的跨平台串口调试工具，可在 Windows / Linux / macOS 上运行。",
-                    ));
-                    ui.add_space(4.0);
-                    ui.label(tr("功能："));
-                    for line in [
-                        tr("• 串口参数全面可配（自定义波特率、1/1.5/2 停止位）"),
-                        tr("• 十六进制 / 文本收发，时间戳断帧"),
-                        tr("• 编码自动识别与手动指定"),
-                        tr("• 单条 / 多条 / 协议传输三种发送方式"),
-                        tr("• 黑色与白色主题"),
-                    ] {
-                        ui.label(line);
-                    }
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new(tr("本软件为开源实现，界面不含任何广告。"))
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                });
-        });
-    if let Some(window) = window {
-        probe::set_about_window_rect(window.response.rect);
-    }
-    if !open || close_requested {
-        app.show_about = false;
-    }
+fn section_title(text: &'static str, cx: &mut Context<XcomApp>) -> AnyElement {
+    div()
+        .text_sm()
+        .font_bold()
+        .text_color(cx.theme().muted_foreground)
+        .child(SharedString::from(text))
+        .into_any_element()
 }
 
-// ---------------------------------------------------------------------------
-// Reset confirmation / keyboard shortcuts
-// ---------------------------------------------------------------------------
-
-/// Settings for writing the receive stream to disk while it arrives.
-///
-/// Logging itself is a session state (like timed send), so this dialog only
-/// owns the directory and the file-name pattern; the app never starts writing
-/// on launch.
-pub(crate) fn log_file_window(app: &mut XcomApp, ctx: &Context) {
-    let id = egui::Id::new("log_file_dialog");
-    if !app.show_log_file {
-        dialog_closed(ctx, id);
-        return;
-    }
-    let mut open = true;
-    let mut close_requested = false;
-    let window = egui::Window::new(tr("日志文件"))
-        .id(id)
-        .title_bar(false)
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_size([480.0, 420.0])
-        .min_size([360.0, 300.0]);
-    center_on_open(window, ctx, id).show(ctx, |ui| {
-            let header = dialog::header(ui, tr("日志文件"), None);
-            if header.close_clicked {
-                close_requested = true;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let mut enabled = app.log_file.is_active();
-                    if ui
-                        .checkbox(&mut enabled, tr("启用实时保存（接收数据）"))
-                        .changed()
-                    {
-                        app.set_log_file_enabled(enabled);
-                    }
-                    match app.log_file.path() {
-                        Some(path) => {
-                            ui.label(
-                                RichText::new(crate::i18n::tr1("正在写入: {}", path.display()))
-                                    .small()
-                                    .color(level_color(Level::Success)),
-                            );
-                        }
-                        None => {
-                            ui.small(tr("未启用：不会创建文件。"));
-                        }
-                    }
-
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(tr("保存目录")).strong());
-                    ui.horizontal(|ui| {
-                        let mut directory = app.settings.log_file.directory.clone();
-                        let width = (ui.available_width() - 76.0).max(80.0);
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut directory)
-                                .hint_text(tr("留空则使用配置目录下的 logs"))
-                                .desired_width(width),
-                        );
-                        if response.changed() {
-                            app.settings.log_file.directory = directory;
-                            app.mark_settings_dirty();
-                        }
-                        if ui.button(tr("选择…")).clicked()
-                            && let Some(path) = rfd::FileDialog::new().pick_folder()
-                        {
-                            app.settings.log_file.directory = path.display().to_string();
-                            app.mark_settings_dirty();
-                        }
-                    });
-                    if app.settings.log_file.directory.trim().is_empty() {
-                        let directory = crate::logfile::resolve_directory("");
-                        ui.small(crate::i18n::tr1("默认目录: {}", directory.display()));
-                    }
-
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(tr("文件名格式")).strong());
-                    let mut pattern = app.settings.log_file.pattern.clone();
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut pattern)
-                            .hint_text(crate::logfile::DEFAULT_PATTERN)
-                            .desired_width(f32::INFINITY)
-                            .font(egui::TextStyle::Monospace),
-                    );
-                    if response.changed() {
-                        app.settings.log_file.pattern = pattern;
-                        app.mark_settings_dirty();
-                    }
-                    let preview = crate::logfile::file_name_for(
-                        &app.settings.log_file.pattern,
-                        chrono::Local::now(),
-                        &app.settings.serial.port,
-                    );
-                    ui.small(crate::i18n::tr1("文件名示例: {}", preview));
-                    ui.add_space(4.0);
-                    ui.small(tr(
-                        "格式符：%Y 年（4 位）、%y 年（2 位）、%M 月、%D 日、%h 时、%m 分、%s/%S 秒、%f 毫秒、%H 串口名称、%% 百分号。",
-                    ));
-                    ui.small(tr(
-                        "文件名在启用时展开一次；同名文件会追加写入；修改目录或格式在下次启用时生效。",
-                    ));
-                });
-        });
-    if !open || close_requested {
-        app.show_log_file = false;
-    }
-}
-
-/// "Restore defaults" is destructive and irreversible, so the menu item only
-/// asks; the reset itself happens after an explicit confirmation here.
-pub(crate) fn reset_confirm_window(app: &mut XcomApp, ctx: &Context) {
-    let id = egui::Id::new("reset_confirm_dialog");
-    if !app.show_reset_confirm {
-        dialog_closed(ctx, id);
-        return;
-    }
-    let mut open = true;
-    let mut close_requested = false;
-    let window = egui::Window::new(tr("恢复默认设置"))
-        .id(id)
-        .title_bar(false)
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .min_size([360.0, 200.0]);
-    center_on_open(window, ctx, id).show(ctx, |ui| {
-        let header = dialog::header(ui, tr("恢复默认设置"), None);
-        if header.close_clicked {
-            close_requested = true;
-        }
-        ui.separator();
-        ui.label(tr(
-            "将清除全部设置（串口参数、界面布局、主题与语言等），此操作无法撤销。",
-        ));
-        ui.add_space(6.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let confirm =
-                egui::Button::new(RichText::new(tr("确认恢复")).color(level_color(Level::Warning)));
-            if ui.add(confirm).clicked() {
-                app.apply_default_settings();
-                close_requested = true;
-            }
-            if ui.button(tr("取消")).clicked() {
-                close_requested = true;
-            }
-        });
-    });
-    if !open || close_requested {
-        app.show_reset_confirm = false;
-    }
-}
-
-/// The keyboard map for every shortcut the app handles, so users never have to
-/// discover them by reading the source.
-pub(crate) fn shortcuts_window(app: &mut XcomApp, ctx: &Context) {
-    let id = egui::Id::new("shortcuts_dialog");
-    if !app.show_shortcuts {
-        dialog_closed(ctx, id);
-        return;
-    }
-    let mut open = true;
-    let mut close_requested = false;
-    let window = egui::Window::new(tr("快捷键"))
-        .id(id)
-        .title_bar(false)
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_size([420.0, 380.0])
-        .min_size([320.0, 240.0]);
-    center_on_open(window, ctx, id).show(ctx, |ui| {
-        let header = dialog::header(ui, tr("快捷键"), None);
-        if header.close_clicked {
-            close_requested = true;
-        }
-        ui.separator();
-        egui::Grid::new("shortcuts_grid")
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                let rows = [
-                    ("Ctrl+O", tr("打开/关闭串口")),
-                    ("Ctrl+Enter", tr("发送")),
-                    ("Ctrl+S", tr("保存接收数据")),
-                    ("Ctrl+Shift+S", tr("保存原始数据")),
-                    ("Ctrl+C", tr("复制选中")),
-                    ("Ctrl+A", tr("全选")),
-                    ("F5", tr("刷新串口列表")),
-                    ("Ctrl+Q", tr("退出")),
-                ];
-                for (keys, what) in rows {
-                    ui.label(RichText::new(keys).monospace());
-                    ui.label(what);
-                    ui.end_row();
-                }
-            });
-    });
-    if !open || close_requested {
-        app.show_shortcuts = false;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// File dialogs
-// ---------------------------------------------------------------------------
-
-/// Native "open file" dialog, falling back to nothing if unavailable.
-fn pick_open_file(title: &str) -> Option<PathBuf> {
-    rfd::FileDialog::new().set_title(title).pick_file()
-}
-
-/// Native "save file" dialog.
-fn pick_save_file(title: &str, default_name: &str, extension: &str) -> Option<PathBuf> {
-    rfd::FileDialog::new()
-        .set_title(title)
-        .set_file_name(default_name)
-        .add_filter(extension.to_uppercase(), &[extension])
-        .save_file()
-}
-
-/// Save the retained receive buffer as raw bytes, byte for byte.
-pub(crate) fn save_raw_log(app: &mut XcomApp) {
-    let Some(path) = pick_save_file(tr("保存原始数据"), "xcom-receive.bin", "bin") else {
-        return;
-    };
-    match std::fs::write(&path, app.log.raw()) {
-        Ok(()) => {
-            let bytes = app.log.retained_bytes();
-            app.ok(crate::i18n::tr2(
-                "已保存 {} 字节到 {}",
-                bytes,
-                path.display(),
-            ));
-        }
-        Err(err) => app.error(crate::i18n::tr1("保存失败: {}", err)),
-    }
-}
-
-/// Save the receive log to disk in the currently displayed form.
-pub(crate) fn save_log(app: &mut XcomApp) {
-    let Some(path) = pick_save_file(tr("保存接收数据"), "xcom-receive.txt", "txt") else {
-        return;
-    };
-    let text = app.log.render_all();
-    match std::fs::write(&path, text) {
-        Ok(()) => app.ok(crate::i18n::tr1("已保存到 {}", path.display())),
-        Err(err) => app.error(crate::i18n::tr1("保存失败: {}", err)),
-    }
-}
-
-#[cfg(test)]
-mod column_tests {
-    use super::{
-        MULTI_COLUMN_GAP, MULTI_FIXED_AT, MULTI_FIXED_COLUMNS, MULTI_TEXT_MIN, multi_column_floors,
-        multi_column_widths, multi_row_floor,
-    };
-
-    /// What the headers measure at the default interface font, in 中文.
-    const ZH_HEADERS: [f32; 9] = [26.8, 7.0, 26.8, 26.8, 24.1, 26.8, 26.8, 0.0, 0.0];
-    /// The same in English, which is a great deal wider.
-    const EN_HEADERS: [f32; 9] = [39.0, 7.0, 49.0, 30.0, 24.1, 47.0, 34.0, 0.0, 0.0];
-
-    /// Everything a row lays out: the nine columns and the eight gaps.
-    fn row_width(widths: [f32; 9]) -> f32 {
-        widths.iter().sum::<f32>() + MULTI_COLUMN_GAP * 8.0
-    }
-
-    #[test]
-    fn the_columns_fill_the_panel_exactly() {
-        // The whole point: a row one point wider than the table grows the
-        // horizontal scroll bar that hides the send buttons.
-        for headers in [ZH_HEADERS, EN_HEADERS] {
-            let floor = multi_row_floor(headers).ceil();
-            for viewport in [floor, floor + 40.0, 560.0, 700.0, 1200.0] {
-                let (widths, overflows) = multi_column_widths(viewport, MULTI_COLUMN_GAP, headers);
-                assert!(!overflows, "{viewport}: the table should still fit");
-                let used = row_width(widths);
-                assert!(
-                    (used - viewport).abs() <= 0.5,
-                    "{viewport}: the row is {used} wide, not {viewport}"
-                );
-            }
-        }
-    }
-
-    /// A header wider than its column widens the whole row, so every column
-    /// has to hold its own header whatever the language.
-    #[test]
-    fn every_column_holds_its_header() {
-        for headers in [ZH_HEADERS, EN_HEADERS] {
-            let floor = multi_row_floor(headers).ceil();
-            let (widths, _) = multi_column_widths(floor, MULTI_COLUMN_GAP, headers);
-            for index in 0..9 {
-                assert!(
-                    widths[index] + 1.0 >= headers[index],
-                    "column {index} is {} wide, its header needs {}",
-                    widths[index],
-                    headers[index]
-                );
-            }
-        }
-    }
-
-    /// The English headers are wider, so they eat into the text columns rather
-    /// than pushing the row past the panel.
-    #[test]
-    fn the_headers_come_out_of_the_text_columns() {
-        let viewport = 560.0;
-        let (zh, _) = multi_column_widths(viewport, MULTI_COLUMN_GAP, ZH_HEADERS);
-        let (en, _) = multi_column_widths(viewport, MULTI_COLUMN_GAP, EN_HEADERS);
-        assert!(
-            en[2] < zh[2],
-            "the English 内容 column should be narrower: {en:?} vs {zh:?}"
-        );
-        assert_eq!(row_width(en), row_width(zh), "both rows fill the panel");
-    }
-
-    #[test]
-    fn the_text_columns_grow_with_the_panel() {
-        let floor = multi_row_floor(ZH_HEADERS).ceil();
-        let (narrow, _) = multi_column_widths(floor, MULTI_COLUMN_GAP, ZH_HEADERS);
-        let (wide, _) = multi_column_widths(700.0, MULTI_COLUMN_GAP, ZH_HEADERS);
-        assert!(wide[2] > narrow[2], "narrow {narrow:?} wide {wide:?}");
-        assert!(wide[3] > narrow[3], "narrow {narrow:?} wide {wide:?}");
-    }
-
-    #[test]
-    fn the_fixed_columns_stay_between_their_floors_and_their_widths() {
-        for viewport in [260.0f32, 280.0, 300.0, 340.0, 500.0, 900.0] {
-            let (widths, _) = multi_column_widths(viewport, MULTI_COLUMN_GAP, ZH_HEADERS);
-            for (slot, index) in MULTI_FIXED_AT.into_iter().enumerate() {
-                let (ideal, floor) = MULTI_FIXED_COLUMNS[slot];
-                let floor = floor.max(ZH_HEADERS[index].ceil() + 1.0);
-                let ideal = ideal.max(floor);
-                let width = widths[index];
-                assert!(
-                    width <= ideal + 0.01 && width >= floor - 0.01,
-                    "{viewport}: column {index} is {width}, wanted {floor}..={ideal}"
-                );
-            }
-        }
-    }
-
-    /// The whole reason the panel has a minimum: the narrowest it can be is the
-    /// narrowest the table can be, so a panel at its floor shows every column.
-    #[test]
-    fn the_panel_floor_is_the_tables_floor() {
-        for headers in [ZH_HEADERS, EN_HEADERS] {
-            let floor = multi_row_floor(headers);
-            let (widths, overflows) = multi_column_widths(floor, MULTI_COLUMN_GAP, headers);
-            assert!(
-                !overflows,
-                "a panel at the table's own floor must still fit it: {widths:?}"
-            );
-            assert!(
-                (row_width(widths) - floor).abs() <= 0.5,
-                "the row is {} wide where the floor is {floor}",
-                row_width(widths)
-            );
-        }
-    }
-
-    /// A column is never narrower than its header.
-    #[test]
-    fn the_floor_holds_every_header() {
-        for headers in [ZH_HEADERS, EN_HEADERS] {
-            let floors = multi_column_floors(headers);
-            for index in 0..9 {
-                assert!(
-                    floors[index] >= headers[index].ceil(),
-                    "column {index} floor {} is below its header {}",
-                    floors[index],
-                    headers[index]
-                );
-            }
-        }
-    }
-
-    /// Squeezing gives up no more than the room the fixed columns have to give,
-    /// and a table that cannot fit says so rather than piling columns on top of
-    /// each other.
-    #[test]
-    fn a_table_that_cannot_fit_asks_for_a_scroll_bar() {
-        let (widths, overflows) = multi_column_widths(120.0, MULTI_COLUMN_GAP, ZH_HEADERS);
-        assert!(overflows);
-        assert!(widths[2] >= MULTI_TEXT_MIN && widths[3] >= MULTI_TEXT_MIN);
-        assert!(
-            row_width(widths) > 120.0,
-            "a table that cannot fit must be allowed to overflow: {widths:?}"
-        );
-    }
-
-    #[test]
-    fn nothing_goes_negative_when_the_panel_is_tiny() {
-        for viewport in [0.0f32, 40.0, 120.0, 200.0] {
-            let (widths, _) = multi_column_widths(viewport, MULTI_COLUMN_GAP, ZH_HEADERS);
-            assert!(
-                widths.iter().all(|width| *width >= 0.0),
-                "{viewport}: {widths:?}"
-            );
-        }
-    }
+fn info_row(label: &'static str, value: &str, cx: &mut Context<XcomApp>) -> AnyElement {
+    h_flex()
+        .w_full()
+        .justify_between()
+        .child(div().text_sm().child(SharedString::from(label)))
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from(value.to_owned())),
+        )
+        .into_any_element()
 }

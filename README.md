@@ -2,7 +2,7 @@
 
 > English | [简体中文](README_ZH.md)
 
-A cross-platform serial port debugging tool written in **Rust + egui**, reimplementing the features and UI of the ALIENTEK **ATK-XCOM v3.0**, running on **Windows / Linux / macOS**.
+A cross-platform serial port debugging tool written in **Rust + gpui-kit**, reimplementing the features and UI of the ALIENTEK **ATK-XCOM v3.0**, running on **Windows / Linux / macOS**.
 
 The UI contains **no advertisements** and additionally supports **automatic character-encoding detection** and **dark/light themes** that the original lacks.
 
@@ -82,10 +82,10 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Coloured direction markers**: each row starts with an arrow — `->` for data received from the device (cyan), `<-` for data we sent (gold) — so the direction of every line is obvious at a glance. Timestamps follow the marker; the markers can be switched off under View → Display or in the receive area's right-click menu. Plain ASCII glyphs are used deliberately: they exist in every font, unlike Unicode arrows, which are missing from some CJK faces or render double-width.
 - **Configurable interface, receive-area and send-area fonts/sizes**, with matched CJK/Latin baselines by default.
 - **Adjustable receive area line spacing** (in the font settings window); auto-wrap width follows window resize and the selected font.
-- **Collapsible side panels**: drag the configuration panel's splitter all the way left (or the tool panel's all the way right) and it snaps shut, handing the width to the receive area. A hairline stays at the edge, with a chevron on hover to open it again; the "Configuration panel / Tool panel" items under **View** are the same state. The centre column keeps a 320px floor, so each panel's maximum is a *soft* one that only applies when the window can spare the room.
+- **Resizable, dockable panels**: drag the divider beside the configuration panel, tool panel or send area to resize that region; drag it all the way to the edge to dock the region into a thin strip, and click the strip to restore it. Sizes persist, and the View → Panels menu offers the same show/hide state.
 - **The multi-send panel marks the entry being sent**: during "send checked" or looping, the entry in flight is highlighted with a leading colour bar, and the send status bar below the table shows `Sending #3 (3 / 7)` using the same number as the table's `#` column (the run spans the whole list). The mark clears when the run ends, is stopped, the port closes, or the app restarts. "Loop sending" is a run state rather than a saved preference, so it never survives into a state where it claims to be looping but isn't. Adding, deleting and reordering are disabled while a run is in flight.
 - **Delay countdown and live settings**: while a run waits out an entry's delay, a colour bar under that entry's delay field drains with the remaining time. The bar and the deadline both read the entry's current `delay_ms`, so editing the delay retimes the wait already in progress. All entry settings (content, HEX, newline, delay, check state) and the loop count are read from the live list: unchecked entries are skipped from their turn on, newly checked ones join the next round, and the loop count applies at the next round boundary without resetting completed passes. The protocol panel's frame period likewise retimes the gap already in progress, so a change governs the very next frame.
-- **Timers keep running while minimised**: eframe skips UI passes for a minimised or occluded window, so the serial pump and every timer run from `App::logic` as well. The multi-send loop, timed send, file transfer and protocol state machine continue in the background on Linux, where a minimised window used to stop the loop altogether. Hidden repaints are throttled by eframe to about 10 Hz, so delays shorter than 100 ms are quantised while the window is minimised and return to normal once it is restored.
+- **Timers keep running independently of UI frames**: a foreground tick drives the serial pump, timed send, file transfer, multi-send loop and protocol state machine, so minimising the window does not pause them. The tick is independent of whether GPUI is painting a frame.
 - Configuration file persistence; restores last serial and display options after restart.
 
 ---
@@ -105,10 +105,10 @@ Linux also requires graphics development libraries (most desktop distros already
 ```bash
 # Debian / Ubuntu
 sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev \
-                 libx11-dev libgl1-mesa-dev
+                 libx11-dev libgl1-mesa-dev libvulkan-dev libfontconfig1-dev
 # Fedora
 sudo dnf install gcc pkgconf-pkg-config libxkbcommon-devel wayland-devel \
-                 libX11-devel mesa-libGL-devel
+                 libX11-devel mesa-libGL-devel vulkan-loader-devel fontconfig-devel
 ```
 
 ### Build and Run
@@ -128,15 +128,11 @@ The **View → Language** submenu switches between **Simplified Chinese** and **
 - Language is a **process-level global** rather than a receiver passed down through layers, so call sites in closures and free functions just write `tr(...)` without holding an `App` reference.
 - A **guard test** scans all source code for string literals passed to `tr()`; any missing English entry causes the test to fail. A test sample is fed to the scanner to prevent it from silently passing if the scanner itself breaks.
 
-### Window Frame and Rounded Corners
+### Window and Decorations
 
-On Linux + Wayland, the app draws its own client-side frame:
+On Linux, when the compositor gives the window client-side decorations, the application draws its own title bar. It places minimize, maximize/restore and close in the position the desktop asks for (GNOME's button-layout setting), supports dragging the window by the empty title area, double-click to maximise or restore, and the window menu on right-click. Windows and macOS keep their native title bars and traffic lights.
 
-- eframe depends on winit with `default-features = false`, which **silently disables** winit's `wayland-csd-adwaita`. GNOME's Mutter doesn't implement the `xdg-decoration` protocol, so by default winit falls back to a bare-bones frame: square corners, window buttons on the right, ignoring the desktop's `button-layout` setting.
-  This project's `Cargo.toml` explicitly re-enables that feature, so `sctk-adwaita` draws a standard Adwaita frame and reads `org.gnome.desktop.wm.preferences button-layout` via XDG Desktop Portal, so the minimize/maximize/close positions match the desktop setting (left on GNOME by default).
-- The dialogs the app draws itself ("Custom baud rates", "About XCOM") are not system windows, and egui's built-in title bar hard-codes its close button on the right. Both therefore draw their own title bar and read the same desktop `button-layout` setting (via `gsettings`, probed once per process), putting the close button on the left when the desktop does and on the right otherwise; if the setting cannot be read, it stays on the right. See `docs/adr/0001-dialogs-own-their-chrome.md`.
-- The window's bottom rounded corners are drawn by the app: `src/ui/window.rs` overlays a rounded-corner background across the entire window and sets `clear_color`'s alpha to 0. On compositors that support alpha, the corners are transparent (rounded); on those that don't, corners use the panel background (merely square, never black).
-- Windows 11 / macOS use native system frames and rounded corners, unaffected by the above logic.
+The configuration panel, tool panel and send area are resizable; drag a divider to resize, or drag it all the way to the edge to dock that region into a thin strip. Click the strip to reopen it. The View → Panels menu shows or hides each region, and sizes persist in the settings file.
 
 ### Platform Notes
 
@@ -148,14 +144,7 @@ On Linux + Wayland, the app draws its own client-side frame:
 
 ### CJK Fonts
 
-The UI is in Chinese; on startup the program automatically searches for CJK fonts on the system, in this order:
-
-1. Common font paths (e.g., `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`, `C:\Windows\Fonts\msyh.ttc`, `/System/Library/Fonts/PingFang.ttc`);
-2. Via `fontdb` scanning system fonts, matching Noto Sans CJK / Source Han Sans / Microsoft YaHei / PingFang / WenQuanYi, etc.
-
-If none are found, the program still runs but Chinese characters appear as squares, with a status bar prompt to install a font (on Linux, install `fonts-noto-cjk` or `fonts-wqy-microhei`).
-
-The default interface stack prefers a font that contains both Latin and CJK glyphs (such as Noto Sans CJK SC, Microsoft YaHei, or PingFang SC). This avoids the vertical baseline mismatch that occurs when ASCII comes from one font and Chinese from a fallback. Users can still select any installed interface, receive, or send font in **View → Display → Font settings…**.
+GPUI renders with the platform text system. On startup the app scans installed families with fontdb, picks a CJK-capable family when available, and uses it as the interface font when the user has not chosen one. If none is found the UI still runs, but Chinese may appear as boxes; on Linux install fonts-noto-cjk or fonts-wqy-microhei. The interface, receive-area and send-area fonts remain selectable in View → Display → Font settings….
 
 ---
 
@@ -255,7 +244,7 @@ The install script first does a **startup-time self-check** (~130 ms measured), 
 ~/.local/share/icons/hicolor/<size>x<size>/apps/xcom.png   # 48/64/128/256/512
 ```
 
-**`StartupNotify` must be `false` (the template already does this).** It means "the app will send a handshake signal when startup completes" (`_NET_STARTUP_INFO` / activation token). winit makes this handshake **an opt-in API the app must call**, and egui/eframe never calls it. If declared `true`, the Dock stays in "starting" state until the promise times out — **the window is already visible but the taskbar shows a generic icon for several seconds before associating it**. Declaring `false` lets the window match by app id immediately.
+**`StartupNotify` must be `false` (the template already does this).** It means "the app will send a handshake signal when startup completes" (`_NET_STARTUP_INFO` / activation token). winit makes this handshake **an opt-in API the app must call**, and GPUI does not call it. If declared `true`, the Dock stays in "starting" state until the promise times out — **the window is already visible but the taskbar shows a generic icon for several seconds before associating it**. Declaring `false` lets the window match by app id immediately.
 
 **`TryExec` is the most common pitfall**: it resolves on **PATH**, not relative to `Exec`. Setting `Exec` to an absolute path while leaving `TryExec` as a bare name causes `TryExec` to fail, and **GNOME ignores the entire entry** — no menu item, no icon, even though all icon files are present. The template has this line **commented out by default**.
 
@@ -302,52 +291,37 @@ The file is readable JSON and can be edited directly. Fields use `#[serde(defaul
 ## Development
 
 ```bash
-cargo test              # 255 tests
+cargo test              # 191 tests
 cargo clippy --all-targets
 cargo fmt
 ```
 
 Test coverage:
 
-- Hex parsing/formatting, four checksum algorithms (including standard test vectors and real captured frames);
-- Log store line splitting, CRLF across packets, auto-wrap (including CJK double-width), timestamp frame-delimiting, direction markers (including re-rendering when switched off and wrap continuations carrying none), cache trimming;
-- Encoding auto-detection (UTF-8 / GBK Chinese streams) and cross-packet multi-byte decoding;
-- Protocol state machine: response, retransmission, file chunking and ordering;
-- **Real PTY loopback**: opening a device, sending/receiving bytes, write counters, re-opening, handshake lines — covering reader/writer threads and event channels;
-- **Headless UI layout**: using `Context::run_ui` to render a full frame, covering empty logs, both themes, all display modes, bilingual, narrow-window combinations, and asserting primitives are actually produced;
-- **Multi-send column widths**: asserting column widths grow as the panel widens and their sum never exceeds the panel width;
-- **Loop count**: asserting that a configured N-count stops after N rounds, infinite loops don't stop, no checked entries causes a stop, and a round is paced by the last entry's own delay;
-- **Multi-send live settings**: asserting that editing a delay retimes the wait already running, that unchecking a row skips it on its current turn, and that a row checked mid-round joins the next round;
-- **Delay countdown**: asserting the countdown reads the entry's live delay and that the colour bar is actually laid out in the delay cell;
-- **One tick per eframe pass**: asserting `logic` (the minimized path) and `draw` together advance the sequence once, not twice;
-- **Config backward compatibility**: asserting that old config files missing new fields still load (otherwise all settings would silently reset);
-- **UI layer no untranslated text**: scanning `src/ui/`, any Chinese literal not wrapped in `tr()` causes the test to fail;
-- **Splitter drag**: simulating real pointer event sequences, asserting all three splitters can be dragged both ways, content changes accordingly, overflow is clamped, and sizes persist;
-- **Panel collapse**: driving the same real pointer sequences to assert a panel dragged off the window edge folds away while keeping the width to restore, that the edge strip reopens it by click and by drag, that the menu checkbox agrees, and that the centre column keeps its minimum width;
-- **Dialog title bars**: asserting both app-drawn dialogs put the close button where the desktop's `button-layout` says, plus parser unit tests (close on the left only when the left group names it; a value with no colon counts as unset and stays right);
-- **On-demand multi-send list**: adding and removing entries, drag-reorder arithmetic, clearing the legacy fixed pool on load, JSON round-trip, and importing the legacy page format;
-- **Multi-send marker**: asserting the mark lands on the right row, that the status line names the entry and its place in the round, and that ending the run or closing the port clears both the mark and the loop switch — including that `loop_enabled` is never written to, nor read back from, the config file;
-- **Real serial send/receive**: opening a port with PTY, driving timed send and asserting the peer receives repeated payloads, and that send echo indeed enters the receive area without polluting the receive stream;
-- **Protocol frame period**: asserting that changing it retimes the gap already running, so the next frame uses the new period;
-- **Config backward compatibility**: asserting that old configs missing new fields still load.
-
-### Code Structure
+- Hex parsing and formatting, four checksum algorithms, protocol frame parsing and the transfer state machine;
+- Log store line splitting, CRLF across packets, auto-wrap including CJK double-width cells, timestamps, markers and cache trimming;
+- Encoding auto-detection and cross-packet decoding;
+- Real PTY loopback: open/close, read/write, counters and handshake lines;
+- Settings persistence and backward compatibility;
+- Theme contrast and receive-log colour overrides;
+- A GPUI UI smoke test that opens a headless window, lays out the real panels, finds the menu/send/multi/protocol controls and switches tabs;
+- i18n guards: every translation key used by the UI has an English entry, and no Chinese literal in the UI layer bypasses the translation helper.
 
 ```
 src/
-  main.rs          Entry point, font installation
-  app.rs           App state, serial/timer event pump, shortcuts
-  logstore.rs      Receive log: byte stream → display lines (incremental, bounded, re-renderable)
+  main.rs          GPUI bootstrap, window options, quit save
+  app.rs           Retained application entity, serial/timer pump, actions and sends
+  logstore.rs      Receive log: byte stream to display lines (incremental, bounded)
   encoding.rs      Encoding table, auto-detector, streaming decoder
   hex.rs           Lenient hex parsing and formatting
   multi.rs         Multi-send entry list, reordering and import/export
   settings.rs      Config persistence
-  theme.rs         Dark/light themes and receive area colors
-  fonts.rs         CJK font discovery
-  serial/          Serial config, port enumeration (hot-plug), link and read/write threads
+  theme.rs         Component theme selection and receive-log colours
+  fonts.rs         Installed-family scan and font selection
+  serial/          Serial config, port enumeration, link and reader/writer threads
   protocol/        Checksum, frame format, transfer state machine
-  ui/              log_view (virtualized selectable log), panels (various panels),
-                   dialog (title bars for the app's own dialogs), window (window background)
+  ui/              log_view (virtualized selectable log), panels (shell and panels),
+                   dialogs (about, fonts, colours, highlighting, log file, bauds)
 ```
 
 ## License

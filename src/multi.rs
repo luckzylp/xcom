@@ -131,6 +131,7 @@ impl MultiSend {
     }
 
     /// Mutably borrow one entry by its current index.
+    #[cfg(test)]
     pub fn entry_mut(&mut self, index: usize) -> Option<&mut MultiEntry> {
         self.entries.get_mut(index)
     }
