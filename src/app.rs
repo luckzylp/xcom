@@ -90,6 +90,12 @@ pub(crate) enum MultiSendOutcome {
 /// Entries are sent one at a time, with each entry's own delay applied after
 /// it — including the last entry of a round, before the next round begins.
 /// Pacing the sequence this way is what lets a device answer between entries.
+///
+/// Only the membership of the current round is held here.  Every parameter of
+/// an entry — content, HEX, newline, delay and the checked flag — is read from
+/// the settings when the entry is about to go out, and the queue is rebuilt
+/// from the checked set when a round starts, so edits made during a run take
+/// effect on the next cycle instead of being frozen at the start.
 pub(crate) struct MultiRun {
     queue: Vec<usize>,
     position: usize,
@@ -97,8 +103,22 @@ pub(crate) struct MultiRun {
     last_sent: Option<SentEntry>,
     /// When the next entry may go out.
     next_at: Instant,
+    /// The delay interval currently running, if any.
+    wait: Option<DelayWait>,
     /// Whether to start another round after this one.
     looping: bool,
+}
+
+/// The per-entry delay the running multi-send is waiting out.
+///
+/// The entry is kept rather than the duration: the delay field stays editable
+/// while the run waits, and the deadline is recomputed from it on every pass so
+/// a change applies to the wait already in progress.
+pub(crate) struct DelayWait {
+    /// 条目编号 whose delay is counting down.
+    index: usize,
+    /// When the entry went out, i.e. when the delay began.
+    started_at: Instant,
 }
 
 /// The entry a running multi-send sent most recently.
@@ -116,6 +136,20 @@ pub(crate) struct SentEntry {
     /// How many entries the round has.
     pub round_len: usize,
 }
+
+/// A delay countdown the multi-send panel can draw.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MultiCountdown {
+    /// 条目编号 whose delay is running.
+    pub index: usize,
+    /// Fraction of the delay still to wait, in `0.0..=1.0`.
+    pub remaining: f32,
+    /// Whole milliseconds still to wait.
+    pub remaining_ms: u64,
+}
+
+/// How often the delay countdown is repainted while a run waits.
+const COUNTDOWN_REPAINT: Duration = Duration::from_millis(16);
 
 /// The application.
 pub struct XcomApp {
@@ -187,6 +221,14 @@ pub struct XcomApp {
     /// Deferred settings write.
     settings_dirty: bool,
     last_save: Instant,
+    /// Whether `App::logic` already ticked the non-UI work for the pass that
+    /// `App::ui` is now drawing.
+    ///
+    /// eframe calls `logic` and then `ui` for every visible pass, but only
+    /// `logic` while the window is minimized or occluded.  It has to happen in
+    /// both places (a minimized window used to stop the loop on Linux) without
+    /// running the timers twice in a visible pass.
+    logic_ticked: bool,
     /// Set when the CJK font is missing so the warning is emitted once.
     font_warning_shown: bool,
     /// Splitters collected while laying out panels, registered afterwards so
@@ -273,6 +315,7 @@ impl XcomApp {
             applied_fonts: None,
             settings_dirty: false,
             last_save: Instant::now(),
+            logic_ticked: false,
             font_warning_shown: false,
             pending_wrap_cols: None,
             pending_splitters: Vec::new(),
@@ -740,6 +783,19 @@ impl XcomApp {
 
     // -- event pumping ------------------------------------------------------
 
+    /// Run the non-UI work for one eframe pass.
+    ///
+    /// eframe calls [`eframe::App::logic`] before every UI pass, and calls only
+    /// `logic` while the window is minimized or occluded.  Timed work
+    /// therefore lives here: with the pumping in `App::ui` alone, a minimized
+    /// window ran no pass at all and the multi-send loop silently stopped on
+    /// Linux, where a minimized window receives no redraws.
+    pub(crate) fn logic_tick(&mut self, ctx: &Context) {
+        self.logic_ticked = true;
+        self.pump_serial(ctx);
+        self.pump_timers(ctx);
+    }
+
     /// Drain the serial link and route bytes to the log and protocol engine.
     fn pump_serial(&mut self, ctx: &Context) {
         if self.ports.poll() {
@@ -1043,6 +1099,7 @@ impl XcomApp {
             position: 0,
             last_sent: None,
             next_at: now,
+            wait: None,
             looping,
         });
     }
@@ -1068,6 +1125,26 @@ impl XcomApp {
         self.multi_run.as_ref().and_then(|run| run.last_sent)
     }
 
+    /// The delay countdown the running multi-send is in, if any.
+    ///
+    /// The duration comes from the entry's live `delay_ms` on every call, so
+    /// editing the field while the run waits retimes the bar in the same frame
+    /// and matches the deadline `pump_multi` computes.
+    pub(crate) fn multi_delay_countdown(&self, now: Instant) -> Option<MultiCountdown> {
+        let wait = self.multi_run.as_ref()?.wait.as_ref()?;
+        let total_ms = self.settings.multi.delay_after(wait.index);
+        if total_ms == 0 {
+            return None;
+        }
+        let total = Duration::from_millis(total_ms);
+        let remaining = total.saturating_sub(now.saturating_duration_since(wait.started_at));
+        Some(MultiCountdown {
+            index: wait.index,
+            remaining: remaining.as_secs_f32() / total.as_secs_f32(),
+            remaining_ms: u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX),
+        })
+    }
+
     /// Advance the running sequence.  Sends at most one entry per call.
     fn pump_multi(&mut self, ctx: &Context, now: Instant) {
         let Some(run) = self.multi_run.as_ref() else {
@@ -1077,18 +1154,47 @@ impl XcomApp {
             self.stop_multi_run(Level::Warning, tr("串口已关闭，多条发送已停止"));
             return;
         }
-        if now < run.next_at {
-            ctx.request_repaint_after(run.next_at - now);
+
+        // The wait is derived from the entry's *current* delay on every pass,
+        // never from a duration captured when it was scheduled: editing 延迟
+        // while the run waits retimes the wait already in progress, and the
+        // countdown bar reads the same value.
+        let due = match run.wait.as_ref() {
+            Some(wait) => {
+                wait.started_at + Duration::from_millis(self.settings.multi.delay_after(wait.index))
+            }
+            None => run.next_at,
+        };
+        if now < due {
+            if let Some(run) = self.multi_run.as_mut() {
+                run.next_at = due;
+            }
+            // Repaint often enough for the countdown to move; eframe throttles
+            // this while the window is minimized, but still calls `logic`.
+            ctx.request_repaint_after((due - now).min(COUNTDOWN_REPAINT));
             return;
         }
 
         // Copy out what the send needs, then let go of the borrow.
+        let run = self.multi_run.as_ref().expect("checked above");
         let index = run.queue[run.position];
-        let end_of_round = run.position + 1 == run.queue.len();
+        let position = run.position;
+        let end_of_round = position + 1 == run.queue.len();
         let queue_len = run.queue.len();
         let looping = run.looping;
 
-        let outcome = self.send_multi_entry(index, true);
+        // An entry unchecked while the run is under way is skipped from the
+        // moment its turn comes; the next round also stops including it.
+        let outcome = if self
+            .settings
+            .multi
+            .entry(index)
+            .is_some_and(|entry| entry.enabled)
+        {
+            self.send_multi_entry(index, true)
+        } else {
+            MultiSendOutcome::Skipped
+        };
         let delay = Duration::from_millis(self.settings.multi.delay_after(index));
 
         // `Refused` (the writer queue is saturated) holds the position so the
@@ -1098,44 +1204,78 @@ impl XcomApp {
         let advanced = !matches!(outcome, MultiSendOutcome::Refused);
 
         let mut stop_looping = false;
+        let mut no_entries_left = false;
+        let mut next_round: Option<Vec<usize>> = None;
         if advanced && end_of_round && looping {
             self.multi_cycles += 1;
-            stop_looping = self
+            if self
                 .settings
                 .multi
                 .loop_count
-                .is_some_and(|limit| self.multi_cycles >= limit);
+                .is_some_and(|limit| self.multi_cycles >= limit)
+            {
+                stop_looping = true;
+            } else {
+                // A new round re-reads the checked set, so entries checked or
+                // unchecked during the finished round take effect now.
+                let queue = self.settings.multi.enabled_indices();
+                if queue.is_empty() {
+                    no_entries_left = true;
+                } else {
+                    next_round = Some(queue);
+                }
+            }
+        }
+
+        if stop_looping {
+            // Report the passes actually completed: the limit can be lowered
+            // below the progress already made, so it is not the same number.
+            let completed = self.multi_cycles;
+            self.multi_run = None;
+            self.settings.multi.loop_enabled = false;
+            self.multi_cycles = 0;
+            self.mark_settings_dirty();
+            let message = crate::i18n::tr1("循环发送已完成 {} 次", completed);
+            self.ok(message);
+            return;
+        }
+        if no_entries_left {
+            self.stop_multi_run(Level::Warning, tr("没有已勾选的发送条目"));
+            return;
         }
 
         if let Some(run) = self.multi_run.as_mut() {
             if matches!(outcome, MultiSendOutcome::Sent) {
                 run.last_sent = Some(SentEntry {
                     index,
-                    ordinal: run.position + 1,
+                    ordinal: position + 1,
                     round_len: queue_len,
                 });
             }
             if advanced {
-                // A round wraps after its last entry, but the last entry's own
-                // delay still applies — there is no separate round gap.
-                run.position = if end_of_round { 0 } else { run.position + 1 };
+                match next_round {
+                    Some(queue) => {
+                        run.queue = queue;
+                        run.position = 0;
+                    }
+                    // A round wraps after its last entry, but the last entry's
+                    // own delay still applies — there is no separate round gap.
+                    None => run.position = if end_of_round { 0 } else { position + 1 },
+                }
+                run.wait = Some(DelayWait {
+                    index,
+                    started_at: now,
+                });
                 run.next_at = now + delay;
             } else {
                 // Queue saturated: nudge the next attempt just far enough
                 // ahead that the run does not spin at the UI frame rate.
+                run.wait = None;
                 run.next_at = now + Duration::from_millis(5);
             }
         }
 
-        if stop_looping {
-            let limit = self.settings.multi.loop_count.unwrap_or(0);
-            self.multi_run = None;
-            self.settings.multi.loop_enabled = false;
-            self.multi_cycles = 0;
-            self.mark_settings_dirty();
-            let message = crate::i18n::tr1("循环发送已完成 {} 次", limit);
-            self.ok(message);
-        } else if advanced && end_of_round && !looping {
+        if advanced && end_of_round && !looping {
             self.multi_run = None;
             let message = crate::i18n::tr1("已发送 {} 条已勾选条目", queue_len);
             self.ok(message);
@@ -1243,6 +1383,13 @@ impl XcomApp {
 }
 
 impl eframe::App for XcomApp {
+    /// eframe runs this before each UI pass, and on its own while the window
+    /// is minimized or occluded.  The timers and the serial pump have to run
+    /// here or a minimized window pauses them.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.logic_tick(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.draw(ui);
     }
@@ -1313,8 +1460,13 @@ impl XcomApp {
 
         self.note_font_status();
 
-        self.pump_serial(ctx);
-        self.pump_timers(ctx);
+        // eframe already ticked the timers in `logic` for this pass; laying
+        // out a frame directly (headless tests) still needs the fallback, and
+        // the flag is what keeps one pass from sending twice.
+        if !self.logic_ticked {
+            self.logic_tick(ctx);
+        }
+        self.logic_ticked = false;
         self.handle_shortcuts(ctx);
 
         panels::menu_bar(self, ui);
@@ -3841,6 +3993,31 @@ mod layout_tests {
         );
     }
 
+    /// The delay the run is waiting out is drawn as a colour bar inside that
+    /// entry's delay cell.
+    #[test]
+    fn the_delay_countdown_is_painted_in_the_delay_cell() {
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.show_tool_panel = true;
+        app.side_tab = SideTab::Multi;
+        arm(&mut app, &[("A", 1000), ("B", 0)]);
+        let start = Instant::now();
+        app.start_multi_run(true, start);
+        app.multi_run.as_mut().expect("run").wait = Some(DelayWait {
+            index: 0,
+            started_at: start,
+        });
+
+        full_frame(&ctx, &mut app, input());
+        let bar = panels::probe::multi_delay_bar_rect();
+        assert_ne!(bar, egui::Rect::NOTHING, "no countdown bar was laid out");
+        assert!(
+            bar.width() > 0.0 && bar.height() > 0.0,
+            "the countdown bar has no area: {bar:?}"
+        );
+    }
+
     #[test]
     #[cfg(unix)]
     fn the_sequence_waits_each_entry_delay_before_the_next() {
@@ -3912,6 +4089,195 @@ mod layout_tests {
             !app.settings.multi.loop_enabled,
             "the loop switch is cleared"
         );
+    }
+
+    /// The countdown the panel paints follows the entry's live delay, and a
+    /// delay edited while the run waits retimes the wait immediately.
+    #[test]
+    fn the_delay_countdown_reads_the_live_delay() {
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        arm(&mut app, &[("A", 200)]);
+        let start = Instant::now();
+        app.start_multi_run(true, start);
+        assert!(
+            app.multi_delay_countdown(start).is_none(),
+            "nothing is being waited out before the first send"
+        );
+
+        app.multi_run.as_mut().expect("run").wait = Some(DelayWait {
+            index: 0,
+            started_at: start,
+        });
+        let half = app
+            .multi_delay_countdown(start + Duration::from_millis(100))
+            .expect("a countdown");
+        assert_eq!(half.index, 0);
+        assert!((half.remaining - 0.5).abs() < 0.01, "{half:?}");
+        assert_eq!(half.remaining_ms, 100);
+
+        // Editing 延迟 retimes the bar immediately, not one cycle later.
+        app.settings.multi.entries[0].delay_ms = 400;
+        let edited = app
+            .multi_delay_countdown(start + Duration::from_millis(100))
+            .expect("a countdown");
+        assert!((edited.remaining - 0.75).abs() < 0.01, "{edited:?}");
+
+        let done = app
+            .multi_delay_countdown(start + Duration::from_millis(500))
+            .expect("a countdown");
+        assert_eq!(done.remaining_ms, 0);
+        assert_eq!(done.remaining, 0.0);
+    }
+
+    /// Editing 延迟 while a run waits retimes the wait already in progress;
+    /// without that, the change would only be seen one cycle later.
+    #[test]
+    #[cfg(unix)]
+    fn editing_the_delay_retimes_a_wait_already_running() {
+        let Some(mut pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.serial.port = pty.slave_path.clone();
+        if let Err(e) = app.link.open(&app.settings.serial) {
+            eprintln!("skipping: cannot open serial port: {e}");
+            return;
+        }
+        arm(&mut app, &[("A", 500), ("B", 0)]);
+        let start = Instant::now();
+        app.start_multi_run(false, start);
+        app.pump_multi(&ctx, start);
+        assert_eq!(
+            String::from_utf8_lossy(&pty.read_available(Duration::from_millis(80))),
+            "A"
+        );
+
+        app.settings.multi.entries[0].delay_ms = 30;
+        app.pump_multi(&ctx, start + Duration::from_millis(40));
+        assert_eq!(
+            String::from_utf8_lossy(&pty.read_available(Duration::from_millis(120))),
+            "B",
+            "the edited delay must retime the wait already in progress"
+        );
+        assert!(!app.multi_run_active());
+    }
+
+    /// Unchecking a row while a run is under way skips it from that turn on,
+    /// rather than waiting for the next round.
+    #[test]
+    #[cfg(unix)]
+    fn unchecking_an_entry_stops_it_in_the_round_already_running() {
+        let Some(mut pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.serial.port = pty.slave_path.clone();
+        if let Err(e) = app.link.open(&app.settings.serial) {
+            eprintln!("skipping: cannot open serial port: {e}");
+            return;
+        }
+        arm(&mut app, &[("A", 0), ("B", 0)]);
+        app.settings.multi.loop_count = Some(1);
+        app.settings.multi.loop_enabled = true;
+        let start = Instant::now();
+        app.start_multi_run(true, start);
+        app.pump_multi(&ctx, start);
+
+        app.settings.multi.entries[1].enabled = false;
+        app.pump_multi(&ctx, start);
+        assert_eq!(
+            String::from_utf8_lossy(&pty.read_available(Duration::from_millis(120))),
+            "A",
+            "B was unchecked before its turn and must not be sent"
+        );
+        assert!(!app.multi_run_active());
+    }
+
+    /// A row checked during a round joins the next round: the queue is rebuilt
+    /// from the checked set each time a round starts.
+    #[test]
+    #[cfg(unix)]
+    fn checking_an_entry_mid_round_adds_it_to_the_next_round() {
+        let Some(mut pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.serial.port = pty.slave_path.clone();
+        if let Err(e) = app.link.open(&app.settings.serial) {
+            eprintln!("skipping: cannot open serial port: {e}");
+            return;
+        }
+        arm(&mut app, &[("A", 0), ("B", 0), ("C", 0)]);
+        app.settings.multi.entries[1].enabled = false;
+        app.settings.multi.loop_count = Some(2);
+        app.settings.multi.loop_enabled = true;
+        let start = Instant::now();
+        app.start_multi_run(true, start);
+
+        app.pump_multi(&ctx, start); // A, queue is [0, 2]
+        app.settings.multi.entries[1].enabled = true;
+        app.pump_multi(&ctx, start); // C ends round 1; queue becomes [0, 1, 2]
+        app.pump_multi(&ctx, start); // A
+        app.pump_multi(&ctx, start); // B
+        app.pump_multi(&ctx, start); // C ends round 2, the limit stops it
+
+        assert_eq!(
+            String::from_utf8_lossy(&pty.read_available(Duration::from_millis(160))),
+            "ACABC",
+            "B joined the round after it was checked"
+        );
+        assert!(!app.multi_run_active());
+    }
+
+    /// `logic_tick` (the path eframe uses while the window is minimized) and
+    /// `draw` share one tick per pass, so a visible frame must not advance the
+    /// sequence twice.
+    #[test]
+    #[cfg(unix)]
+    fn one_eframe_pass_advances_the_sequence_once() {
+        let Some(mut pty) = TestPty::open() else {
+            eprintln!("skipping: openpty unavailable");
+            return;
+        };
+        let ctx = egui::Context::default();
+        // One pass, i.e. one `logic` + `ui` pair.  A discard (and therefore a
+        // second pair) is a second pass and is allowed to advance again.
+        ctx.options_mut(|options| options.max_passes = 1.try_into().expect("one pass"));
+        crate::fonts::install_default_families(&ctx);
+        let mut app = XcomApp::headless(crate::settings::Settings::default());
+        app.settings.serial.port = pty.slave_path.clone();
+        if let Err(e) = app.link.open(&app.settings.serial) {
+            eprintln!("skipping: cannot open serial port: {e}");
+            return;
+        }
+        arm(&mut app, &[("A", 0), ("B", 0)]);
+        let start = Instant::now();
+        app.start_multi_run(false, start);
+
+        app.logic_tick(&ctx);
+        let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
+        output.textures_delta.clear();
+        assert_eq!(
+            String::from_utf8_lossy(&pty.read_available(Duration::from_millis(80))),
+            "A",
+            "the draw pass must not tick a second time"
+        );
+        assert!(app.multi_run_active(), "B is still to go");
+
+        app.logic_tick(&ctx);
+        let mut output = ctx.run_ui(input(), |ui| app.draw(ui));
+        output.textures_delta.clear();
+        assert_eq!(
+            String::from_utf8_lossy(&pty.read_available(Duration::from_millis(80))),
+            "B"
+        );
+        assert!(!app.multi_run_active());
     }
 
     #[test]
@@ -4008,6 +4374,7 @@ mod layout_tests {
                 round_len: 3,
             }),
             next_at: Instant::now(),
+            wait: None,
             looping: true,
         });
     }

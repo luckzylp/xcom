@@ -184,6 +184,9 @@ pub struct ProtocolEngine {
     sequence: u8,
     /// When the current phase expires.
     deadline: Option<Instant>,
+    /// When the current phase began, so a configuration change can recompute
+    /// the deadline from the new period instead of leaving the old one.
+    phase_started: Option<Instant>,
     /// Bytes received but not yet delimited into a frame.
     rx: Vec<u8>,
     last_rx: Option<Instant>,
@@ -202,6 +205,7 @@ impl ProtocolEngine {
             pending: None,
             sequence: 0,
             deadline: None,
+            phase_started: None,
             rx: Vec::new(),
             last_rx: None,
             events: Vec::new(),
@@ -213,9 +217,18 @@ impl ProtocolEngine {
     }
 
     /// Update configuration.  A running transfer keeps its in-flight frame.
+    ///
+    /// The frame period also paces the gap already running between two
+    /// automatic frames, so it is rescheduled from when that gap began: a
+    /// change applies to the next frame instead of the one after it.
     pub fn set_config(&mut self, cfg: ProtocolConfig) {
         self.cfg = cfg;
         self.cfg.normalize();
+        if self.phase == Phase::Gap
+            && let Some(start) = self.phase_started
+        {
+            self.deadline = Some(start + self.period());
+        }
     }
 
     pub fn set_baud(&mut self, baud: u32) {
@@ -275,6 +288,7 @@ impl ProtocolEngine {
         self.phase = Phase::Ready;
         self.pending = None;
         self.deadline = None;
+        self.phase_started = None;
         self.rx.clear();
         self.last_rx = None;
     }
@@ -351,6 +365,7 @@ impl ProtocolEngine {
         self.phase = Phase::Ready;
         self.pending = None;
         self.deadline = Some(now);
+        self.phase_started = Some(now);
     }
 
     /// Discard any running task without emitting a "stopped" event.
@@ -371,6 +386,7 @@ impl ProtocolEngine {
         self.phase = Phase::Ready;
         self.pending = None;
         self.deadline = None;
+        self.phase_started = None;
     }
 
     fn on_timeout(&mut self, now: Instant) -> Option<Vec<u8>> {
@@ -395,6 +411,7 @@ impl ProtocolEngine {
             attempt,
         });
         self.deadline = Some(now + self.period());
+        self.phase_started = Some(now);
         Some(pending.bytes)
     }
 
@@ -453,6 +470,7 @@ impl ProtocolEngine {
             Some(TaskKind::Auto) | Some(TaskKind::File) => {
                 self.phase = Phase::Gap;
                 self.deadline = Some(now + self.period());
+                self.phase_started = Some(now);
             }
             None => self.finish(),
         }
@@ -475,6 +493,7 @@ impl ProtocolEngine {
         });
         self.phase = Phase::AwaitingAck;
         self.deadline = Some(now + self.period());
+        self.phase_started = Some(now);
         Some(bytes)
     }
 
@@ -509,6 +528,7 @@ impl ProtocolEngine {
         }
         self.phase = Phase::AwaitingAck;
         self.deadline = Some(now + self.period());
+        self.phase_started = Some(now);
         Some(bytes)
     }
 
@@ -659,6 +679,38 @@ mod tests {
         let second = e.tick(later).expect("second auto frame after the gap");
         assert_ne!(first, second, "each period gets its own sequence number");
         assert!(e.is_running(), "auto keeps going until stopped");
+    }
+
+    /// A new frame period retimes the gap already running, so the change
+    /// applies to the next frame rather than the one after it.
+    #[test]
+    fn changing_the_frame_period_retimes_the_gap_already_running() {
+        let base = ProtocolConfig {
+            frame_period_ms: 1000,
+            max_retries: 2,
+            ..Default::default()
+        };
+        let mut e = ProtocolEngine::new(base.clone(), 115200);
+        let start = Instant::now();
+        e.start_auto(vec![0x01], start);
+        let _ = e.tick(start).expect("first auto frame");
+        let _ = deliver_ack(&mut e, start);
+        let acked_at = start + Duration::from_millis(frame::idle_timeout_ms(e.baud));
+
+        // Under the old period the next frame is a second after the ack.
+        assert!(
+            e.tick(acked_at + Duration::from_millis(20)).is_none(),
+            "the old gap must still be in force before the change"
+        );
+
+        e.set_config(ProtocolConfig {
+            frame_period_ms: 10,
+            ..base
+        });
+        assert!(
+            e.tick(acked_at + Duration::from_millis(20)).is_some(),
+            "the new period must apply to the gap already running"
+        );
     }
 
     #[test]

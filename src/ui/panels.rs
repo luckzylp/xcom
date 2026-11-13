@@ -9,7 +9,7 @@
 use eframe::egui::{self, Context, RichText, Ui};
 use std::path::PathBuf;
 
-use crate::app::{Level, SideTab, XcomApp, draw_log};
+use crate::app::{Level, MultiCountdown, SideTab, XcomApp, draw_log};
 use crate::encoding::EncodingId;
 use crate::highlight::HighlightRule;
 use crate::i18n::{self, Lang, tr};
@@ -58,6 +58,8 @@ pub(crate) mod probe {
             const { RefCell::new(Vec::new()) };
         static MULTI_HEADER_RECTS: RefCell<Vec<egui::Rect>> = const { RefCell::new(Vec::new()) };
         static MULTI_ACTIVE_ROW_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
+        /// The strip the delay countdown is painted into, when one is running.
+        static MULTI_DELAY_BAR_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static MULTI_ADD_RECT: Cell<egui::Rect> = const { Cell::new(egui::Rect::NOTHING) };
         static MULTI_DELETE_RECTS: RefCell<Vec<(usize, egui::Rect)>> =
             const { RefCell::new(Vec::new()) };
@@ -448,6 +450,7 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn begin_multi_panel() {
         MULTI_ACTIVE_ROW_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
+        MULTI_DELAY_BAR_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
         MULTI_ADD_RECT.with(|rect| rect.set(egui::Rect::NOTHING));
         MULTI_DELETE_RECTS.with(|rects| rects.borrow_mut().clear());
         MULTI_HANDLE_RECTS.with(|rects| rects.borrow_mut().clear());
@@ -490,6 +493,20 @@ pub(crate) mod probe {
     #[cfg(test)]
     pub(crate) fn multi_active_row_rect() -> egui::Rect {
         MULTI_ACTIVE_ROW_RECT.with(|cell| cell.get())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_multi_delay_bar_rect(rect: egui::Rect) {
+        MULTI_DELAY_BAR_RECT.with(|cell| cell.set(rect));
+    }
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn set_multi_delay_bar_rect<R>(_rect: R) {}
+
+    /// The delay countdown strip the panel painted, or `Rect::NOTHING`.
+    #[cfg(test)]
+    pub(crate) fn multi_delay_bar_rect() -> egui::Rect {
+        MULTI_DELAY_BAR_RECT.with(|cell| cell.get())
     }
 
     #[cfg(test)]
@@ -3254,6 +3271,40 @@ fn multi_column_widths(viewport: f32, gap: f32, headers: [f32; 9]) -> ([f32; 9],
     (widths, overflows)
 }
 
+/// The strip inside a delay cell that carries the countdown.
+///
+/// It sits on the cell's bottom edge rather than behind the number: the
+/// `DragValue` stays fully legible and editable while the bar drains.
+fn delay_countdown_bar(cell: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(cell.left() + 1.0, cell.bottom() - 4.0),
+        egui::pos2(cell.right() - 1.0, cell.bottom() - 1.0),
+    )
+}
+
+/// Paint the remaining part of a delay as a colour bar.
+///
+/// The full strip is the faint track; the solid part is what is still to wait,
+/// so the bar shrinks towards zero as the next entry becomes due.
+fn paint_delay_countdown(
+    ui: &Ui,
+    cell: egui::Rect,
+    countdown: MultiCountdown,
+    colour: egui::Color32,
+) {
+    let bar = delay_countdown_bar(cell);
+    let track = egui::Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 48);
+    ui.painter()
+        .rect_filled(bar, egui::CornerRadius::ZERO, track);
+    let remaining = countdown.remaining.clamp(0.0, 1.0);
+    let filled = egui::Rect::from_min_max(
+        bar.min,
+        egui::pos2(bar.left() + bar.width() * remaining, bar.bottom()),
+    );
+    ui.painter()
+        .rect_filled(filled, egui::CornerRadius::ZERO, colour);
+}
+
 fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
     probe::begin_multi_panel();
     let running = app.multi_run_active();
@@ -3337,8 +3388,13 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
         ui.label(tr("循环次数"));
         let mut forever = app.settings.multi.loop_count.is_none();
         if ui.checkbox(&mut forever, tr("无限循环")).changed() {
+            // The new limit applies from the current progress, not from zero:
+            // the loop is already under way and a change is a hot update.  An
+            // idle panel has no progress to keep, so its stale count clears.
             app.settings.multi.loop_count = if forever { None } else { Some(10) };
-            app.multi_cycles = 0;
+            if !app.multi_run_active() {
+                app.multi_cycles = 0;
+            }
             app.mark_settings_dirty();
         }
         match app.settings.multi.loop_count {
@@ -3360,7 +3416,9 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                     .changed()
                 {
                     app.settings.multi.loop_count = Some(value);
-                    app.multi_cycles = 0;
+                    if !app.multi_run_active() {
+                        app.multi_cycles = 0;
+                    }
                     app.mark_settings_dirty();
                 }
             }
@@ -3468,6 +3526,8 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
 
     let entries_len = app.settings.multi.entries.len();
     let active_index = app.multi_run_sent().map(|sent| sent.index);
+    // Taken once for the whole table so every row reads the same instant.
+    let countdown = app.multi_delay_countdown(std::time::Instant::now());
     let scroll_to_last = ui
         .ctx()
         .data(|data| data.get_temp::<bool>(scroll_to_last_id).unwrap_or(false));
@@ -3582,18 +3642,31 @@ fn multi_panel(app: &mut XcomApp, ui: &mut Ui) {
                         )
                         .changed();
                     let mut delay = entry.delay_ms;
-                    if ui
-                        .add_sized(
-                            [delay_w, row_height],
-                            egui::DragValue::new(&mut delay)
-                                .speed(5.0)
-                                .range(0..=3_600_000)
-                                .suffix(" ms"),
-                        )
-                        .changed()
-                    {
+                    let delay_control = ui.add_sized(
+                        [delay_w, row_height],
+                        egui::DragValue::new(&mut delay)
+                            .speed(5.0)
+                            .range(0..=3_600_000)
+                            .suffix(" ms"),
+                    );
+                    if delay_control.changed() {
                         entry.delay_ms = delay;
                         dirty = true;
+                    }
+                    if let Some(countdown) = countdown
+                        && countdown.index == index
+                    {
+                        paint_delay_countdown(
+                            ui,
+                            delay_control.rect,
+                            countdown,
+                            active_colours.bar,
+                        );
+                        probe::set_multi_delay_bar_rect(delay_countdown_bar(delay_control.rect));
+                        delay_control.on_hover_text(crate::i18n::tr1(
+                            "延迟倒计时：剩余 {} ms",
+                            countdown.remaining_ms,
+                        ));
                     }
                     let send_hint = if entry.newline && multi_newline {
                         tr("发送此条目（含新行）")

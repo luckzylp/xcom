@@ -57,7 +57,8 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 | Clear sent (also resets Tx/Rx counters) | ✅ | |
 | Status bar: Tx/Rx byte counts, CTS/DSR/DCD, system time | ✅ | Also shows RI indicator |
 | Multi-send: on-demand list | ✅ | Add entries as needed (no fixed slot count) with the **Add entry** button, remove a row with **×**, and drag the `#` cell to reorder; entries have note, enable, HEX, newline toggles; the table scrolls when the list is longer than the panel. New rows start without HEX/newline; the multi-send panel's own **Newline CR/LF** controls the bytes, and **Newline all** sets every row's flag |
-| Multi-send: auto loop send | ✅ | Sends only checked entries; supports **infinite loop** or **specified loop count**; a round is paced entirely by each entry's own delay, with no separate round gap |
+| Multi-send: auto loop send | ✅ | Sends only checked entries; supports **infinite loop** or **specified loop count**; a round is paced entirely by each entry's own delay, with no separate round gap. Every entry setting is read live: edits made during a run (content, HEX, newline, delay, check state, loop count) apply from the next cycle, and the delay cell shows a colour-bar countdown while the run waits |
+| Multi-send: live edit / minimised window | ✅ | Changing any entry parameter during a run takes effect on the next cycle whether or not loop sending is checked; the loop keeps running while the window is minimised (Linux included) |
 | Multi-send: send all checked entries at once | ✅ | "Send Checked" button, each sent once in order |
 | Multi-send: import/export entries | ✅ | JSON format, easy to edit and version-control |
 | Protocol transfer (Modbus RTU variant, Send-Ack) | ✅ | See [Protocol Transfer](#protocol-transfer) |
@@ -83,6 +84,8 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 - **Adjustable receive area line spacing** (in the font settings window); auto-wrap width follows window resize and the selected font.
 - **Collapsible side panels**: drag the configuration panel's splitter all the way left (or the tool panel's all the way right) and it snaps shut, handing the width to the receive area. A hairline stays at the edge, with a chevron on hover to open it again; the "Configuration panel / Tool panel" items under **View** are the same state. The centre column keeps a 320px floor, so each panel's maximum is a *soft* one that only applies when the window can spare the room.
 - **The multi-send panel marks the entry being sent**: during "send checked" or looping, the entry in flight is highlighted with a leading colour bar, and the send status bar below the table shows `Sending #3 (3 / 7)` using the same number as the table's `#` column (the run spans the whole list). The mark clears when the run ends, is stopped, the port closes, or the app restarts. "Loop sending" is a run state rather than a saved preference, so it never survives into a state where it claims to be looping but isn't. Adding, deleting and reordering are disabled while a run is in flight.
+- **Delay countdown and live settings**: while a run waits out an entry's delay, a colour bar under that entry's delay field drains with the remaining time. The bar and the deadline both read the entry's current `delay_ms`, so editing the delay retimes the wait already in progress. All entry settings (content, HEX, newline, delay, check state) and the loop count are read from the live list: unchecked entries are skipped from their turn on, newly checked ones join the next round, and the loop count applies at the next round boundary without resetting completed passes. The protocol panel's frame period likewise retimes the gap already in progress, so a change governs the very next frame.
+- **Timers keep running while minimised**: eframe skips UI passes for a minimised or occluded window, so the serial pump and every timer run from `App::logic` as well. The multi-send loop, timed send, file transfer and protocol state machine continue in the background on Linux, where a minimised window used to stop the loop altogether. Hidden repaints are throttled by eframe to about 10 Hz, so delays shorter than 100 ms are quantised while the window is minimised and return to normal once it is restored.
 - Configuration file persistence; restores last serial and display options after restart.
 
 ---
@@ -314,6 +317,9 @@ Test coverage:
 - **Headless UI layout**: using `Context::run_ui` to render a full frame, covering empty logs, both themes, all display modes, bilingual, narrow-window combinations, and asserting primitives are actually produced;
 - **Multi-send column widths**: asserting column widths grow as the panel widens and their sum never exceeds the panel width;
 - **Loop count**: asserting that a configured N-count stops after N rounds, infinite loops don't stop, no checked entries causes a stop, and a round is paced by the last entry's own delay;
+- **Multi-send live settings**: asserting that editing a delay retimes the wait already running, that unchecking a row skips it on its current turn, and that a row checked mid-round joins the next round;
+- **Delay countdown**: asserting the countdown reads the entry's live delay and that the colour bar is actually laid out in the delay cell;
+- **One tick per eframe pass**: asserting `logic` (the minimized path) and `draw` together advance the sequence once, not twice;
 - **Config backward compatibility**: asserting that old config files missing new fields still load (otherwise all settings would silently reset);
 - **UI layer no untranslated text**: scanning `src/ui/`, any Chinese literal not wrapped in `tr()` causes the test to fail;
 - **Splitter drag**: simulating real pointer event sequences, asserting all three splitters can be dragged both ways, content changes accordingly, overflow is clamped, and sizes persist;
@@ -322,6 +328,7 @@ Test coverage:
 - **On-demand multi-send list**: adding and removing entries, drag-reorder arithmetic, clearing the legacy fixed pool on load, JSON round-trip, and importing the legacy page format;
 - **Multi-send marker**: asserting the mark lands on the right row, that the status line names the entry and its place in the round, and that ending the run or closing the port clears both the mark and the loop switch — including that `loop_enabled` is never written to, nor read back from, the config file;
 - **Real serial send/receive**: opening a port with PTY, driving timed send and asserting the peer receives repeated payloads, and that send echo indeed enters the receive area without polluting the receive stream;
+- **Protocol frame period**: asserting that changing it retimes the gap already running, so the next frame uses the new period;
 - **Config backward compatibility**: asserting that old configs missing new fields still load.
 
 ### Code Structure

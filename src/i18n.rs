@@ -607,6 +607,7 @@ static EN: &[(&str, &str)] = &[
     ("串口已关闭，多条发送已停止", "Port closed; multi-send stopped"),
 
     ("延迟", "Delay"),
+    ("延迟倒计时：剩余 {} ms", "Delay countdown: {} ms left"),
 
     ("已停止循环发送", "Loop sending stopped"),
 
