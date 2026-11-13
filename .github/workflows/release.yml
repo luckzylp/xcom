@@ -11,18 +11,27 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.target }}${{ matrix.suffix }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # ── Linux (glibc 2.17 baseline via zig) ────────────────
+          # ── Linux: glibc 2.17 baseline (zig) ───────────────────
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            suffix: -glibc2.17
             zig_target: x86_64-unknown-linux-gnu.2.17
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            suffix: -glibc2.17
             zig_target: aarch64-unknown-linux-gnu.2.17
+          # ── Linux: runner glibc (latest) ───────────────────────
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            suffix: -glibc-latest
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            suffix: -glibc-latest
           # ── Windows ────────────────────────────────────────────
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -68,11 +77,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}${{ matrix.suffix }}
 
       # ── Build ──────────────────────────────────────────────────
-      # zigbuild pins the glibc symbol baseline, so the Linux artifact runs
-      # on distros older than the runner (CentOS 7 / Ubuntu 16.04 and up).
+      # zigbuild pins the glibc symbol baseline, so the -glibc2.17 Linux
+      # artifact runs on distros older than the runner (CentOS 7 / Ubuntu
+      # 16.04 and up); the -glibc-latest artifact uses the runner's glibc.
       - name: Build (Linux, glibc 2.17)
         if: matrix.zig_target
         run: cargo zigbuild --release --locked --target ${{ matrix.zig_target }}
@@ -90,13 +100,13 @@ jobs:
           # Strip leading 'v' from tag if present
           version="${version#v}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "archive=xcom-${version}-${{ matrix.target }}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "archive=xcom-${version}-${{ matrix.target }}${{ matrix.suffix }}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          staging="xcom-${{ steps.artifact.outputs.version }}-${{ matrix.target }}"
+          staging="xcom-${{ steps.artifact.outputs.version }}-${{ matrix.target }}${{ matrix.suffix }}"
           mkdir -p "$staging"
           bin="target/${{ matrix.target }}/release/xcom"
           [ -f "$bin" ] || bin="target/${{ matrix.target }}/release/xcom.exe"
@@ -120,7 +130,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          staging="xcom-${{ steps.artifact.outputs.version }}-${{ matrix.target }}"
+          staging="xcom-${{ steps.artifact.outputs.version }}-${{ matrix.target }}${{ matrix.suffix }}"
           mkdir -p "$staging"
           bin="target/${{ matrix.target }}/release/xcom.exe"
           [ -f "$bin" ] || bin="target/${{ matrix.target }}/release/xcom"
