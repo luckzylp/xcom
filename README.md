@@ -142,7 +142,7 @@ On Linux + Wayland, the app draws its own client-side frame:
 
 | Platform | Notes |
 | --- | --- |
-| **Linux** | Add your user to the `dialout` group for sudo-free serial port access: `sudo usermod -aG dialout $USER` (re-login required). File dialogs use XDG Desktop Portal; if the system lacks a portal, the path selection before "Save Raw Data" may not respond — use the config file or run in a supported environment. |
+| **Linux** | Add your user to the `dialout` group for sudo-free serial port access: `sudo usermod -aG dialout $USER` (re-login required). File dialogs use XDG Desktop Portal; if the system lacks a portal, the path selection before "Save Raw Data" may not respond — use the config file or run in a supported environment. Released binaries use a glibc 2.17 symbol baseline, so they run on CentOS 7 / Ubuntu 16.04 and newer, and still need `libudev` at runtime. |
 | **Windows** | Release builds don't pop up a console window. Requires the VC++ runtime (built into modern Windows). |
 | **macOS** | On first launch, allow the app in "System Settings → Privacy & Security"; serial devices look like `/dev/tty.usbserial-*`. |
 

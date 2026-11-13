@@ -172,7 +172,7 @@ Linux + Wayland 下由应用自绘客户端边框：
 
 | 平台 | 说明 |
 | --- | --- |
-| **Linux** | 需要把用户加入 `dialout` 组才能免 sudo 访问串口：`sudo usermod -aG dialout $USER`（重新登录生效）。文件对话框使用 XDG Desktop Portal；若系统未提供 portal，改用「保存原始数据」前的路径选择会无响应，此时可通过配置文件或直接在支持的环境运行。 |
+| **Linux** | 需要把用户加入 `dialout` 组才能免 sudo 访问串口：`sudo usermod -aG dialout $USER`（重新登录生效）。文件对话框使用 XDG Desktop Portal；若系统未提供 portal，改用「保存原始数据」前的路径选择会无响应，此时可通过配置文件或直接在支持的环境运行。发布的二进制以 glibc 2.17 符号基线构建，可在 CentOS 7 / Ubuntu 16.04 及更新的发行版上运行，运行时仍需 `libudev`。 |
 | **Windows** | 发布版默认不弹出控制台窗口。运行需要 VC++ 运行库（现代 Windows 已内置）。 |
 | **macOS** | 首次运行需在「系统设置 → 隐私与安全性」中允许，串口设备形如 `/dev/tty.usbserial-*`。 |
 
