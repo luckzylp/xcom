@@ -1959,12 +1959,12 @@ mod layout_tests {
     }
 
     #[test]
-    fn rust_version_requirement_is_1_90_0() {
+    fn rust_version_requirement_is_1_100_0() {
         let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
             .expect("Cargo.toml is readable");
         assert!(
-            manifest.contains("rust-version = \"1.90.0\""),
-            "Cargo.toml must require Rust 1.90.0"
+            manifest.contains("rust-version = \"1.100.0\""),
+            "Cargo.toml must require Rust 1.100.0"
         );
     }
 

@@ -94,7 +94,7 @@ Features are aligned with the official documentation ([ATK-XCOM v3.0 manual](htt
 
 ### Prerequisites
 
-You only need a recent Rust toolchain (**1.90+**, `edition 2024`):
+You only need a recent Rust toolchain (**1.100+**, `edition 2024`):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
