@@ -100,15 +100,15 @@ You only need a recent Rust toolchain (**1.100+**, `edition 2024`):
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Linux also requires graphics development libraries (most desktop distros already include them):
+Linux also requires graphics and udev development libraries (most desktop distros already include them):
 
 ```bash
 # Debian / Ubuntu
 sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev \
-                 libx11-dev libgl1-mesa-dev
+                 libx11-dev libgl1-mesa-dev libudev-dev
 # Fedora
 sudo dnf install gcc pkgconf-pkg-config libxkbcommon-devel wayland-devel \
-                 libX11-devel mesa-libGL-devel
+                 libX11-devel mesa-libGL-devel systemd-devel
 ```
 
 ### Build and Run
