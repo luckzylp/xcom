@@ -55,11 +55,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux
+          # Linux (glibc 2.17 baseline via zig)
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            zig_target: x86_64-unknown-linux-gnu.2.17
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            zig_target: aarch64-unknown-linux-gnu.2.17
           # Windows
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -85,10 +87,25 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
             libudev-dev
+      - name: Install zig
+        if: matrix.zig_target
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install cargo-zigbuild
+        if: matrix.zig_target
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Build (Linux, glibc 2.17)
+        if: matrix.zig_target
+        run: cargo zigbuild --release --locked --target ${{ matrix.zig_target }}
+      - name: Build
+        if: ${{ !matrix.zig_target }}
+        run: cargo build --release --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v6
         with:
           name: xcom-${{ matrix.target }}
