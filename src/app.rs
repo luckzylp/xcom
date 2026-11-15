@@ -2444,6 +2444,168 @@ mod ui_tests {
         .unwrap();
     }
 
+    /// The serial section keeps the egui layout.
+    ///
+    /// Two things carried over from main's `layout_tests`: the refresh button
+    /// shares the port selector's row (rather than taking one of its own), and
+    /// the open button is capped at 168 px and centred 16 px left of the
+    /// section, so it reads as a control instead of a separator.
+    #[gpui_kit::test]
+    fn the_serial_section_matches_the_egui_layout(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+
+            let px = |value: gpui_kit::Pixels| f32::from(value);
+            let left = |b: gpui_kit::Bounds<gpui_kit::Pixels>| px(b.origin.x);
+            let right = |b: gpui_kit::Bounds<gpui_kit::Pixels>| px(b.origin.x) + px(b.size.width);
+            let mid_x =
+                |b: gpui_kit::Bounds<gpui_kit::Pixels>| px(b.origin.x) + px(b.size.width) / 2.0;
+            let mid_y =
+                |b: gpui_kit::Bounds<gpui_kit::Pixels>| px(b.origin.y) + px(b.size.height) / 2.0;
+
+            let row = window.find("serial-open-row").bounds();
+            let port = window.find("port").bounds();
+            let refresh = window.find("refresh-ports").bounds();
+            let toggle = window.find("toggle-port").bounds();
+
+            assert!(
+                left(refresh) >= right(port) - 0.5,
+                "refresh must sit to the right of the port selector: {refresh:?} vs {port:?}"
+            );
+            assert!(
+                (mid_y(port) - mid_y(refresh)).abs() <= 1.0,
+                "refresh must share the port selector's row: {refresh:?} vs {port:?}"
+            );
+
+            let offset = mid_x(toggle) - mid_x(row);
+            assert!(
+                (offset + 16.0).abs() <= 1.0,
+                "open button offset should be -16px from the section centre, got {offset:.2}px"
+            );
+            let width = px(toggle.size.width);
+            assert!(
+                (96.0..=168.5).contains(&width),
+                "open button must stay between 96 and 168px, got {width:.2}px"
+            );
+        })
+        .unwrap();
+    }
+
+    /// The five menu titles sit on one row, left to right.
+    #[gpui_kit::test]
+    fn menu_titles_share_one_row_in_reading_order(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+
+            let px = |value: gpui_kit::Pixels| f32::from(value);
+            let mut previous_right: Option<f32> = None;
+            let mut row_y: Option<f32> = None;
+            for id in [
+                "menu-file",
+                "menu-edit",
+                "menu-view",
+                "menu-tools",
+                "menu-help",
+            ] {
+                let bounds = window.find(id).bounds();
+                let mid_y = px(bounds.origin.y) + px(bounds.size.height) / 2.0;
+                let left = px(bounds.origin.x);
+                let right = left + px(bounds.size.width);
+
+                match row_y {
+                    Some(expected) => assert!(
+                        (mid_y - expected).abs() <= 1.0,
+                        "{id} moved off the menu row: {mid_y:.2} vs {expected:.2}"
+                    ),
+                    None => row_y = Some(mid_y),
+                }
+                if let Some(previous) = previous_right {
+                    assert!(
+                        left >= previous - 0.5,
+                        "{id} is not to the right of the previous menu: {left:.2} vs {previous:.2}"
+                    );
+                }
+                previous_right = Some(right);
+            }
+        })
+        .unwrap();
+    }
+
+    /// The send toolbar keeps its actions as one group.
+    ///
+    /// egui decides between "right-aligned on the options row" and "wrapped to
+    /// a left-aligned second row"; in both cases the group moves as a unit, so
+    /// the first and last action always share a row and never overlap the
+    /// options.
+    #[gpui_kit::test]
+    fn send_toolbar_keeps_the_actions_in_one_group(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+
+            let px = |value: gpui_kit::Pixels| f32::from(value);
+            let left = |b: gpui_kit::Bounds<gpui_kit::Pixels>| px(b.origin.x);
+            let right = |b: gpui_kit::Bounds<gpui_kit::Pixels>| px(b.origin.x) + px(b.size.width);
+            let mid_y =
+                |b: gpui_kit::Bounds<gpui_kit::Pixels>| px(b.origin.y) + px(b.size.height) / 2.0;
+
+            let toolbar = window.find("send-toolbar").bounds();
+            let actions = window.find("send-actions").bounds();
+            let hex = window.find("send-hex").bounds();
+            let first = window.find("send").bounds();
+            let last = window.find("send-file").bounds();
+
+            assert!(
+                (mid_y(first) - mid_y(last)).abs() <= 1.0,
+                "the action group split across rows: {first:?} vs {last:?}"
+            );
+
+            if (mid_y(actions) - mid_y(hex)).abs() <= 1.0 {
+                assert!(
+                    (right(toolbar) - right(actions)).abs() <= 1.5,
+                    "actions should hug the right edge when they fit: {actions:?} in {toolbar:?}"
+                );
+            } else {
+                assert!(
+                    (left(actions) - left(toolbar)).abs() <= 1.5,
+                    "a wrapped action group should start at the left edge: {actions:?}"
+                );
+            }
+
+            assert!(
+                left(actions) >= right(hex) - 0.5 || mid_y(actions) > mid_y(hex) + 1.0,
+                "actions overlap the options: {actions:?} vs {hex:?}"
+            );
+        })
+        .unwrap();
+    }
+
     /// Drives one pump turn with no port open.
     ///
     /// The 16 ms foreground loop is compiled out under `cfg(test)`, so without

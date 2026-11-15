@@ -908,6 +908,9 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
     let dtr = app.settings.serial.dtr;
     let rts = app.settings.serial.rts;
     let summary = app.settings.serial.summary();
+    // egui 版把打开按钮限制在 96..168 之间并相对串口区中心左移 16px：
+    // 撑满整个宽度的按钮会被读成分隔线而不是控件。
+    let open_button_width = (app.settings.left_panel_width - 24.0).clamp(96.0, 168.0);
 
     v_flex()
         .id("left-panel-scroll")
@@ -920,14 +923,19 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
         .border_color(cx.theme().border)
         .bg(cx.theme().sidebar)
         .child(section_title(tr("串口设置"), cx))
+        // 串口：选择器与刷新按钮占同一行，刷新贴在右侧、与选择器同高。
+        // egui 版就是这个排布（见 main 的 serial_port_combo_and_refresh_share_row）。
         .child(field_row(
             tr("串口"),
-            choice_button("port", port_label, port_items, weak.clone()).into_any_element(),
-            cx,
-        ))
-        .child(
             h_flex()
+                .w_full()
                 .gap_1()
+                .child(div().flex_1().min_w(px(0.0)).child(choice_button(
+                    "port",
+                    port_label,
+                    port_items,
+                    weak.clone(),
+                )))
                 .child(
                     Button::new("refresh-ports")
                         .label("↻")
@@ -941,25 +949,33 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
                             cx.notify();
                         })),
                 )
+                .into_any_element(),
+            cx,
+        ))
+        // 波特率：选择器与自定义波特率按钮同一行；按钮用图标保持与刷新按钮
+        // 相同的窄宽度，而不是一条带省略号的文字按钮。
+        .child(field_row(
+            tr("波特率"),
+            h_flex()
+                .w_full()
+                .gap_1()
+                .child(div().flex_1().min_w(px(0.0)).child(choice_button(
+                    "baud",
+                    format!("{}", app.settings.serial.baud),
+                    baud_items,
+                    weak.clone(),
+                )))
                 .child(
                     Button::new("custom-baud")
-                        .label(tr("自定义波特率…"))
+                        .label("⚙")
+                        .tooltip(tr("自定义波特率"))
                         .small()
-                        .outline()
+                        .ghost()
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_custom_baud(window, cx);
                         })),
-                ),
-        )
-        .child(field_row(
-            tr("波特率"),
-            choice_button(
-                "baud",
-                format!("{}", app.settings.serial.baud),
-                baud_items,
-                weak.clone(),
-            )
-            .into_any_element(),
+                )
+                .into_any_element(),
             cx,
         ))
         .child(field_row(
@@ -985,7 +1001,7 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
             cx,
         ))
         .child(field_row(
-            tr("校验"),
+            tr("校验位"),
             choice_button(
                 "parity",
                 tr(app.settings.serial.parity.label()),
@@ -1006,7 +1022,8 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
             .into_any_element(),
             cx,
         ))
-        .child(
+        .child(field_row(
+            tr("DTR / RTS"),
             h_flex()
                 .gap_2()
                 .child(
@@ -1028,28 +1045,52 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
                             this.apply_line_state(cx);
                             cx.notify();
                         })),
-                ),
-        )
+                )
+                .into_any_element(),
+            cx,
+        ))
         .child(
-            Button::new("toggle-port")
-                .label(if is_open {
-                    tr("关闭串口")
-                } else {
-                    tr("打开串口")
-                })
-                .when(is_open, |button| button.danger())
-                .when(!is_open, |button| button.primary())
+            h_flex()
+                .id("serial-open-row")
+                .test_support()
                 .w_full()
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.toggle_port();
-                    cx.notify();
-                })),
+                .justify_center()
+                .child(
+                    div()
+                        .w(px(open_button_width))
+                        // 居中后整体左移 16px：右外边距是两倍偏移量，
+                        // flex 的居中会把外边距算进去。
+                        .mr(px(32.0))
+                        .child(
+                            Button::new("toggle-port")
+                                .label(if is_open {
+                                    tr("关闭串口")
+                                } else {
+                                    tr("打开串口")
+                                })
+                                .when(is_open, |button| button.danger())
+                                .when(!is_open, |button| button.primary())
+                                .w_full()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.toggle_port();
+                                    cx.notify();
+                                })),
+                        ),
+                ),
         )
         .child(
             div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child(SharedString::from(summary)),
+                .child(SharedString::from(crate::i18n::tr1("当前: {}", summary))),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from(tr(
+                    "提示: 串口打开时无法修改通信参数，需先关闭串口",
+                ))),
         )
         .child(section_title(tr("统计"), cx))
         .child(info_row(tr("发送字节"), &app.tx_bytes.to_string(), cx))
@@ -1110,10 +1151,20 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
         .as_ref()
         .map(|send| (send.progress(), send.remaining(), send.path.clone()));
 
-    let mut toolbar = h_flex()
+    // 工具行分成两组：左侧选项、右侧操作。操作组是一个整体 —— 放得下就靠右，
+    // 放不下就整组换到下一行并左对齐（与 egui 版一致），而不是把组里的按钮
+    // 拆散到两行。
+    let mut options = h_flex()
         .gap_2()
         .items_center()
-        .flex_wrap()
+        .flex_shrink_0()
+        .child(
+            div()
+                .text_sm()
+                .font_bold()
+                .child(SharedString::from(tr("发送区"))),
+        )
+        .child(div().w(px(1.0)).h(px(16.0)).bg(cx.theme().border))
         .child(
             Checkbox::new("send-hex")
                 .label(tr("16进制发送"))
@@ -1135,7 +1186,7 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
                 })),
         );
     if send.append_newline {
-        toolbar = toolbar
+        options = options
             .child(
                 Checkbox::new("send-cr")
                     .label("CR")
@@ -1157,7 +1208,7 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
                     })),
             );
     }
-    toolbar = toolbar
+    options = options
         .child(div().text_sm().child(SharedString::from(tr("定时间隔"))))
         .child(
             Input::new(&app.inputs.send_period)
@@ -1178,7 +1229,14 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
                     }
                     cx.notify();
                 })),
-        )
+        );
+
+    let mut actions = h_flex()
+        .id("send-actions")
+        .test_support()
+        .gap_2()
+        .items_center()
+        .flex_shrink_0()
         .child(
             Button::new("send")
                 .label(tr("发送"))
@@ -1228,7 +1286,7 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
                 })),
         );
     if file_progress.is_some() {
-        toolbar = toolbar.child(
+        actions = actions.child(
             Button::new("abort-file")
                 .label(tr("终止发送"))
                 .danger()
@@ -1237,6 +1295,19 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
                 })),
         );
     }
+
+    // 中间的弹性空白把操作组推到右侧；空间不够时它先被压到最小，操作组
+    // 整组换行到下一行并靠左。
+    let toolbar = h_flex()
+        .id("send-toolbar")
+        .test_support()
+        .w_full()
+        .gap_2()
+        .items_center()
+        .flex_wrap()
+        .child(options)
+        .child(div().flex_1().min_w(px(8.0)))
+        .child(actions);
 
     let mut area = v_flex()
         .h_full()
