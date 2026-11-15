@@ -706,13 +706,66 @@ fn menu_bar(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
                             panels_weak.clone(),
                         ))
                     })
-                    .submenu(tr("显示"), window, cx, move |menu, _, _| {
+                    .submenu(tr("显示"), window, cx, move |menu, window, cx| {
+                        let style_weak = display_weak.clone();
+                        let row_weak = display_weak.clone();
                         menu.item(check_item(
-                            tr("16进制显示"),
-                            display.mode == crate::logstore::ViewMode::Hex,
-                            Action::ToggleHex,
+                            tr("文本"),
+                            display.mode == crate::logstore::ViewMode::Text,
+                            Action::SetTextMode,
                             display_weak.clone(),
                         ))
+                        .item(check_item(
+                            tr("16进制显示"),
+                            display.mode == crate::logstore::ViewMode::Hex,
+                            Action::SetHexMode,
+                            display_weak.clone(),
+                        ))
+                        // HEX 布局只在 16 进制模式下有意义（egui 也是这么收的）。
+                        .when(display.mode == crate::logstore::ViewMode::Hex, |menu| {
+                            menu.submenu(tr("HEX 布局"), window, cx, move |menu, window, cx| {
+                                // The builder runs per open, so the handle for
+                                // the nested menu is cloned here, not moved in.
+                                let row_weak = row_weak.clone();
+                                menu.item(check_item(
+                                    tr("连续"),
+                                    display.hex_style == crate::logstore::HexStyle::Stream,
+                                    Action::SetHexStyle(crate::logstore::HexStyle::Stream),
+                                    style_weak.clone(),
+                                ))
+                                .item(check_item(
+                                    tr("16 字节/行"),
+                                    display.hex_style == crate::logstore::HexStyle::Dump,
+                                    Action::SetHexStyle(crate::logstore::HexStyle::Dump),
+                                    style_weak.clone(),
+                                ))
+                                .separator()
+                                .item(check_item(
+                                    tr("大写"),
+                                    display.upper_hex,
+                                    Action::ToggleUpperHex,
+                                    style_weak.clone(),
+                                ))
+                                .separator()
+                                .submenu(
+                                    tr("每行字节"),
+                                    window,
+                                    cx,
+                                    move |menu, _, _| {
+                                        let mut menu = menu;
+                                        for count in [8usize, 16, 24, 32, 64] {
+                                            menu = menu.item(check_item(
+                                                format!("{count}"),
+                                                display.hex_bytes_per_row == count,
+                                                Action::SetHexPerRow(count),
+                                                row_weak.clone(),
+                                            ));
+                                        }
+                                        menu
+                                    },
+                                )
+                            })
+                        })
                         .item(check_item(
                             tr("暂停显示"),
                             paused,

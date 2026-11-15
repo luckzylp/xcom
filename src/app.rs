@@ -257,7 +257,12 @@ pub(crate) enum Action {
     ToggleConfigPanel,
     ToggleToolPanel,
     ToggleSendArea,
-    ToggleHex,
+    /// Display-mode submenu: pick a mode outright instead of toggling.
+    SetTextMode,
+    SetHexMode,
+    SetHexStyle(crate::logstore::HexStyle),
+    SetHexPerRow(usize),
+    ToggleUpperHex,
     ToggleMarkers,
     ToggleTimestamp,
     ToggleWrap,
@@ -273,7 +278,10 @@ pub(crate) enum Action {
     MultiSendChecked,
     MultiRemove(usize),
     MultiSendOne(usize),
-    MultiMove { from: usize, to: usize },
+    MultiMove {
+        from: usize,
+        to: usize,
+    },
     MultiNewlineAll,
     ProtocolSingle,
     ProtocolAuto,
@@ -1976,13 +1984,30 @@ impl XcomApp {
                 });
                 self.mark_settings_dirty();
             }
-            Action::ToggleHex => {
+            Action::SetTextMode => {
                 let mut options = self.settings.display;
-                options.mode = if options.mode == crate::logstore::ViewMode::Hex {
-                    crate::logstore::ViewMode::Text
-                } else {
-                    crate::logstore::ViewMode::Hex
-                };
+                options.mode = crate::logstore::ViewMode::Text;
+                self.set_display_options(options);
+            }
+            Action::SetHexMode => {
+                let mut options = self.settings.display;
+                options.mode = crate::logstore::ViewMode::Hex;
+                self.set_display_options(options);
+            }
+            Action::SetHexStyle(style) => {
+                let mut options = self.settings.display;
+                options.mode = crate::logstore::ViewMode::Hex;
+                options.hex_style = style;
+                self.set_display_options(options);
+            }
+            Action::SetHexPerRow(count) => {
+                let mut options = self.settings.display;
+                options.hex_bytes_per_row = count.clamp(1, 64);
+                self.set_display_options(options);
+            }
+            Action::ToggleUpperHex => {
+                let mut options = self.settings.display;
+                options.upper_hex = !options.upper_hex;
                 self.set_display_options(options);
             }
             Action::ToggleMarkers => {
@@ -2839,6 +2864,46 @@ mod ui_tests {
                     && f32::from(enable.origin.x) + f32::from(enable.size.width) <= right,
                 "the enable control falls outside the header's span: {enable:?} in {header:?}"
             );
+        })
+        .unwrap();
+    }
+
+    /// The HEX layout actions drive the display options egui exposes in the
+    /// 显示模式 submenu.
+    #[gpui_kit::test]
+    fn the_hex_layout_actions_update_the_display_options(cx: &mut TestAppContext) {
+        use crate::logstore::{HexStyle, ViewMode};
+
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            let run = |action, window: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
+                crate::ui::panels::run_action(view.downgrade(), action, window, cx);
+            };
+
+            run(Action::SetHexStyle(HexStyle::Dump), window, cx);
+            assert_eq!(view.read(cx).settings.display.mode, ViewMode::Hex);
+            assert_eq!(view.read(cx).settings.display.hex_style, HexStyle::Dump);
+
+            run(Action::SetHexPerRow(24), window, cx);
+            assert_eq!(view.read(cx).settings.display.hex_bytes_per_row, 24);
+            // Out-of-range values are clamped rather than stored.
+            run(Action::SetHexPerRow(999), window, cx);
+            assert_eq!(view.read(cx).settings.display.hex_bytes_per_row, 64);
+
+            let upper = view.read(cx).settings.display.upper_hex;
+            run(Action::ToggleUpperHex, window, cx);
+            assert_ne!(view.read(cx).settings.display.upper_hex, upper);
+
+            run(Action::SetTextMode, window, cx);
+            assert_eq!(view.read(cx).settings.display.mode, ViewMode::Text);
         })
         .unwrap();
     }
