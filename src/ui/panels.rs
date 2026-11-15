@@ -373,7 +373,11 @@ pub fn render(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
                 .visible(show_tool)
                 .size(right_width)
                 .size_range(
-                    px(crate::settings::RIGHT_PANEL_MIN)..px(crate::settings::RIGHT_PANEL_MAX),
+                    // The floor is the table's own minimum width as well as the
+                    // stored setting: a narrower panel pushes the delete column
+                    // past the header row.
+                    px(crate::settings::RIGHT_PANEL_MIN.max(multi_table_min_width()))
+                        ..px(crate::settings::RIGHT_PANEL_MAX),
                 )
                 .fixed()
                 .child(tool_panel(app, window, cx)),
@@ -1496,6 +1500,68 @@ impl gpui_kit::Render for DragEntry {
     }
 }
 
+/// The multi-send table's columns, in row order.
+///
+/// The fixed columns are laid out at these widths and the two text columns
+/// (内容 / 备注) share what is left 62/38, which is how the egui version sizes
+/// them; the header above a column uses the same number so the two never
+/// drift apart.
+const MULTI_ENABLE_W: f32 = 30.0;
+const MULTI_INDEX_W: f32 = 24.0;
+const MULTI_HEX_W: f32 = 30.0;
+const MULTI_NEWLINE_W: f32 = 32.0;
+const MULTI_DELAY_W: f32 = 58.0;
+const MULTI_SEND_W: f32 = 52.0;
+const MULTI_DELETE_W: f32 = 24.0;
+const MULTI_COLUMN_GAP: f32 = 5.0;
+const MULTI_TEXT_MIN: f32 = 32.0;
+/// Header text per column; the last two carry no header.
+const MULTI_HEADERS: [&str; 9] = ["启用", "#", "内容", "备注", "HEX", "新行", "延迟", "", ""];
+const MULTI_ROW_HEIGHT: f32 = 24.0;
+
+/// The narrowest the multi-send table's row can be and still show every
+/// column: the seven fixed columns, the eight gaps between them, both text
+/// columns at their floor, and the row's own horizontal padding.
+///
+/// A panel narrower than this pushes the delete button past the header row,
+/// which is what the egui version prevents by measuring the table first and
+/// giving the panel that width as its floor.
+pub(crate) fn multi_table_min_width() -> f32 {
+    let fixed = MULTI_ENABLE_W
+        + MULTI_INDEX_W
+        + MULTI_HEX_W
+        + MULTI_NEWLINE_W
+        + MULTI_DELAY_W
+        + MULTI_SEND_W
+        + MULTI_DELETE_W;
+    fixed + MULTI_COLUMN_GAP * 8.0 + MULTI_TEXT_MIN * 2.0 + 8.0
+}
+
+/// One fixed-width header cell.
+fn multi_header_cell(text: &'static str, width: f32, cx: &Context<XcomApp>) -> AnyElement {
+    div()
+        .w(px(width))
+        .flex_shrink_0()
+        .text_sm()
+        .font_bold()
+        .text_color(cx.theme().muted_foreground)
+        .child(SharedString::from(tr(text)))
+        .into_any_element()
+}
+
+/// One header cell that shares the remaining width with its sibling.
+fn multi_header_cell_flex(text: &'static str, grow: f32, cx: &Context<XcomApp>) -> AnyElement {
+    div()
+        .flex_grow(grow)
+        .flex_basis(px(0.0))
+        .min_w(px(MULTI_TEXT_MIN))
+        .text_sm()
+        .font_bold()
+        .text_color(cx.theme().muted_foreground)
+        .child(SharedString::from(tr(text)))
+        .into_any_element()
+}
+
 fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
     let running = app.multi_run_active();
     let open = app.link.is_open();
@@ -1527,7 +1593,7 @@ fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp
         )
         .child(
             Button::new("multi-import")
-                .label(tr("导入"))
+                .label(tr("导入条目"))
                 .small()
                 .outline()
                 .disabled(running)
@@ -1537,7 +1603,7 @@ fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp
         )
         .child(
             Button::new("multi-export")
-                .label(tr("导出"))
+                .label(tr("导出条目"))
                 .small()
                 .outline()
                 .on_click(cx.listener(|this, _, window, cx| {
@@ -1641,7 +1707,7 @@ fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp
         let entry = &entries[index];
         let inputs = &app.multi_inputs[index];
         let is_active = sent.is_some_and(|sent| sent.index == index);
-        let row = v_flex()
+        let row = h_flex()
             .id(("multi-drop", index))
             .on_drop({
                 let weak = weak.clone();
@@ -1657,128 +1723,157 @@ fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp
                     );
                 }
             })
-            .p_2()
-            .gap_1()
+            .w_full()
+            .h(px(MULTI_ROW_HEIGHT))
+            .px_1()
+            .gap(px(MULTI_COLUMN_GAP))
+            .items_center()
             .border_b_1()
             .border_color(cx.theme().border)
-            .when(index % 2 == 1, |this| {
+            // 当前正在发送的行：整行淡色 + 左侧实心竖条（画在斑马纹之上）。
+            .when(is_active, |this| {
+                this.bg(active.wash).border_l_2().border_color(active.bar)
+            })
+            .when(!is_active && index % 2 == 1, |this| {
                 this.bg(cx.theme().muted.opacity(0.25))
             })
-            .when(is_active, |this| this.bg(active.wash))
+            // 启用
             .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Checkbox::new(("multi-enabled", index))
-                            .checked(entry.enabled)
-                            .on_change(cx.listener(move |this, value, _, cx| {
-                                if let Some(entry) = this.settings.multi.entries.get_mut(index) {
-                                    entry.enabled = *value;
-                                    this.mark_settings_dirty();
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(if running {
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .w(px(20.0))
-                            .child(SharedString::from(index.to_string()))
-                            .into_any_element()
-                    } else {
-                        div()
-                            .id(("multi-drag", index))
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .w(px(20.0))
-                            .child(SharedString::from(index.to_string()))
-                            .on_drag(DragEntry(index), |drag, _, _, cx| cx.new(|_| drag.clone()))
-                            .into_any_element()
-                    })
-                    .child(Input::new(&inputs.text).flex_1().min_w(px(60.0)))
-                    .child(
-                        Checkbox::new(("multi-hex", index))
-                            .label("HEX")
-                            .checked(entry.hex)
-                            .on_change(cx.listener(move |this, value, _, cx| {
-                                if let Some(entry) = this.settings.multi.entries.get_mut(index) {
-                                    entry.hex = *value;
-                                    this.mark_settings_dirty();
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Checkbox::new(("multi-newline", index))
-                            .label(tr("新行"))
-                            .checked(entry.newline)
-                            .on_change(cx.listener(move |this, value, _, cx| {
-                                if let Some(entry) = this.settings.multi.entries.get_mut(index) {
-                                    entry.newline = *value;
-                                    this.mark_settings_dirty();
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new(("multi-delete", index))
-                            .label("×")
-                            .tooltip(tr("删除条目"))
-                            .small()
-                            .ghost()
-                            .disabled(running)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.apply_action(Action::MultiRemove(index), window, cx);
-                            })),
-                    ),
+                div().w(px(MULTI_ENABLE_W)).flex_shrink_0().child(
+                    Checkbox::new(("multi-enabled", index))
+                        .checked(entry.enabled)
+                        .on_change(cx.listener(move |this, value, _, cx| {
+                            if let Some(entry) = this.settings.multi.entries.get_mut(index) {
+                                entry.enabled = *value;
+                                this.mark_settings_dirty();
+                            }
+                            cx.notify();
+                        })),
+                ),
+            )
+            // #
+            .child(if running {
+                div()
+                    .w(px(MULTI_INDEX_W))
+                    .flex_shrink_0()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(index.to_string()))
+                    .into_any_element()
+            } else {
+                div()
+                    .id(("multi-drag", index))
+                    .w(px(MULTI_INDEX_W))
+                    .flex_shrink_0()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(index.to_string()))
+                    .on_drag(DragEntry(index), |drag, _, _, cx| cx.new(|_| drag.clone()))
+                    .into_any_element()
+            })
+            // 内容 / 备注：两列平分剩余宽度，62 / 38
+            .child(
+                div()
+                    .flex_grow(62.0)
+                    .flex_basis(px(0.0))
+                    .min_w(px(MULTI_TEXT_MIN))
+                    .child(Input::new(&inputs.text).w_full()),
             )
             .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(Input::new(&inputs.note).flex_1().min_w(px(40.0)))
-                    .child(
-                        v_flex()
-                            .w(px(84.0))
-                            .gap(px(1.0))
-                            .child(Input::new(&inputs.delay).w_full())
-                            .when(
-                                countdown.is_some_and(|countdown| countdown.index == index),
-                                |this| {
-                                    let remaining = countdown.map_or(0.0, |c| c.remaining);
-                                    this.child(
+                div()
+                    .flex_grow(38.0)
+                    .flex_basis(px(0.0))
+                    .min_w(px(MULTI_TEXT_MIN))
+                    .child(Input::new(&inputs.note).w_full()),
+            )
+            // HEX
+            .child(
+                div().w(px(MULTI_HEX_W)).flex_shrink_0().child(
+                    Checkbox::new(("multi-hex", index))
+                        .checked(entry.hex)
+                        .on_change(cx.listener(move |this, value, _, cx| {
+                            if let Some(entry) = this.settings.multi.entries.get_mut(index) {
+                                entry.hex = *value;
+                                this.mark_settings_dirty();
+                            }
+                            cx.notify();
+                        })),
+                ),
+            )
+            // 新行
+            .child(
+                div().w(px(MULTI_NEWLINE_W)).flex_shrink_0().child(
+                    Checkbox::new(("multi-newline", index))
+                        .checked(entry.newline)
+                        .on_change(cx.listener(move |this, value, _, cx| {
+                            if let Some(entry) = this.settings.multi.entries.get_mut(index) {
+                                entry.newline = *value;
+                                this.mark_settings_dirty();
+                            }
+                            cx.notify();
+                        })),
+                ),
+            )
+            // 延迟（倒计时进度条画在输入框下方）
+            .child(
+                v_flex()
+                    .w(px(MULTI_DELAY_W))
+                    .flex_shrink_0()
+                    .gap(px(1.0))
+                    .child(Input::new(&inputs.delay).w_full())
+                    .when(
+                        countdown.is_some_and(|countdown| countdown.index == index),
+                        |this| {
+                            let remaining = countdown.map_or(0.0, |c| c.remaining);
+                            this.child(
+                                div()
+                                    .h(px(3.0))
+                                    .w_full()
+                                    .rounded_full()
+                                    .bg(active.bar.opacity(0.3))
+                                    .child(
                                         div()
-                                            .h(px(3.0))
-                                            .w_full()
+                                            .h_full()
+                                            .w(relative(remaining))
                                             .rounded_full()
-                                            .bg(active.bar.opacity(0.3))
-                                            .child(
-                                                div()
-                                                    .h_full()
-                                                    .w(relative(remaining))
-                                                    .rounded_full()
-                                                    .bg(active.bar),
-                                            ),
-                                    )
-                                },
-                            ),
-                    )
-                    .child(
-                        Button::new(("multi-send", index))
-                            .label(tr("发送"))
-                            .tooltip(if entry.newline {
-                                tr("发送此条目（含新行）")
-                            } else {
-                                tr("发送此条目（不含新行）")
-                            })
-                            .small()
-                            .disabled(!open)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.apply_action(Action::MultiSendOne(index), window, cx);
-                            })),
+                                            .bg(active.bar),
+                                    ),
+                            )
+                        },
                     ),
+            )
+            // 发送
+            .child(
+                div().w(px(MULTI_SEND_W)).flex_shrink_0().child(
+                    Button::new(("multi-send", index))
+                        .label(tr("发送"))
+                        .tooltip(if entry.newline {
+                            tr("发送此条目（含新行）")
+                        } else {
+                            tr("发送此条目（不含新行）")
+                        })
+                        .small()
+                        .w_full()
+                        .disabled(!open)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.apply_action(Action::MultiSendOne(index), window, cx);
+                        })),
+                ),
+            )
+            // 删除
+            .child(
+                div().w(px(MULTI_DELETE_W)).flex_shrink_0().child(
+                    Button::new(("multi-delete", index))
+                        .label("×")
+                        .tooltip(tr("删除条目"))
+                        .small()
+                        .w_full()
+                        .ghost()
+                        .disabled(running)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.apply_action(Action::MultiRemove(index), window, cx);
+                        })),
+                ),
             );
         rows.push(row.into_any_element());
     }
@@ -1819,6 +1914,28 @@ fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
+                // 表头与行共用同一组宽度，两者不会走样。
+                .child(
+                    h_flex()
+                        .id("multi-headers")
+                        .test_support()
+                        .w_full()
+                        .px_1()
+                        .gap(px(MULTI_COLUMN_GAP))
+                        .h(px(MULTI_ROW_HEIGHT))
+                        .items_center()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(multi_header_cell(MULTI_HEADERS[0], MULTI_ENABLE_W, cx))
+                        .child(multi_header_cell(MULTI_HEADERS[1], MULTI_INDEX_W, cx))
+                        .child(multi_header_cell_flex(MULTI_HEADERS[2], 62.0, cx))
+                        .child(multi_header_cell_flex(MULTI_HEADERS[3], 38.0, cx))
+                        .child(multi_header_cell(MULTI_HEADERS[4], MULTI_HEX_W, cx))
+                        .child(multi_header_cell(MULTI_HEADERS[5], MULTI_NEWLINE_W, cx))
+                        .child(multi_header_cell(MULTI_HEADERS[6], MULTI_DELAY_W, cx))
+                        .child(div().w(px(MULTI_SEND_W)).flex_shrink_0())
+                        .child(div().w(px(MULTI_DELETE_W)).flex_shrink_0()),
+                )
                 .children(rows)
                 .when(entries_len == 0, |this| {
                     this.child(

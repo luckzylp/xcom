@@ -31,8 +31,12 @@ pub const LEFT_PANEL_DEFAULT: f32 = 300.0;
 pub const LEFT_PANEL_MIN: f32 = 269.0;
 pub const LEFT_PANEL_MAX: f32 = 460.0;
 /// Default width of the multi-send / protocol panel.
-pub const RIGHT_PANEL_DEFAULT: f32 = 320.0;
-pub const RIGHT_PANEL_MIN: f32 = 300.0;
+pub const RIGHT_PANEL_DEFAULT: f32 = 368.0;
+/// The floor is the multi-send table's own minimum width (362) plus a little
+/// slack for the panel border, so the table never gets squeezed into a
+/// horizontal scroll bar.  `multi_table_min_width()` in `ui::panels` computes
+/// the 362 and a test keeps the two in step.
+pub const RIGHT_PANEL_MIN: f32 = 368.0;
 pub const RIGHT_PANEL_MAX: f32 = 760.0;
 /// Default height of the send area below the log.
 pub const SEND_AREA_DEFAULT: f32 = 196.0;

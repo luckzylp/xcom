@@ -2745,6 +2745,60 @@ mod ui_tests {
         }
     }
 
+    /// The tool panel's floor covers the multi-send table's widest row.
+    #[test]
+    fn the_tool_panel_floor_fits_the_multi_send_table() {
+        let table = crate::ui::panels::multi_table_min_width();
+        assert!(
+            crate::settings::RIGHT_PANEL_MIN > table,
+            "RIGHT_PANEL_MIN ({}) must exceed the table's minimum width ({table})",
+            crate::settings::RIGHT_PANEL_MIN
+        );
+    }
+
+    /// The multi-send table draws a header row over its columns.
+    #[gpui_kit::test]
+    fn multi_send_headers_sit_above_their_columns(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings {
+            show_tool_panel: true,
+            ..Default::default()
+        };
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.click("tab-multi", cx);
+            // The action registers the row's inputs as well as the entry, which
+            // is what a manual `add_entry` would miss.
+            window.click("multi-add", cx);
+            window.render_frame(cx);
+
+            let px = |value: gpui_kit::Pixels| f32::from(value);
+            let header = window.find("multi-headers").bounds();
+            let enable = window.find(("multi-enabled", 0usize)).bounds();
+            let delete = window.find(("multi-delete", 0usize)).bounds();
+
+            assert!(
+                px(enable.origin.y) >= px(header.origin.y) - 0.5,
+                "the header row must sit above the first entry: {header:?} vs {enable:?}"
+            );
+            let header_left = px(header.origin.x);
+            let header_right = header_left + px(header.size.width);
+            // The header spans the table, and the row's controls live inside it.
+            assert!(
+                px(enable.origin.x) >= header_left - 1.0
+                    && px(delete.origin.x) + px(delete.size.width) <= header_right + 1.0,
+                "row controls fall outside the header's span: {header:?}, {enable:?}, {delete:?}"
+            );
+        })
+        .unwrap();
+    }
+
     /// Drives one pump turn with no port open.
     ///
     /// The 16 ms foreground loop is compiled out under `cfg(test)`, so without
