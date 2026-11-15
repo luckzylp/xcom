@@ -326,7 +326,23 @@ impl XcomApp {
                                     .collect::<Vec<_>>(),
                                 weak.clone(),
                             ),
-                        )),
+                        ))
+                        // egui spells out what 0 means and that changes apply
+                        // to the text areas right away.
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(tr("行距 0 表示使用字体默认行高。"))),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(tr(
+                                    "字体修改会立即应用到对应的文本区。",
+                                ))),
+                        ),
                 )
                 .footer(footer())
         });
@@ -350,18 +366,43 @@ impl XcomApp {
                         .child(onoff(
                             weak.clone(),
                             colors.enabled,
-                            tr("启用自定义配色"),
+                            tr("自定义接收区配色"),
                             |this, value| this.settings.log_colors.enabled = value,
                         ))
-                        .child(field(tr("前景色"), Input::new(&app.inputs.log_fg)))
-                        .child(field(tr("背景色"), Input::new(&app.inputs.log_bg)))
+                        // egui puts both colour pickers on one row, labelled
+                        // 字色 / 底色; the hex field stands in for the picker.
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .w(px(120.0))
+                                        .child(field(tr("字色"), Input::new(&app.inputs.log_fg))),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(120.0))
+                                        .child(field(tr("底色"), Input::new(&app.inputs.log_bg))),
+                                ),
+                        )
+                        .child(div().h(px(1.0)).w_full().bg(cx.theme().border))
+                        .child(div().text_sm().child(SharedString::from(tr("预览"))))
                         .child(
                             div()
                                 .p_3()
                                 .rounded(cx.theme().radius)
                                 .bg(palette.background)
                                 .text_color(palette.foreground)
-                                .child(SharedString::from("-> 12:34:56.789  AT+GMR  <- AT")),
+                                .child(SharedString::from(tr("接收区示例"))),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(tr(
+                                    "接收的数据以 -> 开头，发送的数据以 <- 开头",
+                                ))),
                         ),
                 )
                 .footer(footer())
@@ -388,13 +429,27 @@ impl XcomApp {
                     v_flex()
                         .gap_3()
                         .child(field(tr("保存目录"), Input::new(&app.inputs.log_dir)))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(tr("留空则使用配置目录下的 logs"))),
+                        )
                         .child(field(tr("文件名格式"), Input::new(&app.inputs.log_pattern)))
                         .child(
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(SharedString::from(tr(
-                                    "可用 %Y %y %M %D %h %m %s %S %f %H（串口名）%%",
+                                    "格式符：%Y 年（4 位）、%y 年（2 位）、%M 月、%D 日、%h 时、%m 分、%s/%S 秒、%f 毫秒、%H 串口名称、%% 百分号。",
+                                ))),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(tr(
+                                    "文件名在启用时展开一次；同名文件会追加写入；修改目录或格式在下次启用时生效。",
                                 ))),
                         )
                         .when(!path.is_empty(), |this| {
@@ -405,6 +460,11 @@ impl XcomApp {
                                 ))),
                             )
                         })
+                        .child(
+                            div()
+                                .text_sm()
+                                .child(SharedString::from(tr("启用实时保存（接收数据）"))),
+                        )
                         .child(
                             h_flex()
                                 .gap_2()
@@ -442,7 +502,15 @@ impl XcomApp {
                                             }
                                         }),
                                 ),
-                        ),
+                        )
+                        .when(!active, |this| {
+                            this.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(tr("未启用：不会创建文件。"))),
+                            )
+                        }),
                 )
                 .footer(footer())
         });
