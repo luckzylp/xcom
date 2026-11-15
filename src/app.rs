@@ -354,6 +354,9 @@ pub struct XcomApp {
     pub(crate) tx_bytes: u64,
     pub(crate) pending_rx: Vec<u8>,
     pub(crate) show_paused: bool,
+    /// Whether the left panel's 串口设置 section is expanded.  Like egui's
+    /// `CollapsingHeader` this lives in memory only, not in the settings file.
+    pub(crate) serial_section_open: bool,
 
     pub(crate) messages: Vec<Message>,
     pub(crate) last_timed_send: Option<Instant>,
@@ -484,6 +487,7 @@ impl XcomApp {
             tx_bytes: 0,
             pending_rx: Vec::new(),
             show_paused: false,
+            serial_section_open: true,
             messages: Vec::new(),
             last_timed_send: None,
             multi_run: None,
@@ -2604,6 +2608,141 @@ mod ui_tests {
             );
         })
         .unwrap();
+    }
+
+    /// The 串口设置 header collapses the serial fields, like egui's
+    /// `CollapsingHeader` with `default_open(true)`.
+    #[gpui_kit::test]
+    fn the_serial_section_collapses_and_expands(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find("port").is_some(),
+                "the section starts expanded"
+            );
+
+            window.click("serial-section", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("port").is_none(),
+                "collapsing must hide the serial fields"
+            );
+            // The statistics block is outside the section and stays visible.
+            assert!(window.try_find("serial-section").is_some());
+
+            window.click("serial-section", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("port").is_some(),
+                "expanding must bring the serial fields back"
+            );
+        })
+        .unwrap();
+    }
+
+    /// The tool panel refuses to get narrower than the multi-send table needs.
+    #[gpui_kit::test]
+    fn the_tool_panel_keeps_its_table_floor(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        // Ask for a width the multi-send table cannot live in.
+        let mut settings = crate::settings::Settings {
+            show_tool_panel: true,
+            right_panel_width: 120.0,
+            ..Default::default()
+        };
+        settings.normalize();
+        assert!(
+            settings.right_panel_width >= crate::settings::RIGHT_PANEL_MIN,
+            "normalising must restore the floor"
+        );
+
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let width = f32::from(window.find("tool-panel").bounds().size.width);
+            assert!(
+                width >= crate::settings::RIGHT_PANEL_MIN - 1.0,
+                "the tool panel is narrower than its table: {width:.2}px"
+            );
+        })
+        .unwrap();
+    }
+
+    /// The About dialog puts its close control on the desktop's side.
+    ///
+    /// gpui's Dialog hard-codes the button on the right, so the dialog draws a
+    /// header of its own; this is the test that it follows the window buttons.
+    #[gpui_kit::test]
+    fn the_about_dialog_close_button_follows_the_desktop_layout(cx: &mut TestAppContext) {
+        fn layout(close_on_left: bool) -> gpui_kit::WindowButtonLayout {
+            let mut left = [None; gpui_kit::MAX_BUTTONS_PER_SIDE];
+            let mut right = [None; gpui_kit::MAX_BUTTONS_PER_SIDE];
+            if close_on_left {
+                left[0] = Some(gpui_kit::WindowButton::Close);
+            } else {
+                right[0] = Some(gpui_kit::WindowButton::Close);
+            }
+            gpui_kit::WindowButtonLayout { left, right }
+        }
+
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        for close_on_left in [false, true] {
+            cx.update_window(handle, |_, window, cx| {
+                view.update(cx, |app, cx| {
+                    app.button_layout = layout(close_on_left);
+                    app.open_about(window, cx);
+                });
+                window.render_frame(cx);
+
+                let px = |value: gpui_kit::Pixels| f32::from(value);
+                let header = window.find("dialog-header").bounds();
+                let close = window.find("dialog-close").bounds();
+                let header_left = px(header.origin.x);
+                let header_right = header_left + px(header.size.width);
+                let close_left = px(close.origin.x);
+                let close_right = close_left + px(close.size.width);
+
+                if close_on_left {
+                    assert!(
+                        (close_left - header_left).abs() <= 1.0,
+                        "close should lead the header: {close:?} in {header:?}"
+                    );
+                } else {
+                    assert!(
+                        (close_right - header_right).abs() <= 1.0,
+                        "close should trail the header: {close:?} in {header:?}"
+                    );
+                }
+
+                window.close_all_dialogs(cx);
+                window.render_frame(cx);
+                assert!(window.try_find("dialog-header").is_none());
+            })
+            .unwrap();
+        }
     }
 
     /// Drives one pump turn with no port open.

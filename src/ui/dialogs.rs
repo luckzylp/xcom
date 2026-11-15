@@ -19,8 +19,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Context, IntoElement, ParentElement as _, SharedString, Styled as _, WeakEntity, Window, div,
-    px,
+    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    Styled as _, TestSupportExt as _, WeakEntity, Window, div, px,
 };
 
 use crate::app::{Action, Choice, XcomApp};
@@ -38,6 +38,44 @@ fn field(label: &'static str, control: impl IntoElement) -> impl IntoElement {
         .gap_1()
         .child(div().text_sm().child(SharedString::from(label)))
         .child(control)
+}
+
+/// A close control that dismisses the open dialog.
+fn close_control() -> impl IntoElement {
+    Button::new("dialog-close")
+        .icon(gpui_kit::component::IconName::WindowClose)
+        .ghost()
+        .small()
+        .tooltip(tr("关闭"))
+        .on_click(|_, window, cx| window.close_all_dialogs(cx))
+}
+
+/// A dialog header whose close control sits on the desktop's side.
+///
+/// gpui's `Dialog` always draws its close button on the right.  The egui
+/// version followed the desktop's `button-layout` instead (see ADR 0001), so
+/// the built-in button is turned off and this header draws its own on
+/// whichever side the window buttons use.
+fn header(layout: gpui_kit::WindowButtonLayout, title: impl Into<SharedString>) -> AnyElement {
+    let close_on_left = layout
+        .left
+        .iter()
+        .flatten()
+        .any(|button| matches!(button, gpui_kit::WindowButton::Close));
+    let mut row = h_flex()
+        .id("dialog-header")
+        .test_support()
+        .w_full()
+        .items_center()
+        .gap_2();
+    if close_on_left {
+        row = row.child(close_control());
+    }
+    row = row.child(div().flex_1().child(title.into()));
+    if !close_on_left {
+        row = row.child(close_control());
+    }
+    row.into_any_element()
 }
 
 fn onoff(
@@ -62,9 +100,11 @@ fn onoff(
 impl XcomApp {
     pub(crate) fn open_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let version = env!("CARGO_PKG_VERSION");
+        let layout = self.button_layout;
         window.open_dialog(cx, move |dialog, _, _cx| {
             dialog
-                .title(tr("关于 XCOM"))
+                .close_button(false)
+                .title(header(layout, tr("关于 XCOM")))
                 .width(px(520.0))
                 .child(
                     v_flex()
@@ -388,7 +428,8 @@ impl XcomApp {
             let rates = app.settings.serial.custom_bauds.clone();
             let input = app.inputs.custom_baud.clone();
             dialog
-                .title(tr("自定义波特率"))
+                .close_button(false)
+                .title(header(app.button_layout, tr("自定义波特率")))
                 .width(px(420.0))
                 .child(
                     v_flex()
