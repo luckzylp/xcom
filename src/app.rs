@@ -2799,6 +2799,50 @@ mod ui_tests {
         .unwrap();
     }
 
+    /// The highlight dialog lays its rules out under a header row.
+    #[gpui_kit::test]
+    fn the_highlight_dialog_has_a_header_row(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |app, cx| app.open_highlight(window, cx));
+            window.render_frame(cx);
+
+            let header = window.find("hl-headers").bounds();
+            assert!(
+                f32::from(header.size.width) > 0.0,
+                "the header row was not laid out"
+            );
+
+            // A rule's enable control sits under the 启用 header, inside it.
+            // The add action registers the row's inputs as well as the rule;
+            // clicking the button needs the dialog to finish animating first.
+            crate::ui::panels::run_action(
+                view.downgrade(),
+                crate::app::Action::HighlightAdd,
+                window,
+                cx,
+            );
+            window.render_frame(cx);
+            let enable = window.find(("hl-enabled", 0usize)).bounds();
+            let left = f32::from(header.origin.x);
+            let right = left + f32::from(header.size.width);
+            assert!(
+                f32::from(enable.origin.x) >= left
+                    && f32::from(enable.origin.x) + f32::from(enable.size.width) <= right,
+                "the enable control falls outside the header's span: {enable:?} in {header:?}"
+            );
+        })
+        .unwrap();
+    }
+
     /// Drives one pump turn with no port open.
     ///
     /// The 16 ms foreground loop is compiled out under `cfg(test)`, so without

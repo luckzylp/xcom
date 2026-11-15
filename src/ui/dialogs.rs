@@ -33,6 +33,36 @@ fn footer() -> DialogFooter {
         .child(DialogClose::new().trigger(|button| button.label(tr("关闭")).outline()))
 }
 
+/// The highlight table's columns, in row order.  The keyword column takes what
+/// is left.  egui uses the same numbers, so the header and the rows line up.
+const HL_INDEX_W: f32 = 30.0;
+const HL_ENABLE_W: f32 = 34.0;
+const HL_COLOR_W: f32 = 52.0;
+const HL_ACTION_W: f32 = 52.0;
+const HL_COL_GAP: f32 = 8.0;
+
+fn hl_header(text: impl Into<SharedString>, width: f32, cx: &gpui_kit::App) -> AnyElement {
+    div()
+        .w(px(width))
+        .flex_shrink_0()
+        .text_sm()
+        .font_bold()
+        .text_color(cx.theme().muted_foreground)
+        .child(text.into())
+        .into_any_element()
+}
+
+fn hl_header_flex(text: impl Into<SharedString>, cx: &gpui_kit::App) -> AnyElement {
+    div()
+        .flex_1()
+        .min_w(px(0.0))
+        .text_sm()
+        .font_bold()
+        .text_color(cx.theme().muted_foreground)
+        .child(text.into())
+        .into_any_element()
+}
+
 fn field(label: &'static str, control: impl IntoElement) -> impl IntoElement {
     v_flex()
         .gap_1()
@@ -522,12 +552,12 @@ impl XcomApp {
                                         .text_sm()
                                         .text_color(cx.theme().muted_foreground)
                                         .child(SharedString::from(tr(
-                                            "每条规则可设为字面量或正则表达式；行尾的 * 表示正则。",
+                                            "勾选行首的启用开关后规则才生效；默认按字面匹配、区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
                                         ))),
                                 )
                                 .child(
                                     Button::new("hl-add")
-                                        .label(tr("添加规则"))
+                                        .label(tr("添加关键字"))
                                         .small()
                                         .on_click({
                                             let weak = weak.clone();
@@ -542,67 +572,148 @@ impl XcomApp {
                                         }),
                                 ),
                         )
-                        .child(if rules.is_empty() {
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(SharedString::from(tr("暂无高亮规则")))
-                                .into_any_element()
-                        } else {
+                        .child(
                             v_flex()
-                                .gap_1()
+                                // 表头：与行共用同一组列宽（egui 的 #/启用/关键字/颜色/操作）
+                                .child(
+                                    h_flex()
+                                        .id("hl-headers")
+                                        .test_support()
+                                        .w_full()
+                                        .gap(px(HL_COL_GAP))
+                                        .items_center()
+                                        .child(hl_header("#", HL_INDEX_W, cx))
+                                        .child(hl_header(tr("启用"), HL_ENABLE_W, cx))
+                                        .child(hl_header_flex(tr("关键字"), cx))
+                                        .child(hl_header(tr("颜色"), HL_COLOR_W, cx))
+                                        .child(hl_header(tr("操作"), HL_ACTION_W, cx)),
+                                )
+                                .child(div().h(px(1.0)).w_full().bg(cx.theme().border))
+                                .when(rules.is_empty(), |this| {
+                                    this.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(SharedString::from(tr("暂无关键字"))),
+                                    )
+                                })
                                 .children(rules.iter().enumerate().map(|(index, rule)| {
                                     let inputs = &app.highlight_inputs[index];
                                     let invalid = rule.regex
                                         && crate::highlight::validate_regex(&rule.text).is_err();
-                                    h_flex()
-                                        .gap_2()
+                                    v_flex()
+                                        .gap_1()
                                         .child(
-                                            Switch::new(("hl-enabled", index))
-                                                .checked(rule.enabled)
-                                                .on_change({
-                                                    let weak = weak.clone();
-                                                    move |next, _, cx| {
-                                                        let next = *next;
-                                                        let _ = weak.update(cx, |this, cx| {
-                                                            if let Some(rule) = this
-                                                                .settings
-                                                                .highlights
-                                                                .rules
-                                                                .get_mut(index)
-                                                            {
-                                                                rule.enabled = next;
-                                                                this.mark_settings_dirty();
-                                                            }
-                                                            cx.notify();
-                                                        });
-                                                    }
-                                                }),
-                                        )
-                                        .child(Input::new(&inputs.text).flex_1())
-                                        .child(Input::new(&inputs.color).w(px(88.0)))
-                                        .child(
-                                            Checkbox::new(("hl-regex", index))
-                                                .label("*")
-                                                .checked(rule.regex)
-                                                .on_change({
-                                                    let weak = weak.clone();
-                                                    move |next, _, cx| {
-                                                        let next = *next;
-                                                        let _ = weak.update(cx, |this, cx| {
-                                                            if let Some(rule) = this
-                                                                .settings
-                                                                .highlights
-                                                                .rules
-                                                                .get_mut(index)
-                                                            {
-                                                                rule.regex = next;
-                                                                this.mark_settings_dirty();
-                                                            }
-                                                            cx.notify();
-                                                        });
-                                                    }
-                                                }),
+                                            h_flex()
+                                                .w_full()
+                                                .gap(px(HL_COL_GAP))
+                                                .items_center()
+                                                .child(
+                                                    div()
+                                                        .w(px(HL_INDEX_W))
+                                                        .flex_shrink_0()
+                                                        .text_sm()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(SharedString::from(format!(
+                                                            "#{}",
+                                                            index + 1
+                                                        ))),
+                                                )
+                                                .child(
+                                                    div().w(px(HL_ENABLE_W)).flex_shrink_0().child(
+                                                        Checkbox::new(("hl-enabled", index))
+                                                            .checked(rule.enabled)
+                                                            .tooltip(tr("启用此规则"))
+                                                            .on_change({
+                                                                let weak = weak.clone();
+                                                                move |next, _, cx| {
+                                                                    let next = *next;
+                                                                    let _ = weak.update(
+                                                                        cx,
+                                                                        |this, cx| {
+                                                                            if let Some(rule) = this
+                                                                                .settings
+                                                                                .highlights
+                                                                                .rules
+                                                                                .get_mut(index)
+                                                                            {
+                                                                                rule.enabled = next;
+                                                                                this.mark_settings_dirty();
+                                                                            }
+                                                                            cx.notify();
+                                                                        },
+                                                                    );
+                                                                }
+                                                            }),
+                                                    ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w(px(0.0))
+                                                        .child(Input::new(&inputs.text)),
+                                                )
+                                                .child(
+                                                    div().w(px(HL_COLOR_W)).flex_shrink_0().child(
+                                                        Input::new(&inputs.color).w_full(),
+                                                    ),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .w(px(HL_ACTION_W))
+                                                        .flex_shrink_0()
+                                                        .gap_0p5()
+                                                        .child(
+                                                            Button::new(("hl-regex", index))
+                                                                .label(".*")
+                                                                .tooltip(tr("按正则表达式匹配"))
+                                                                .when(rule.regex, |button| {
+                                                                    button.primary()
+                                                                })
+                                                                .when(!rule.regex, |button| {
+                                                                    button.ghost()
+                                                                })
+                                                                .small()
+                                                                .on_click({
+                                                                    let weak = weak.clone();
+                                                                    move |_, _, cx| {
+                                                                        let _ = weak.update(
+                                                                            cx,
+                                                                            |this, cx| {
+                                                                                if let Some(rule) = this
+                                                                                    .settings
+                                                                                    .highlights
+                                                                                    .rules
+                                                                                    .get_mut(index)
+                                                                                {
+                                                                                    rule.regex = !rule.regex;
+                                                                                    this.mark_settings_dirty();
+                                                                                }
+                                                                                cx.notify();
+                                                                            },
+                                                                        );
+                                                                    }
+                                                                }),
+                                                        )
+                                                        .child(
+                                                            Button::new(("hl-remove", index))
+                                                                .label("×")
+                                                                .tooltip(tr("删除"))
+                                                                .ghost()
+                                                                .small()
+                                                                .on_click({
+                                                                    let weak = weak.clone();
+                                                                    move |_, window, cx| {
+                                                                        super::panels::run_action(
+                                                                            weak.clone(),
+                                                                            Action::HighlightRemove(index),
+                                                                            window,
+                                                                            cx,
+                                                                        )
+                                                                    }
+                                                                }),
+                                                        ),
+                                                ),
                                         )
                                         .when(invalid, |this| {
                                             this.child(
@@ -612,25 +723,9 @@ impl XcomApp {
                                                     .child(SharedString::from(tr("正则无效"))),
                                             )
                                         })
-                                        .child(
-                                            Button::new(("hl-remove", index))
-                                                .label("×")
-                                                .ghost()
-                                                .on_click({
-                                                    let weak = weak.clone();
-                                                    move |_, window, cx| {
-                                                        super::panels::run_action(
-                                                            weak.clone(),
-                                                            Action::HighlightRemove(index),
-                                                            window,
-                                                            cx,
-                                                        )
-                                                    }
-                                                }),
-                                        )
                                 }))
-                                .into_any_element()
-                        }),
+                                .into_any_element(),
+                        ),
                 )
                 .footer(footer())
         });
