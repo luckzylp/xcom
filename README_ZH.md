@@ -109,15 +109,17 @@
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Linux 还需要图形开发库（多数桌面发行版已自带）：
+Linux 还需要图形与 udev 开发库（多数桌面发行版已自带）：
 
 ```bash
 # Debian / Ubuntu
 sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev \
-                 libx11-dev libgl1-mesa-dev libvulkan-dev libfontconfig1-dev
+                 libx11-dev libgl1-mesa-dev libvulkan-dev libfontconfig1-dev \
+                 libudev-dev
 # Fedora
 sudo dnf install gcc pkgconf-pkg-config libxkbcommon-devel wayland-devel \
-                 libX11-devel mesa-libGL-devel vulkan-loader-devel fontconfig-devel
+                 libX11-devel mesa-libGL-devel vulkan-loader-devel fontconfig-devel \
+                 systemd-devel
 ```
 
 ### 编译运行
@@ -151,7 +153,7 @@ cargo run --release
 
 | 平台 | 说明 |
 | --- | --- |
-| **Linux** | 需要把用户加入 `dialout` 组才能免 sudo 访问串口：`sudo usermod -aG dialout $USER`（重新登录生效）。文件对话框使用 XDG Desktop Portal；若系统未提供 portal，改用「保存原始数据」前的路径选择会无响应，此时可通过配置文件或直接在支持的环境运行。 |
+| **Linux** | 需要把用户加入 `dialout` 组才能免 sudo 访问串口：`sudo usermod -aG dialout $USER`（重新登录生效）。文件对话框使用 XDG Desktop Portal；若系统未提供 portal，改用「保存原始数据」前的路径选择会无响应，此时可通过配置文件或直接在支持的环境运行。Linux 发布两个构建：`-glibc2.17`（glibc 2.17 符号基线，可在 CentOS 7 / Ubuntu 16.04 及更新的发行版运行）与 `-glibc-latest`（按构建 runner 的 glibc 编译，Ubuntu 24.04 上为 2.39）；两者运行时都需要 `libudev`。 |
 | **Windows** | 发布版默认不弹出控制台窗口。运行需要 VC++ 运行库（现代 Windows 已内置）。 |
 | **macOS** | 首次运行需在「系统设置 → 隐私与安全性」中允许，串口设备形如 `/dev/tty.usbserial-*`。 |
 

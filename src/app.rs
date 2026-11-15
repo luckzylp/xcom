@@ -2620,3 +2620,101 @@ mod multi_tests {
         );
     }
 }
+
+/// Project invariants that do not depend on the UI toolkit.
+///
+/// These came from main's `layout_tests` module, which is bound to egui's
+/// frame harness; the assertions themselves only read Cargo.toml and the
+/// workflow files, so they survive the migration unchanged.
+#[cfg(test)]
+mod invariant_tests {
+    #[test]
+    fn rust_version_requirement_is_1_100_0() {
+        let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .expect("Cargo.toml is readable");
+        assert!(
+            manifest.contains("rust-version = \"1.100.0\""),
+            "Cargo.toml must require Rust 1.100.0"
+        );
+    }
+
+    /// Every `uses:` pin must be on a major that publishes `node24`.
+    #[test]
+    fn workflow_actions_run_on_node_24() {
+        // The first major whose published `action.yml` declares
+        // `runs.using: node24`.  Anything below it is a Node.js 20 pin.
+        const NODE_24_FROM: &[(&str, u32)] = &[
+            ("actions/checkout", 5),
+            ("actions/upload-artifact", 6),
+            ("actions/download-artifact", 7),
+            ("softprops/action-gh-release", 3),
+        ];
+        // Actions that cannot be gated this way: a composite action runs no
+        // Node.js at all (`taiki-e/install-action`), and `Swatinem/rust-cache`
+        // moved to Node.js 24 inside its `v2` line, so the floating tag
+        // already resolves to it.
+        const UNGATED: &[&str] = &[
+            "dtolnay/rust-toolchain",
+            "Swatinem/rust-cache",
+            "taiki-e/install-action",
+        ];
+
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/.github/workflows");
+        let mut pins = 0;
+        for entry in std::fs::read_dir(dir).expect("the workflows directory is readable") {
+            let path = entry.expect("a directory entry").path();
+            if !matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("yml" | "yaml")
+            ) {
+                continue;
+            }
+            let workflow = path.file_name().unwrap_or_default().to_string_lossy();
+            let text = std::fs::read_to_string(&path).expect("a workflow is readable");
+            for (number, line) in text.lines().enumerate() {
+                let line = line.trim();
+                let Some(uses) = line
+                    .strip_prefix("- uses: ")
+                    .or_else(|| line.strip_prefix("uses: "))
+                else {
+                    continue;
+                };
+                let (action, reference) = uses.trim().split_once('@').unwrap_or((uses, ""));
+                pins += 1;
+                if UNGATED.contains(&action) {
+                    continue;
+                }
+                let Some((_, minimum)) = NODE_24_FROM.iter().find(|(name, _)| *name == action)
+                else {
+                    panic!(
+                        "{workflow}:{}: {action} is not registered here; add its first \
+                         Node.js 24 major to keep the pin honest",
+                        number + 1
+                    );
+                };
+                let major = reference
+                    .trim_start_matches('v')
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse::<u32>()
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "{workflow}:{}: {action} is pinned to {reference:?}",
+                            number + 1
+                        )
+                    });
+                assert!(
+                    major >= *minimum,
+                    "{workflow}:{}: {action}@{reference} targets Node.js 20, which GitHub \
+                     now forces onto Node.js 24; pin @v{minimum} or newer",
+                    number + 1
+                );
+            }
+        }
+        assert!(
+            pins >= 10,
+            "only {pins} action pins were found; the workflows are not being read"
+        );
+    }
+}

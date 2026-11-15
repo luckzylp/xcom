@@ -8966,7 +8966,7 @@ dependencies = [
 
 [[package]]
 name = "xcom"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "chardetng",
  "chrono",

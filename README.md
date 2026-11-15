@@ -100,15 +100,17 @@ You only need a recent Rust toolchain (**1.100+**, `edition 2024`):
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Linux also requires graphics development libraries (most desktop distros already include them):
+Linux also requires graphics and udev development libraries (most desktop distros already include them):
 
 ```bash
 # Debian / Ubuntu
 sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev \
-                 libx11-dev libgl1-mesa-dev libvulkan-dev libfontconfig1-dev
+                 libx11-dev libgl1-mesa-dev libvulkan-dev libfontconfig1-dev \
+                 libudev-dev
 # Fedora
 sudo dnf install gcc pkgconf-pkg-config libxkbcommon-devel wayland-devel \
-                 libX11-devel mesa-libGL-devel vulkan-loader-devel fontconfig-devel
+                 libX11-devel mesa-libGL-devel vulkan-loader-devel fontconfig-devel \
+                 systemd-devel
 ```
 
 ### Build and Run
@@ -138,7 +140,7 @@ The configuration panel, tool panel and send area are resizable; drag a divider 
 
 | Platform | Notes |
 | --- | --- |
-| **Linux** | Add your user to the `dialout` group for sudo-free serial port access: `sudo usermod -aG dialout $USER` (re-login required). File dialogs use XDG Desktop Portal; if the system lacks a portal, the path selection before "Save Raw Data" may not respond — use the config file or run in a supported environment. |
+| **Linux** | Add your user to the `dialout` group for sudo-free serial port access: `sudo usermod -aG dialout $USER` (re-login required). File dialogs use XDG Desktop Portal; if the system lacks a portal, the path selection before "Save Raw Data" may not respond — use the config file or run in a supported environment. Linux releases come in two builds: `-glibc2.17` (glibc 2.17 symbol baseline, runs on CentOS 7 / Ubuntu 16.04 and newer) and `-glibc-latest` (built against the runner's glibc, 2.39 on Ubuntu 24.04). Both still need `libudev` at runtime. |
 | **Windows** | Release builds don't pop up a console window. Requires the VC++ runtime (built into modern Windows). |
 | **macOS** | On first launch, allow the app in "System Settings → Privacy & Security"; serial devices look like `/dev/tty.usbserial-*`. |
 
