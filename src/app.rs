@@ -411,6 +411,8 @@ pub struct XcomApp {
     /// where a window is available to resynchronise the editors.
     pub(crate) needs_reset: bool,
     /// Whether a left press on the title bar is still a potential drag.
+    /// Only the Linux client-side title bar reads this.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) title_dragging: bool,
     /// Resizable state for the three columns and the log/send split.
     pub(crate) main_split: Entity<gpui_kit::component::resizable::ResizableState>,
@@ -2440,6 +2442,36 @@ mod ui_tests {
             assert!(view.read(cx).settings.show_config_panel);
         })
         .unwrap();
+    }
+
+    /// Drives one pump turn with no port open.
+    ///
+    /// The 16 ms foreground loop is compiled out under `cfg(test)`, so without
+    /// this test the serial/timer pump below `tick` is unreachable in test
+    /// builds and the dead-code lint flags the whole subtree.
+    #[gpui_kit::test]
+    fn a_tick_without_a_port_sends_nothing(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (_handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update(|cx| {
+            view.update(cx, |app, _| {
+                app.tick();
+            });
+        });
+
+        cx.read(|cx| {
+            let app = view.read(cx);
+            assert!(!app.link.is_open(), "a tick must not open a port");
+            assert_eq!(app.tx_bytes, 0, "nothing was sent");
+            assert_eq!(app.pending_rx_len(), 0, "nothing was received");
+        });
     }
 }
 

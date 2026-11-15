@@ -131,7 +131,9 @@ impl MultiSend {
     }
 
     /// Mutably borrow one entry by its current index.
+    /// Only the Unix PTY tests build entries this way.
     #[cfg(test)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn entry_mut(&mut self, index: usize) -> Option<&mut MultiEntry> {
         self.entries.get_mut(index)
     }

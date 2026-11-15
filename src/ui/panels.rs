@@ -4,12 +4,15 @@
 //! on the left, receive log above the send area in the middle, the multi-send /
 //! protocol panel on the right, and a status bar along the bottom.
 
-use gpui_kit::base::{InteractiveElementExt as _, StyledExt as _};
+#[cfg(target_os = "linux")]
+use gpui_kit::MouseButton;
+#[cfg(target_os = "linux")]
+use gpui_kit::base::InteractiveElementExt as _;
+use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
     button::Button,
-    button::ButtonRounded,
     button::ButtonVariants as _,
     checkbox::Checkbox,
     h_flex,
@@ -18,10 +21,12 @@ use gpui_kit::component::{
     switch::Switch,
     v_flex,
 };
+#[cfg(target_os = "linux")]
+use gpui_kit::component::{IconName, button::ButtonRounded};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
     TestSupportExt as _, WeakEntity, Window, div, px, relative,
 };
 
@@ -129,7 +134,7 @@ fn title_bar(app: &XcomApp, window: &mut Window, cx: &mut Context<XcomApp>) -> A
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (window, cx);
+        let _ = (app, window, cx);
         div().into_any_element()
     }
 }

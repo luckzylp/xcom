@@ -440,6 +440,12 @@ mod tests {
 
     #[test]
     fn opening_a_missing_port_reports_an_error() {
+        // The message goes through `i18n`, so hold the language lock and pin
+        // Chinese: a translation test running in parallel would otherwise
+        // leave the process in English and this assertion would not hold.
+        let _guard = crate::i18n::test_lock();
+        crate::i18n::set_lang(crate::i18n::Lang::ZhCn);
+
         let mut link = SerialLink::new();
         let config = SerialConfig {
             port: "/dev/definitely-not-a-real-port-xyz".to_owned(),
