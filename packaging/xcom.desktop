@@ -63,8 +63,8 @@ Terminal=false
 
 # StartupNotify tells the desktop that the application will signal when it has
 # finished starting (the "_NET_STARTUP_INFO" / activation-token handshake).
-# This application does not send it: the toolkit exposes the handshake as an
-# opt-in API that egui/eframe never calls.  Claiming true therefore makes the
+# This application does not send it: the handshake is an opt-in API that the
+# gpui-kit window layer never calls.  Claiming true therefore makes the
 # dock hold the launch in its "starting" state until that promise times out --
 # the window is up immediately, but the task bar shows the launcher's generic
 # icon for several seconds before finally associating the window with this
@@ -84,7 +84,7 @@ StartupNotify=false
 # Associates the launched window with this entry, so the task bar and the
 # application menu use this name and icon rather than a generic one.
 # On Wayland it must equal the application id the toolkit sets — for this
-# project that is ViewportBuilder::with_app_id("xcom") in src/main.rs.
+# project that is `app_id: Some("xcom")` in the WindowOptions of src/main.rs.
 # On X11 it must equal the window's WM_CLASS.
 StartupWMClass=xcom
 

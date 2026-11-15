@@ -238,8 +238,8 @@ GPUI 使用平台文本系统渲染。启动时程序用 fontdb 扫描已安装�
 ## 桌面集成（Linux）
 
 `packaging/xcom.desktop` 提供桌面条目（中英文名称、分类、关键字）。
-其中 `StartupWMClass=xcom` 必须与 `src/main.rs` 里的
-`ViewportBuilder::with_app_id("xcom")` 一致，否则合成器无法把窗口关联到该条目，
+其中 `StartupWMClass=xcom` 必须与 `src/main.rs` 里 `WindowOptions` 的
+`app_id` 一致，否则合成器无法把窗口关联到该条目，
 任务栏也就拿不到图标和正确名称。
 
 ```bash

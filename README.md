@@ -218,7 +218,7 @@ Right-click inside the receive area for Copy selection, Select all, Pause/Resume
 
 ## Desktop Integration (Linux)
 
-`packaging/xcom.desktop` provides a desktop entry (Chinese and English names, categories, keywords). The `StartupWMClass=xcom` must match `ViewportBuilder::with_app_id("xcom")` in `src/main.rs`, otherwise the compositor can't associate the window with the entry, and the taskbar won't get the icon or correct name.
+`packaging/xcom.desktop` provides a desktop entry (Chinese and English names, categories, keywords). The `StartupWMClass=xcom` must match the `app_id` set in the `WindowOptions` of `src/main.rs`, otherwise the compositor can't associate the window with the entry, and the taskbar won't get the icon or correct name.
 
 ```bash
 cargo build --release
