@@ -2578,6 +2578,55 @@ mod ui_tests {
         .unwrap();
     }
 
+    /// The menu bar *is* the window header.
+    ///
+    /// On Linux the window controls join this row, which is why it has to be
+    /// one row: a title strip stacked above the menus used to push the menu
+    /// titles down to y=34 and the panels to y=66.  The headless platform
+    /// always reports server decorations, so the controls themselves never
+    /// appear here — the row they sit in does.
+    #[gpui_kit::test]
+    fn the_menu_bar_is_the_window_header(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+
+            let px = |value: gpui_kit::Pixels| f32::from(value);
+            let header = window.find("header-bar").bounds();
+            let top = px(header.origin.y);
+            let bottom = top + px(header.size.height);
+            assert!(
+                (top - 0.0).abs() <= 0.5,
+                "the header must start at the top of the window, got {top:.2}"
+            );
+            assert!(
+                bottom <= 40.0,
+                "one header row, not a title strip over a menu bar: {bottom:.2}px"
+            );
+
+            // The row also carries the title, so the menu titles sit on the
+            // header's vertical centre — the same band the controls use.
+            let middle = (top + bottom) / 2.0;
+            for id in ["menu-file", "menu-help"] {
+                let bounds = window.find(id).bounds();
+                let mid_y = px(bounds.origin.y) + px(bounds.size.height) / 2.0;
+                assert!(
+                    (mid_y - middle).abs() <= 1.0,
+                    "{id} is not centred in the header row: {mid_y:.2} vs {middle:.2}"
+                );
+            }
+        })
+        .unwrap();
+    }
+
     /// The send toolbar keeps its actions as one group.
     ///
     /// egui decides between "right-aligned on the options row" and "wrapped to

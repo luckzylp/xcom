@@ -1,6 +1,7 @@
 //! Every visible panel of the application.
 //!
-//! The shell is the same as the original tool: menu bar on top, configuration
+//! The shell is the same as the original tool: one header row carrying the menu
+//! bar and, on Linux, the window controls; configuration
 //! on the left, receive log above the send area in the middle, the multi-send /
 //! protocol panel on the right, and a status bar along the bottom.
 
@@ -33,110 +34,130 @@ use gpui_kit::{
 use crate::app::{Action, Choice, Level, SideTab, XcomApp};
 use crate::i18n::tr;
 
-/// Compose the whole window.
-/// The in-window title bar used on Linux when the compositor gives the
-/// window client-side decorations.
+/// Height of the window header: the menu bar, and on Linux the window
+/// controls, share this one row.
+const HEADER_HEIGHT: f32 = 34.0;
+
+/// Compose the window header.
 ///
-/// It follows the desktop's button layout (left or right), supports dragging
-/// the window by the empty title area, double-click to maximise/restore and
-/// the desktop window menu on right-click.
-fn title_bar(app: &XcomApp, window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
+/// GNOME on Wayland gives the window client-side decorations, so the app owns
+/// the title bar.  Drawing that as a strip of its own above the menu bar left
+/// two stacked bars; the controls instead join the menu row, on whichever side
+/// the desktop's `button-layout` asks for — many themes put them on the left —
+/// and the space between the menus and the trailing controls drags the window.
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+fn header_bar(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
     #[cfg(target_os = "linux")]
-    {
-        if !matches!(
+    let (leading, trailing) = {
+        // Only for client-side decorations: when the compositor or the window
+        // manager draws the frame it already offers the controls, and drawing
+        // them a second time would duplicate them.
+        if matches!(
             window.window_decorations(),
             gpui_kit::Decorations::Client { .. }
         ) {
-            return div().into_any_element();
-        }
-
-        let maximized = window.is_maximized();
-        let layout = app.button_layout;
-        log::debug!(
-            "title bar: decorations={:?} left={:?} right={:?}",
-            window.window_decorations(),
-            layout.left,
-            layout.right
-        );
-
-        let left_controls: Vec<AnyElement> = layout
-            .left
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, button)| window_control(button?, index, "left", maximized))
-            .collect();
-        let right_controls: Vec<AnyElement> = layout
-            .right
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, button)| window_control(button?, index, "right", maximized))
-            .collect();
-
-        let drag = div()
-            .id("title-drag")
-            .flex_1()
-            .h_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .px_3()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.title_dragging = true),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.title_dragging = false),
-            )
-            .on_mouse_move(cx.listener(|this, _, window, _| {
-                if this.title_dragging {
-                    this.title_dragging = false;
-                    window.start_window_move();
-                }
-            }))
-            .on_double_click(|_, window, _| window.zoom_window())
-            .on_mouse_down(MouseButton::Right, |event, window, _| {
-                window.show_window_menu(event.position)
-            })
-            .test_support()
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().foreground)
-                    .child(SharedString::from(crate::i18n::window_title())),
+            let maximized = window.is_maximized();
+            let layout = app.button_layout;
+            log::debug!(
+                "header: decorations={:?} left={:?} right={:?}",
+                window.window_decorations(),
+                layout.left,
+                layout.right
             );
-
-        return h_flex()
-            .w_full()
-            .h(px(34.0))
-            .items_center()
-            .flex_shrink_0()
-            .border_b_1()
-            .border_color(cx.theme().title_bar_border)
-            .bg(cx.theme().title_bar)
-            .child(
-                h_flex()
-                    .h_full()
-                    .items_center()
-                    .flex_shrink_0()
-                    .children(left_controls),
-            )
-            .child(drag)
-            .child(
-                h_flex()
-                    .h_full()
-                    .items_center()
-                    .flex_shrink_0()
-                    .children(right_controls),
-            )
-            .into_any_element();
-    }
+            let leading: Vec<AnyElement> = layout
+                .left
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, button)| window_control(button?, index, "left", maximized))
+                .collect();
+            let trailing: Vec<AnyElement> = layout
+                .right
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, button)| window_control(button?, index, "right", maximized))
+                .collect();
+            (leading, trailing)
+        } else {
+            (Vec::new(), Vec::new())
+        }
+    };
 
     #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (app, window, cx);
-        div().into_any_element()
-    }
+    let (leading, trailing): (Vec<AnyElement>, Vec<AnyElement>) = (Vec::new(), Vec::new());
+
+    let decorated = !leading.is_empty() || !trailing.is_empty();
+
+    // Without a self-drawn title bar the row simply ends after the menus.
+    #[cfg(target_os = "linux")]
+    let middle = if decorated {
+        title_drag(cx)
+    } else {
+        div().flex_1().into_any_element()
+    };
+    #[cfg(not(target_os = "linux"))]
+    let middle = div().flex_1().into_any_element();
+
+    h_flex()
+        .id("header-bar")
+        .test_support()
+        .w_full()
+        .h(px(HEADER_HEIGHT))
+        .items_center()
+        .flex_shrink_0()
+        .border_b_1()
+        .border_color(if decorated {
+            cx.theme().title_bar_border
+        } else {
+            cx.theme().border
+        })
+        .bg(cx.theme().title_bar)
+        // The controls sit flush against the window edge the way a headerbar
+        // draws them; the menu group keeps its own inset.
+        .children(leading)
+        .child(menu_bar(app, cx))
+        .child(middle)
+        .children(trailing)
+        .into_any_element()
+}
+
+/// The draggable part of the header: the window title, plus the gestures a
+/// title bar is expected to offer.
+#[cfg(target_os = "linux")]
+fn title_drag(cx: &mut Context<XcomApp>) -> AnyElement {
+    div()
+        .id("title-drag")
+        .flex_1()
+        .h_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .px_3()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, _| this.title_dragging = true),
+        )
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _, _, _| this.title_dragging = false),
+        )
+        .on_mouse_move(cx.listener(|this, _, window, _| {
+            if this.title_dragging {
+                this.title_dragging = false;
+                window.start_window_move();
+            }
+        }))
+        .on_double_click(|_, window, _| window.zoom_window())
+        .on_mouse_down(MouseButton::Right, |event, window, _| {
+            window.show_window_menu(event.position)
+        })
+        .test_support()
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().foreground)
+                .child(SharedString::from(crate::i18n::window_title())),
+        )
+        .into_any_element()
 }
 
 /// Read the desktop's preferred window-button placement.
@@ -199,6 +220,7 @@ fn window_control(
         .tooltip(label)
         .w(px(36.0))
         .h_full()
+        .flex_shrink_0()
         .rounded(ButtonRounded::None)
         .on_click(move |_, window, cx| match button {
             WindowButton::Minimize => window.minimize_window(),
@@ -439,8 +461,7 @@ pub fn render(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
         .size_full()
         .bg(theme.background)
         .text_color(theme.foreground)
-        .child(title_bar(app, window, cx))
-        .child(menu_bar(app, cx))
+        .child(header_bar(app, window, cx))
         .child(body)
         .child(status_bar(app, cx))
         .into_any_element()
@@ -597,14 +618,11 @@ fn menu_bar(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
     let help_weak = weak.clone();
 
     h_flex()
-        .w_full()
-        .h(px(32.0))
+        .h_full()
         .px_2()
         .gap_1()
         .items_center()
-        .border_b_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().title_bar)
+        .flex_shrink_0()
         .child(
             Button::new("menu-file")
                 .ghost()
