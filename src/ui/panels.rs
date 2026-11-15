@@ -541,6 +541,10 @@ fn port_choice_button(
     }
     trigger.dropdown_menu(move |menu, _window, _cx| {
         let mut menu = menu;
+        if items.is_empty() {
+            // egui shows a weak label rather than an empty popup.
+            return menu.item(PopupMenuItem::new(tr("未检测到串口")).disabled(true));
+        }
         for (text, choice, checked, detail) in items.clone() {
             menu = menu.item(port_item(text, choice, checked, detail, weak.clone()));
         }
@@ -894,14 +898,8 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
             None,
         ));
     }
-    if port_items.is_empty() {
-        port_items.push((
-            tr("（无可用串口）").to_owned(),
-            Choice::Port(String::new()),
-            true,
-            None,
-        ));
-    }
+    // The trigger always has a label; the popup shows 未检测到串口 when the
+    // list is empty, so no placeholder row is added here.
     // The trigger shows the selected port's detail on hover.
     let current_detail = ports
         .iter()
@@ -1519,6 +1517,7 @@ fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp
         .child(
             Button::new("multi-add")
                 .label(tr("添加条目"))
+                .tooltip(tr("在列表末尾添加一条空条目"))
                 .small()
                 .outline()
                 .disabled(running)
@@ -1548,6 +1547,7 @@ fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp
         .child(
             Button::new("multi-send-checked")
                 .label(tr("发送已勾选"))
+                .tooltip(tr("按顺序发送整个列表里所有已勾选且非空的条目"))
                 .small()
                 .primary()
                 .disabled(!open || running)
@@ -1768,6 +1768,11 @@ fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp
                     .child(
                         Button::new(("multi-send", index))
                             .label(tr("发送"))
+                            .tooltip(if entry.newline {
+                                tr("发送此条目（含新行）")
+                            } else {
+                                tr("发送此条目（不含新行）")
+                            })
                             .small()
                             .disabled(!open)
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1814,7 +1819,16 @@ fn multi_panel(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
-                .children(rows),
+                .children(rows)
+                .when(entries_len == 0, |this| {
+                    this.child(
+                        div()
+                            .p_2()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(tr("暂无条目，点击上方“添加条目”"))),
+                    )
+                }),
         )
         .child(status)
         .into_any_element()
@@ -2061,7 +2075,15 @@ fn protocol_panel(
                                 .child(SharedString::from(text)),
                         )
                         .into_any_element()
-                })),
+                }))
+                .when(app.protocol_log.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(tr("暂无协议交互记录"))),
+                    )
+                }),
         );
     layout.into_any_element()
 }
@@ -2119,6 +2141,20 @@ fn status_bar(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
             tr("编码"),
             app.encoding_label()
         ))))
+        // Auto-detection context: how much has been analysed so far.  It sits
+        // in the status bar rather than the Encoding submenu so the menu stays
+        // a list of choices.
+        .when(app.settings.encoding.is_none(), |this| {
+            this.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(crate::i18n::tr1(
+                        "已分析 {} 字节",
+                        app.auto.total(),
+                    ))),
+            )
+        })
         .child(div().child(SharedString::from(format!(
             "{} {}  {} {}",
             tr("发送:"),
