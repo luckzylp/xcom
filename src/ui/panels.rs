@@ -273,24 +273,37 @@ fn edge_strip(
             this.border_l_1().border_color(cx.theme().border)
         })
         .on_click(cx.listener(move |this, _, window, cx| {
+            // The width to reopen at: the stored one, lifted to the narrowest
+            // the panel can show.  Both halves of the resize below use it, so
+            // the centre column and the panel never disagree.
+            let reopen = if left {
+                this.settings.left_panel_width.max(240.0)
+            } else {
+                this.settings
+                    .right_panel_width
+                    .max(crate::settings::RIGHT_PANEL_MIN.max(multi_table_min_width()))
+            };
             if left {
                 this.settings.show_config_panel = true;
-                this.settings.left_panel_width = this.settings.left_panel_width.max(240.0);
+                this.settings.left_panel_width = reopen;
             } else {
                 this.settings.show_tool_panel = true;
-                this.settings.right_panel_width = this.settings.right_panel_width.max(260.0);
+                this.settings.right_panel_width = reopen;
             }
             split.update(cx, |state, cx| {
-                let sizes: Vec<f32> = state.sizes().iter().map(|s| f32::from(*s)).collect();
-                if sizes.len() < 3 {
+                if state.sizes().len() < 3 {
                     return;
                 }
-                let total: f32 = sizes.iter().sum();
                 if left {
-                    state.resize_panel(0, px(240.0), window, cx);
+                    state.resize_panel(0, px(reopen), window, cx);
                 } else {
-                    let center = (total - sizes[0] - 260.0).max(1.0);
-                    state.resize_panel(1, px(center), window, cx);
+                    // Aim the last panel straight at the width to restore: the
+                    // centre column takes the difference.  A split computed from
+                    // the sizes on screen would be measured against the
+                    // collapsed layout, which is the edge strip narrower than
+                    // the one the panel reopens into, and the panel would come
+                    // back a strip too narrow.
+                    state.resize_panel(2, px(reopen), window, cx);
                 }
             });
             this.mark_settings_dirty();
@@ -344,6 +357,11 @@ pub fn render(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
     let weak = cx.entity().downgrade();
     let left_width = px(app.settings.left_panel_width);
     let right_width = px(app.settings.right_panel_width);
+    // The narrowest the tool panel can be and still show its table: the stored
+    // setting's floor and the table's own measured minimum.  The splitter uses
+    // it as the width to snap back to, and as the deadline past which a drag
+    // counts as a collapse.
+    let tool_floor = crate::settings::RIGHT_PANEL_MIN.max(multi_table_min_width());
     let send_height = px(app.settings.send_area_height);
     let show_config = app.settings.show_config_panel;
     let show_tool = app.settings.show_tool_panel;
@@ -407,19 +425,17 @@ pub fn render(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
             resizable_panel()
                 .visible(show_tool)
                 .size(right_width)
-                .size_range(
-                    // The floor is the table's own minimum width as well as the
-                    // stored setting: a narrower panel pushes the delete column
-                    // past the header row.
-                    px(crate::settings::RIGHT_PANEL_MIN.max(multi_table_min_width()))
-                        ..px(crate::settings::RIGHT_PANEL_MAX),
-                )
+                // The drag may pull the panel below the width its table needs:
+                // that is the gesture that closes it.  The floor is applied when
+                // the drag ends, so a release between the two widths snaps back
+                // and a release past the collapse point hides the panel.
+                .size_range(px(1.0)..px(crate::settings::RIGHT_PANEL_MAX))
                 .fixed()
                 .child(tool_panel(app, window, cx)),
         )
         .on_resize({
             let weak = weak.clone();
-            move |state, _window, cx| {
+            move |state, window, cx| {
                 let sizes = state.read(cx).sizes().to_vec();
                 let _ = weak.update(cx, |this, cx| {
                     if let Some(width) = sizes.first().copied() {
@@ -439,12 +455,23 @@ pub fn render(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
                     }
                     if let Some(width) = sizes.get(2).copied() {
                         let width = f32::from(width);
-                        // The tool panel has a hard floor: the multi-send table
-                        // needs that much width, and the egui version refuses to
-                        // go below it rather than growing a horizontal scroll
-                        // bar.  Visibility is a menu toggle, not a drag gesture.
-                        if this.settings.show_tool_panel
-                            && width >= crate::settings::RIGHT_PANEL_MIN
+                        // A drag that pulls the panel under the width its table
+                        // needs closes it instead of leaving a sliver, the way
+                        // the egui splitter collapses rather than shrink past
+                        // its floor.  The stored width is the one to restore to,
+                        // so a collapse must not overwrite it.
+                        if this.settings.show_tool_panel && width < tool_floor / 3.0 {
+                            this.settings.show_tool_panel = false;
+                            this.mark_settings_dirty();
+                            cx.notify();
+                        } else if this.settings.show_tool_panel && width < tool_floor {
+                            // Released between the floor and the collapse point:
+                            // the panel cannot show a table this narrow, so it
+                            // springs back to the narrowest it can.
+                            state.update(cx, |state, cx| {
+                                state.resize_panel(2, px(tool_floor), window, cx);
+                            });
+                        } else if this.settings.show_tool_panel
                             && (this.settings.right_panel_width - width).abs() > 0.5
                         {
                             this.settings.right_panel_width = width;

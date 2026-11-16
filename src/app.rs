@@ -1972,13 +1972,13 @@ impl XcomApp {
                     self.settings.right_panel_width = 320.0;
                 }
                 let width = self.settings.right_panel_width;
-                let left = self.settings.left_panel_width;
                 self.main_split.update(cx, |state, cx| {
-                    let sizes = state.sizes();
-                    if sizes.len() >= 3 {
-                        let total: f32 = sizes.iter().map(|size| f32::from(*size)).sum();
-                        let center = (total - left - width).max(1.0);
-                        state.resize_panel(1, px(center), window, cx);
+                    if state.sizes().len() >= 3 {
+                        // The last panel's own size is the one being restored;
+                        // driving it directly lets the centre column give up
+                        // exactly the difference, whatever the collapsed layout
+                        // left behind.
+                        state.resize_panel(2, px(width), window, cx);
                     }
                 });
                 self.mark_settings_dirty();
@@ -3314,6 +3314,158 @@ mod ui_tests {
             })
             .unwrap();
         }
+    }
+
+    /// Dragging the tool panel's splitter right closes the panel, the way the
+    /// egui splitter collapses instead of leaving a sliver of a table.
+    #[gpui_kit::test]
+    fn dragging_the_tool_panel_past_its_floor_collapses_it(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings {
+            show_tool_panel: true,
+            ..Default::default()
+        };
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let stored = view.read(cx).settings.right_panel_width;
+            let panel = window.find("tool-panel").bounds();
+            let boundary = panel.origin.x;
+            let y = panel.origin.y + gpui_kit::px(60.0);
+            let start = gpui_kit::point(boundary - gpui_kit::px(2.0), y);
+
+            // Far enough right that the panel passes both its table floor and
+            // the collapse point below it.
+            window.drag(
+                start,
+                start + gpui_kit::point(gpui_kit::px(500.0), gpui_kit::px(0.0)),
+                cx,
+            );
+            window.render_frame(cx);
+
+            let settings = &view.read(cx).settings;
+            assert!(
+                !settings.show_tool_panel,
+                "dragging the splitter past the floor must close the panel"
+            );
+            assert!(
+                (settings.right_panel_width - stored).abs() < 1.0,
+                "collapsing must keep the width to reopen at: {} != {stored}",
+                settings.right_panel_width
+            );
+        })
+        .unwrap();
+    }
+
+    /// A release between the table's floor and the collapse point springs the
+    /// tool panel back to the narrowest width that still shows its table.
+    #[gpui_kit::test]
+    fn a_short_tool_panel_drag_snaps_back_to_its_floor(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings {
+            show_tool_panel: true,
+            ..Default::default()
+        };
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let stored = view.read(cx).settings.right_panel_width;
+            let floor =
+                crate::settings::RIGHT_PANEL_MIN.max(crate::ui::panels::multi_table_min_width());
+            let panel = window.find("tool-panel").bounds();
+            let boundary = panel.origin.x;
+            let y = panel.origin.y + gpui_kit::px(60.0);
+            let start = gpui_kit::point(boundary - gpui_kit::px(2.0), y);
+
+            // Under the floor, but well short of the collapse point.
+            window.drag(
+                start,
+                start + gpui_kit::point(gpui_kit::px(80.0), gpui_kit::px(0.0)),
+                cx,
+            );
+            window.render_frame(cx);
+
+            let settings = &view.read(cx).settings;
+            assert!(
+                settings.show_tool_panel,
+                "a short drag must not close the panel"
+            );
+            assert!(
+                (settings.right_panel_width - stored).abs() < 1.0,
+                "a short drag must not store a width the table cannot show"
+            );
+            let width = f32::from(window.find("tool-panel").bounds().size.width);
+            assert!(
+                (width - floor).abs() <= 2.0,
+                "the panel should spring back to its floor ({floor}), not {width}"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Turning the tool panel off and back on restores the width it had, not
+    /// just any width that happens to fit.
+    #[gpui_kit::test]
+    fn toggling_the_tool_panel_restores_its_width(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings {
+            show_tool_panel: true,
+            ..Default::default()
+        };
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let stored = view.read(cx).settings.right_panel_width;
+
+            view.update(cx, |app, cx| {
+                app.apply_action(Action::ToggleToolPanel, window, cx)
+            });
+            window.render_frame(cx);
+            assert!(
+                !view.read(cx).settings.show_tool_panel,
+                "the toggle closes it"
+            );
+            assert!(
+                window.try_find("tool-panel").is_none(),
+                "the closed panel must not be laid out"
+            );
+
+            view.update(cx, |app, cx| {
+                app.apply_action(Action::ToggleToolPanel, window, cx)
+            });
+            window.render_frame(cx);
+            assert!(
+                view.read(cx).settings.show_tool_panel,
+                "the toggle reopens it"
+            );
+            let width = f32::from(window.find("tool-panel").bounds().size.width);
+            assert!(
+                (width - stored).abs() <= 1.0,
+                "reopened at {width}, expected {stored}"
+            );
+        })
+        .unwrap();
     }
 
     /// The tool panel's floor covers the multi-send table's widest row.
