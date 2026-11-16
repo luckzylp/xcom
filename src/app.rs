@@ -439,8 +439,15 @@ pub struct XcomApp {
 impl XcomApp {
     /// Build the application after loading persisted settings.
     pub fn new(window: &mut Window, cx: &mut Context<Self>, settings: Settings) -> Self {
-        let lang = settings.lang.unwrap_or_else(crate::i18n::system_lang);
-        crate::i18n::set_lang(lang);
+        // `main` sets the language before the app exists.  Doing it again here
+        // would race the tests that pin the language through the same global:
+        // a test window built in parallel flips the process to English while
+        // another test holds the language lock and expects Chinese.
+        #[cfg(not(test))]
+        {
+            let lang = settings.lang.unwrap_or_else(crate::i18n::system_lang);
+            crate::i18n::set_lang(lang);
+        }
 
         let send_text = settings.send.buffer.clone();
         let protocol_text = settings.protocol_data.clone();
@@ -2823,6 +2830,48 @@ mod ui_tests {
                 px(input.size.height) >= 56.0,
                 "the send box must take the leftover height, got {:.2}px",
                 px(input.size.height)
+            );
+        })
+        .unwrap();
+    }
+
+    /// The baud-rate and keyword-highlighting windows carry no close control:
+    /// their title row holds the title only, and the footer button closes them,
+    /// the way the egui windows behaved.
+    #[gpui_kit::test]
+    fn the_baud_and_highlight_windows_have_no_close_control(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |app, cx| app.open_custom_baud(window, cx));
+            window.render_frame(cx);
+            assert!(
+                window.try_find("dialog-header").is_some(),
+                "the baud window must still have its title row"
+            );
+            assert!(
+                window.try_find("dialog-close").is_none(),
+                "the baud window must not offer a close control"
+            );
+
+            window.close_all_dialogs(cx);
+            view.update(cx, |app, cx| app.open_highlight(window, cx));
+            window.render_frame(cx);
+            assert!(
+                window.try_find("dialog-header").is_some(),
+                "the highlight window must still have its title row"
+            );
+            assert!(
+                window.try_find("dialog-close").is_none(),
+                "the highlight window must not offer a close control"
             );
         })
         .unwrap();
