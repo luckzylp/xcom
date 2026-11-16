@@ -421,6 +421,8 @@ pub struct XcomApp {
     /// Set by the reset confirmation, applied at the top of the next frame
     /// where a window is available to resynchronise the editors.
     pub(crate) needs_reset: bool,
+    /// Whether the left panel's statistics section is expanded.
+    pub(crate) stats_section_open: bool,
     /// Whether a left press on the title bar is still a potential drag.
     /// Only the Linux client-side title bar reads this.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -496,6 +498,7 @@ impl XcomApp {
             pending_rx: Vec::new(),
             show_paused: false,
             serial_section_open: true,
+            stats_section_open: true,
             messages: Vec::new(),
             last_timed_send: None,
             multi_run: None,
@@ -2382,6 +2385,15 @@ mod ui_tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{TestAppContext, WindowOptions};
 
+    /// Clicks are dispatched through process-wide window state, so two tests
+    /// driving a window at the same time can deliver a click to the other
+    /// test's window.  Every window test takes this lock; it is cheap because
+    /// the tests themselves are short.
+    fn ui_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn colour_text_round_trips_and_rejects_junk() {
         assert_eq!(parse_color("#12AB34"), Some([0x12, 0xAB, 0x34]));
@@ -2394,6 +2406,7 @@ mod ui_tests {
 
     #[gpui_kit::test]
     fn the_main_window_renders_the_panels(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         let settings = crate::settings::Settings {
             show_tool_panel: true,
@@ -2481,6 +2494,7 @@ mod ui_tests {
     /// section, so it reads as a control instead of a separator.
     #[gpui_kit::test]
     fn the_serial_section_matches_the_egui_layout(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         let settings = crate::settings::Settings::default();
         let (handle, _view) = cx.update(|cx| {
@@ -2532,6 +2546,7 @@ mod ui_tests {
     /// The five menu titles sit on one row, left to right.
     #[gpui_kit::test]
     fn menu_titles_share_one_row_in_reading_order(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         let settings = crate::settings::Settings::default();
         let (handle, _view) = cx.update(|cx| {
@@ -2587,6 +2602,7 @@ mod ui_tests {
     /// appear here — the row they sit in does.
     #[gpui_kit::test]
     fn the_menu_bar_is_the_window_header(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         let settings = crate::settings::Settings::default();
         let (handle, _view) = cx.update(|cx| {
@@ -2635,6 +2651,7 @@ mod ui_tests {
     /// options.
     #[gpui_kit::test]
     fn send_toolbar_keeps_the_actions_in_one_group(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         let settings = crate::settings::Settings::default();
         let (handle, _view) = cx.update(|cx| {
@@ -2688,6 +2705,7 @@ mod ui_tests {
     /// `CollapsingHeader` with `default_open(true)`.
     #[gpui_kit::test]
     fn the_serial_section_collapses_and_expands(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         let settings = crate::settings::Settings::default();
         let (handle, _view) = cx.update(|cx| {
@@ -2723,9 +2741,97 @@ mod ui_tests {
         .unwrap();
     }
 
+    /// The statistics section collapses and expands like the serial one.
+    #[gpui_kit::test]
+    fn the_stats_section_collapses_and_expands(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find("stats-body").is_some(),
+                "the statistics start expanded, like egui's CollapsingHeader"
+            );
+
+            window.click("stats-section", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("stats-body").is_none(),
+                "collapsing must hide the counters"
+            );
+            // The serial section is a section of its own and stays as it was.
+            assert!(window.try_find("port").is_some());
+
+            window.click("stats-section", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("stats-body").is_some(),
+                "expanding must bring the counters back"
+            );
+        })
+        .unwrap();
+    }
+
+    /// The send box fills the send area, and the action buttons end at the
+    /// area's right edge rather than trailing the options.
+    #[gpui_kit::test]
+    fn the_send_area_fills_its_height_and_right_aligns_the_actions(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+
+            let px = |value: gpui_kit::Pixels| f32::from(value);
+            let area = window.find("send-area").bounds();
+            let input = window.find("send-input-box").bounds();
+            let actions = window.find("send-actions").bounds();
+
+            // The send box and the action group both sit inside the area's
+            // 8 px padding, so their right edges line up with each other.
+            let area_bottom = px(area.origin.y) + px(area.size.height);
+            let input_right = px(input.origin.x) + px(input.size.width);
+            let input_bottom = px(input.origin.y) + px(input.size.height);
+            let actions_right = px(actions.origin.x) + px(actions.size.width);
+
+            assert!(
+                (input_right - actions_right).abs() <= 2.0,
+                "the actions end {:.2}px away from the send box's right edge",
+                input_right - actions_right
+            );
+            assert!(
+                (area_bottom - 8.0 - input_bottom).abs() <= 2.0,
+                "the send box stops {:.2}px above the area's bottom",
+                area_bottom - input_bottom
+            );
+            assert!(
+                px(input.size.height) >= 56.0,
+                "the send box must take the leftover height, got {:.2}px",
+                px(input.size.height)
+            );
+        })
+        .unwrap();
+    }
+
     /// The tool panel refuses to get narrower than the multi-send table needs.
     #[gpui_kit::test]
     fn the_tool_panel_keeps_its_table_floor(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         // Ask for a width the multi-send table cannot live in.
         let mut settings = crate::settings::Settings {
@@ -2763,6 +2869,7 @@ mod ui_tests {
     /// header of its own; this is the test that it follows the window buttons.
     #[gpui_kit::test]
     fn the_about_dialog_close_button_follows_the_desktop_layout(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         fn layout(close_on_left: bool) -> gpui_kit::WindowButtonLayout {
             let mut left = [None; gpui_kit::MAX_BUTTONS_PER_SIDE];
             let mut right = [None; gpui_kit::MAX_BUTTONS_PER_SIDE];
@@ -2833,6 +2940,7 @@ mod ui_tests {
     /// The multi-send table draws a header row over its columns.
     #[gpui_kit::test]
     fn multi_send_headers_sit_above_their_columns(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         let settings = crate::settings::Settings {
             show_tool_panel: true,
@@ -2876,6 +2984,7 @@ mod ui_tests {
     /// The highlight dialog lays its rules out under a header row.
     #[gpui_kit::test]
     fn the_highlight_dialog_has_a_header_row(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         let settings = crate::settings::Settings::default();
         let (handle, view) = cx.update(|cx| {
@@ -2921,6 +3030,7 @@ mod ui_tests {
     /// 显示模式 submenu.
     #[gpui_kit::test]
     fn the_hex_layout_actions_update_the_display_options(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         use crate::logstore::{HexStyle, ViewMode};
 
         cx.update(gpui_kit::init);
@@ -2964,6 +3074,7 @@ mod ui_tests {
     /// builds and the dead-code lint flags the whole subtree.
     #[gpui_kit::test]
     fn a_tick_without_a_port_sends_nothing(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         let settings = crate::settings::Settings::default();
         let (_handle, view) = cx.update(|cx| {

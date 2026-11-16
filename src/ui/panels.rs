@@ -5,15 +5,15 @@
 //! on the left, receive log above the send area in the middle, the multi-send /
 //! protocol panel on the right, and a status bar along the bottom.
 
-#[cfg(target_os = "linux")]
 use gpui_kit::MouseButton;
-#[cfg(target_os = "linux")]
 use gpui_kit::base::InteractiveElementExt as _;
 use gpui_kit::base::StyledExt as _;
+use gpui_kit::component::IconName;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
     button::Button,
+    button::ButtonRounded,
     button::ButtonVariants as _,
     checkbox::Checkbox,
     h_flex,
@@ -22,8 +22,6 @@ use gpui_kit::component::{
     switch::Switch,
     v_flex,
 };
-#[cfg(target_os = "linux")]
-use gpui_kit::component::{IconName, button::ButtonRounded};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
@@ -40,62 +38,43 @@ const HEADER_HEIGHT: f32 = 34.0;
 
 /// Compose the window header.
 ///
-/// GNOME on Wayland gives the window client-side decorations, so the app owns
-/// the title bar.  Drawing that as a strip of its own above the menu bar left
-/// two stacked bars; the controls instead join the menu row, on whichever side
-/// the desktop's `button-layout` asks for — many themes put them on the left —
-/// and the space between the menus and the trailing controls drags the window.
-#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+/// The window controls share the menu row rather than sitting on a strip of
+/// their own, and they follow the desktop's `button-layout`: many themes put
+/// them on the left, where they are then the first thing in the row.  The
+/// space between the menus and the trailing controls drags the window.
 fn header_bar(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
-    #[cfg(target_os = "linux")]
-    let (leading, trailing) = {
-        // Only for client-side decorations: when the compositor or the window
-        // manager draws the frame it already offers the controls, and drawing
-        // them a second time would duplicate them.
-        if matches!(
-            window.window_decorations(),
-            gpui_kit::Decorations::Client { .. }
-        ) {
-            let maximized = window.is_maximized();
-            let layout = app.button_layout;
-            log::debug!(
-                "header: decorations={:?} left={:?} right={:?}",
-                window.window_decorations(),
-                layout.left,
-                layout.right
-            );
-            let leading: Vec<AnyElement> = layout
-                .left
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, button)| window_control(button?, index, "left", maximized))
-                .collect();
-            let trailing: Vec<AnyElement> = layout
-                .right
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, button)| window_control(button?, index, "right", maximized))
-                .collect();
-            (leading, trailing)
-        } else {
-            (Vec::new(), Vec::new())
-        }
+    let decorated = draws_own_title_bar(window);
+    let (leading, trailing) = if decorated {
+        let maximized = window.is_maximized();
+        let layout = app.button_layout;
+        log::debug!(
+            "header: own title bar, left={:?} right={:?}",
+            layout.left,
+            layout.right
+        );
+        let leading: Vec<AnyElement> = layout
+            .left
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, button)| window_control(button?, index, "left", maximized))
+            .collect();
+        let trailing: Vec<AnyElement> = layout
+            .right
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, button)| window_control(button?, index, "right", maximized))
+            .collect();
+        (leading, trailing)
+    } else {
+        (Vec::new(), Vec::new())
     };
 
-    #[cfg(not(target_os = "linux"))]
-    let (leading, trailing): (Vec<AnyElement>, Vec<AnyElement>) = (Vec::new(), Vec::new());
-
-    let decorated = !leading.is_empty() || !trailing.is_empty();
-
     // Without a self-drawn title bar the row simply ends after the menus.
-    #[cfg(target_os = "linux")]
     let middle = if decorated {
         title_drag(cx)
     } else {
         div().flex_1().into_any_element()
     };
-    #[cfg(not(target_os = "linux"))]
-    let middle = div().flex_1().into_any_element();
 
     h_flex()
         .id("header-bar")
@@ -120,9 +99,37 @@ fn header_bar(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
         .into_any_element()
 }
 
+/// Whether this window has to draw its own title bar, and with it the window
+/// controls.
+///
+/// Linux reports it through the decoration mode: when the compositor or the
+/// window manager draws the frame it already offers the controls, and drawing
+/// them again would duplicate them.  Windows always answers `Server`, so it is
+/// decided by the window options instead: `main.rs` asks for a transparent
+/// title bar, which strips the native caption, and this header takes its
+/// place.  macOS keeps its traffic lights, so nothing is drawn there.
+fn draws_own_title_bar(window: &Window) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        matches!(
+            window.window_decorations(),
+            gpui_kit::Decorations::Client { .. }
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = window;
+        true
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let _ = window;
+        false
+    }
+}
+
 /// The draggable part of the header: the window title, plus the gestures a
 /// title bar is expected to offer.
-#[cfg(target_os = "linux")]
 fn title_drag(cx: &mut Context<XcomApp>) -> AnyElement {
     div()
         .id("title-drag")
@@ -132,6 +139,9 @@ fn title_drag(cx: &mut Context<XcomApp>) -> AnyElement {
         .items_center()
         .justify_center()
         .px_3()
+        // Windows drags and double-click-maximises a client area that is
+        // marked as a caption; the other platforms use the handlers below.
+        .window_control_area(gpui_kit::WindowControlArea::Drag)
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, _, _, _| this.title_dragging = true),
@@ -196,7 +206,10 @@ pub(crate) fn read_button_layout() -> gpui_kit::WindowButtonLayout {
     }
 }
 
-#[cfg(target_os = "linux")]
+/// One window control of the header.
+///
+/// The controls fill the header's height and keep their width on both sides of
+/// the menu group, so a left-hand layout starts with them at the window edge.
 fn window_control(
     button: gpui_kit::WindowButton,
     index: usize,
@@ -1052,6 +1065,7 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
     // 撑满整个宽度的按钮会被读成分隔线而不是控件。
     let open_button_width = (app.settings.left_panel_width - 24.0).clamp(96.0, 168.0);
     let serial_section_open = app.serial_section_open;
+    let stats_section_open = app.stats_section_open;
 
     v_flex()
         .id("left-panel-scroll")
@@ -1077,16 +1091,7 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
                     this.serial_section_open = !this.serial_section_open;
                     cx.notify();
                 }))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(if serial_section_open {
-                            "▾"
-                        } else {
-                            "▸"
-                        })),
-                )
+                .child(disclosure(serial_section_open, cx))
                 .child(section_title(tr("串口设置"), cx)),
         )
         .when(serial_section_open, |this| {
@@ -1107,7 +1112,7 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
                         )))
                         .child(
                             Button::new("refresh-ports")
-                                .label("↻")
+                                .icon(IconName::RefreshCw)
                                 .tooltip(tr("刷新"))
                                 .small()
                                 .ghost()
@@ -1136,7 +1141,7 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
                         )))
                         .child(
                             Button::new("custom-baud")
-                                .label("⚙")
+                                .icon(IconName::Settings2)
                                 .tooltip(tr("自定义波特率"))
                                 .small()
                                 .ghost()
@@ -1262,33 +1267,57 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
                         ))),
                 )
         })
-        .child(section_title(tr("统计"), cx))
-        .child(info_row(tr("发送字节"), &app.tx_bytes.to_string(), cx))
-        .child(info_row(tr("接收字节"), &app.rx_bytes.to_string(), cx))
-        .child(info_row(
-            tr("显示行数"),
-            &app.log.row_count().to_string(),
-            cx,
-        ))
-        .child(info_row(
-            tr("缓存字节"),
-            &app.log.retained_bytes().to_string(),
-            cx,
-        ))
-        .child(field_row(
-            tr("最大保留行数"),
-            Input::new(&app.inputs.max_rows)
-                .w(px(96.0))
-                .into_any_element(),
-            cx,
-        ))
-        .child(field_row(
-            tr("最大缓存 (MB)"),
-            Input::new(&app.inputs.max_raw_mb)
-                .w(px(64.0))
-                .into_any_element(),
-            cx,
-        ))
+        // 统计区同样可折叠：egui 版在这里是第二个 CollapsingHeader。
+        .child(
+            h_flex()
+                .id("stats-section")
+                .test_support()
+                .w_full()
+                .gap_1()
+                .items_center()
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.stats_section_open = !this.stats_section_open;
+                    cx.notify();
+                }))
+                .child(disclosure(stats_section_open, cx))
+                .child(section_title(tr("统计"), cx)),
+        )
+        .when(stats_section_open, |this| {
+            this.child(
+                v_flex()
+                    .id("stats-body")
+                    .test_support()
+                    .w_full()
+                    .gap_2()
+                    .child(info_row(tr("发送字节"), &app.tx_bytes.to_string(), cx))
+                    .child(info_row(tr("接收字节"), &app.rx_bytes.to_string(), cx))
+                    .child(info_row(
+                        tr("显示行数"),
+                        &app.log.row_count().to_string(),
+                        cx,
+                    ))
+                    .child(info_row(
+                        tr("缓存字节"),
+                        &app.log.retained_bytes().to_string(),
+                        cx,
+                    ))
+                    .child(field_row(
+                        tr("最大保留行数"),
+                        Input::new(&app.inputs.max_rows)
+                            .w(px(96.0))
+                            .into_any_element(),
+                        cx,
+                    ))
+                    .child(field_row(
+                        tr("最大缓存 (MB)"),
+                        Input::new(&app.inputs.max_raw_mb)
+                            .w(px(64.0))
+                            .into_any_element(),
+                        cx,
+                    )),
+            )
+        })
         .into_any_element()
 }
 
@@ -1466,32 +1495,39 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
         );
     }
 
-    // 中间的弹性空白把操作组推到右侧；空间不够时它先被压到最小，操作组
-    // 整组换行到下一行并靠左。
+    // 左侧选项、右侧操作：操作组固定在行的右边缘，选项放不下时只在左侧
+    // 内部换行，右边缘不会因此跑偏。
     let toolbar = h_flex()
         .id("send-toolbar")
         .test_support()
         .w_full()
         .gap_2()
         .items_center()
-        .flex_wrap()
-        .child(options)
-        .child(div().flex_1().min_w(px(8.0)))
+        .child(div().flex_1().min_w(px(0.0)).child(options.flex_wrap()))
         .child(actions);
 
     let mut area = v_flex()
+        .id("send-area")
+        .test_support()
         .h_full()
         .gap_2()
         .p_2()
         .border_t_1()
         .border_color(cx.theme().border)
         .child(toolbar)
+        // 文本框要占满剩下的高度，而不是停在自己那一行的高度上。
         .child(
-            Textarea::new(&app.send_input)
+            div()
+                .id("send-input-box")
+                .test_support()
                 .flex_1()
                 .min_h(px(56.0))
-                .font_family(text_font.family.clone())
-                .text_size(px(app.settings.fonts.send_size)),
+                .child(
+                    Textarea::new(&app.send_input)
+                        .h(relative(1.0))
+                        .font_family(text_font.family.clone())
+                        .text_size(px(app.settings.fonts.send_size)),
+                ),
         );
 
     if let Some((ratio, remaining, path)) = file_progress {
@@ -2402,6 +2438,16 @@ fn section_title(text: &'static str, cx: &mut Context<XcomApp>) -> AnyElement {
         .font_bold()
         .text_color(cx.theme().muted_foreground)
         .child(SharedString::from(text))
+        .into_any_element()
+}
+
+/// The disclosure triangle of a collapsible section header, pointing down when
+/// the section is open the way egui's `CollapsingHeader` does.
+fn disclosure(open: bool, cx: &mut Context<XcomApp>) -> AnyElement {
+    div()
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .child(SharedString::from(if open { "▾" } else { "▸" }))
         .into_any_element()
 }
 

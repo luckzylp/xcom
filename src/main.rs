@@ -52,6 +52,12 @@ fn main() {
                 window_min_size: Some(size(px(880.0), px(540.0))),
                 titlebar: Some(TitlebarOptions {
                     title: Some(title.clone().into()),
+                    // Windows keeps a white native caption over a dark window
+                    // unless it is stripped; with this the header row below —
+                    // menu bar plus window controls — is the title bar.
+                    // macOS keeps its traffic lights, and Linux asks for client
+                    // decorations through `window_decorations` instead.
+                    appears_transparent: cfg!(target_os = "windows"),
                     ..Default::default()
                 }),
                 app_id: Some("xcom".to_owned()),

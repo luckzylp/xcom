@@ -34,11 +34,12 @@ fn footer() -> DialogFooter {
 }
 
 /// The highlight table's columns, in row order.  The keyword column takes what
-/// is left.  egui uses the same numbers, so the header and the rows line up.
+/// is left.  The colour column is wide enough for a full `#RRGGBB` value, and
+/// the action column for the `.*` toggle plus the delete button.
 const HL_INDEX_W: f32 = 30.0;
 const HL_ENABLE_W: f32 = 34.0;
-const HL_COLOR_W: f32 = 52.0;
-const HL_ACTION_W: f32 = 52.0;
+const HL_COLOR_W: f32 = 88.0;
+const HL_ACTION_W: f32 = 60.0;
 const HL_COL_GAP: f32 = 8.0;
 
 fn hl_header(text: impl Into<SharedString>, width: f32, cx: &gpui_kit::App) -> AnyElement {
@@ -86,6 +87,22 @@ fn close_control() -> impl IntoElement {
 /// version followed the desktop's `button-layout` instead (see ADR 0001), so
 /// the built-in button is turned off and this header draws its own on
 /// whichever side the window buttons use.
+/// A dialog title row without a close control.
+///
+/// The two settings windows that own their whole look (custom baud rates and
+/// keyword highlighting) are closed from their footer button, the way the egui
+/// windows were, so their title row carries the icon and the title only.
+fn title_only(title: impl Into<SharedString>) -> AnyElement {
+    h_flex()
+        .id("dialog-header")
+        .test_support()
+        .w_full()
+        .items_center()
+        .gap_2()
+        .child(div().flex_1().text_base().font_bold().child(title.into()))
+        .into_any_element()
+}
+
 fn header(layout: gpui_kit::WindowButtonLayout, title: impl Into<SharedString>) -> AnyElement {
     let close_on_left = layout
         .left
@@ -527,8 +544,8 @@ impl XcomApp {
             let input = app.inputs.custom_baud.clone();
             dialog
                 .close_button(false)
-                .title(header(app.button_layout, tr("自定义波特率")))
-                .width(px(420.0))
+                .title(title_only(tr("自定义波特率")))
+                .width(px(460.0))
                 .child(
                     v_flex()
                         .gap_3()
@@ -607,39 +624,12 @@ impl XcomApp {
             let app = entity.read(cx);
             let rules = app.settings.highlights.rules.clone();
             dialog
-                .title(tr("关键字高亮"))
-                .width(px(760.0))
+                .close_button(false)
+                .title(title_only(tr("关键字高亮")))
+                .width(px(840.0))
                 .child(
                     v_flex()
                         .gap_2()
-                        .child(
-                            h_flex()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(SharedString::from(tr(
-                                            "勾选行首的启用开关后规则才生效；默认按字面匹配、区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
-                                        ))),
-                                )
-                                .child(
-                                    Button::new("hl-add")
-                                        .label(tr("添加关键字"))
-                                        .small()
-                                        .on_click({
-                                            let weak = weak.clone();
-                                            move |_, window, cx| {
-                                                super::panels::run_action(
-                                                    weak.clone(),
-                                                    Action::HighlightAdd,
-                                                    window,
-                                                    cx,
-                                                )
-                                            }
-                                        }),
-                                ),
-                        )
                         .child(
                             v_flex()
                                 // 表头：与行共用同一组列宽（egui 的 #/启用/关键字/颜色/操作）
@@ -793,6 +783,45 @@ impl XcomApp {
                                         })
                                 }))
                                 .into_any_element(),
+                        )
+                        // egui 把添加按钮和规则数放在表下面，帮助文字压尾。
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Button::new("hl-add")
+                                        .label(tr("添加关键字"))
+                                        .small()
+                                        .on_click({
+                                            let weak = weak.clone();
+                                            move |_, window, cx| {
+                                                super::panels::run_action(
+                                                    weak.clone(),
+                                                    Action::HighlightAdd,
+                                                    window,
+                                                    cx,
+                                                )
+                                            }
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(SharedString::from(crate::i18n::tr1(
+                                            "{} 条规则",
+                                            rules.len(),
+                                        ))),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(tr(
+                                    "勾选行首的启用开关后规则才生效；默认按字面匹配、区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
+                                ))),
                         ),
                 )
                 .footer(footer())
