@@ -566,38 +566,87 @@ fn port_item(
 ///
 /// `detail` is the selected port's extra description (product name, VID/PID,
 /// …), shown as the trigger's tooltip.
+/// egui 串口网格的列宽：下拉框固定 140px（SERIAL_COMBO_WIDTH），
+/// 标签列放下最宽的 `DTR / RTS`。
+const SERIAL_COMBO_WIDTH: f32 = 140.0;
+const SERIAL_LABEL_WIDTH: f32 = 64.0;
+
 fn port_choice_button(
     id: impl Into<gpui_kit::ElementId>,
     label: impl Into<SharedString>,
     current_detail: Option<String>,
     items: Vec<(String, Choice, bool, Option<String>)>,
+    disabled: bool,
     weak: WeakEntity<XcomApp>,
 ) -> impl IntoElement {
-    let mut trigger = Button::new(id).label(label);
+    let mut trigger = Button::new(id).label(label).disabled(disabled);
     if let Some(detail) = current_detail {
         trigger = trigger.tooltip(detail);
     }
-    trigger.dropdown_menu(move |menu, _window, _cx| {
-        let mut menu = menu;
-        if items.is_empty() {
-            // egui shows a weak label rather than an empty popup.
-            return menu.item(PopupMenuItem::new(tr("未检测到串口")).disabled(true));
-        }
-        for (text, choice, checked, detail) in items.clone() {
-            menu = menu.item(port_item(text, choice, checked, detail, weak.clone()));
-        }
-        menu
-    })
+    // egui 的 ComboBox：选中文字靠左，下拉箭头贴右。选择器铺满外层容器
+    // （容器限制在 72..140 之间，随面板宽度收缩）。
+    trigger
+        .w_full()
+        .dropdown_caret(true)
+        .dropdown_menu(move |menu, _window, _cx| {
+            let mut menu = menu;
+            if items.is_empty() {
+                // egui shows a weak label rather than an empty popup.
+                return menu.item(PopupMenuItem::new(tr("未检测到串口")).disabled(true));
+            }
+            for (text, choice, checked, detail) in items.clone() {
+                menu = menu.item(port_item(text, choice, checked, detail, weak.clone()));
+            }
+            menu
+        })
 }
 
 pub(crate) fn choice_button(
     id: impl Into<gpui_kit::ElementId>,
     label: impl Into<SharedString>,
     items: Vec<(String, Choice, bool)>,
+    disabled: bool,
     weak: WeakEntity<XcomApp>,
 ) -> impl IntoElement {
     Button::new(id)
         .label(label)
+        .disabled(disabled)
+        // egui 的 ComboBox：选中文字靠左，下拉箭头贴右。
+        .dropdown_caret(true)
+        .dropdown_menu(move |menu, _window, _cx| {
+            let mut menu = menu;
+            for (text, choice, checked) in items.clone() {
+                menu = menu.item(choice_item(text, choice, checked, weak.clone()));
+            }
+            menu
+        })
+}
+
+/// The width of a combo-style dropdown button.
+enum ComboWidth {
+    /// Fill the parent, which caps the width (the port/baud rows).
+    Fill,
+    /// A fixed pixel width (egui's `SERIAL_COMBO_WIDTH` dropdowns).
+    Fixed(f32),
+}
+
+/// A combo-style dropdown button with egui's ComboBox look: the selected
+/// text sits at the left edge and the caret hugs the right.
+fn combo_button(
+    id: impl Into<gpui_kit::ElementId>,
+    label: impl Into<SharedString>,
+    items: Vec<(String, Choice, bool)>,
+    disabled: bool,
+    width: ComboWidth,
+    weak: WeakEntity<XcomApp>,
+) -> impl IntoElement {
+    let mut button = Button::new(id).label(label).disabled(disabled);
+    button = match width {
+        ComboWidth::Fill => button.w_full(),
+        ComboWidth::Fixed(w) => button.w(px(w)),
+    };
+    button
+        .dropdown_caret(true)
         .dropdown_menu(move |menu, _window, _cx| {
             let mut menu = menu;
             for (text, choice, checked) in items.clone() {
@@ -1061,6 +1110,12 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
     let dtr = app.settings.serial.dtr;
     let rts = app.settings.serial.rts;
     let summary = app.settings.serial.summary();
+    // egui 的波特率选择器：非标准值显示 "（自定义）" 后缀。
+    let baud_label = if crate::serial::config::STANDARD_BAUDS.contains(&app.settings.serial.baud) {
+        format!("{}", app.settings.serial.baud)
+    } else {
+        format!("{}{}", app.settings.serial.baud, tr("（自定义）"))
+    };
     // egui 版把打开按钮限制在 96..168 之间并相对串口区中心左移 16px：
     // 撑满整个宽度的按钮会被读成分隔线而不是控件。
     let open_button_width = (app.settings.left_panel_width - 24.0).clamp(96.0, 168.0);
@@ -1095,147 +1150,172 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
                 .child(section_title(tr("串口设置"), cx)),
         )
         .when(serial_section_open, |this| {
-            this
-                // 串口：选择器与刷新按钮占同一行，刷新贴在右侧、与选择器同高。
-                // egui 版就是这个排布（见 main 的 serial_port_combo_and_refresh_share_row）。
-                .child(field_row(
-                    tr("串口"),
-                    h_flex()
-                        .w_full()
-                        .gap_1()
-                        .child(div().flex_1().min_w(px(0.0)).child(port_choice_button(
-                            "port",
-                            port_label,
-                            current_detail,
-                            port_items,
+            // egui 的 serial_grid：两列（标签列 + 控件列），列间距 8、行间距 6。
+            // 控件是固定 140px 的紧凑下拉框（SERIAL_COMBO_WIDTH），紧跟在
+            // 标签列右侧，不拉伸到面板边缘；打开串口后参数选择器禁用。
+            this.child(
+                v_flex()
+                    .id("serial-grid")
+                    .test_support()
+                    .w_full()
+                    .mt(px(2.0))
+                    .gap(px(6.0))
+                    // 串口：选择器（72..140 随面板收缩）+ 相邻的刷新按钮。
+                    // egui 版串口打开时只禁用选择器，刷新按钮保持可用。
+                    .child(serial_row(
+                        tr("串口"),
+                        h_flex()
+                            .w_full()
+                            .gap(px(8.0))
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(72.0))
+                                    .max_w(px(SERIAL_COMBO_WIDTH))
+                                    .child(port_choice_button(
+                                        "port",
+                                        port_label,
+                                        current_detail,
+                                        port_items,
+                                        is_open,
+                                        weak.clone(),
+                                    )),
+                            )
+                            .child(
+                                Button::new("refresh-ports")
+                                    .icon(IconName::RefreshCw)
+                                    .tooltip(tr("刷新"))
+                                    .small()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.ports.poll();
+                                        this.info(tr("已刷新串口列表"));
+                                        cx.notify();
+                                    })),
+                            )
+                            .into_any_element(),
+                        cx,
+                    ))
+                    // 波特率：选择器 + 相邻的自定义波特率按钮（egui 的 tune 图标）。
+                    .child(serial_row(
+                        tr("波特率"),
+                        h_flex()
+                            .w_full()
+                            .gap(px(8.0))
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(72.0))
+                                    .max_w(px(SERIAL_COMBO_WIDTH))
+                                    .child(combo_button(
+                                        "baud",
+                                        baud_label,
+                                        baud_items,
+                                        is_open,
+                                        ComboWidth::Fill,
+                                        weak.clone(),
+                                    )),
+                            )
+                            .child(
+                                Button::new("custom-baud")
+                                    .icon(IconName::Settings2)
+                                    .tooltip(tr("自定义波特率"))
+                                    .small()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_custom_baud(window, cx);
+                                    })),
+                            )
+                            .into_any_element(),
+                        cx,
+                    ))
+                    .child(serial_row(
+                        tr("数据位"),
+                        combo_button(
+                            "data-bits",
+                            app.settings.serial.data_bits.label(),
+                            data_bits,
+                            is_open,
+                            ComboWidth::Fixed(SERIAL_COMBO_WIDTH),
                             weak.clone(),
-                        )))
-                        .child(
-                            Button::new("refresh-ports")
-                                .icon(IconName::RefreshCw)
-                                .tooltip(tr("刷新"))
-                                .small()
-                                .ghost()
-                                .disabled(is_open)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.ports.poll();
-                                    this.info(tr("已刷新串口列表"));
-                                    cx.notify();
-                                })),
                         )
                         .into_any_element(),
-                    cx,
-                ))
-                // 波特率：选择器与自定义波特率按钮同一行；按钮用图标保持与刷新按钮
-                // 相同的窄宽度，而不是一条带省略号的文字按钮。
-                .child(field_row(
-                    tr("波特率"),
-                    h_flex()
-                        .w_full()
-                        .gap_1()
-                        .child(div().flex_1().min_w(px(0.0)).child(choice_button(
-                            "baud",
-                            format!("{}", app.settings.serial.baud),
-                            baud_items,
+                        cx,
+                    ))
+                    .child(serial_row(
+                        tr("停止位"),
+                        combo_button(
+                            "stop-bits",
+                            app.settings.serial.stop_bits.label(),
+                            stop_bits,
+                            is_open,
+                            ComboWidth::Fixed(SERIAL_COMBO_WIDTH),
                             weak.clone(),
-                        )))
-                        .child(
-                            Button::new("custom-baud")
-                                .icon(IconName::Settings2)
-                                .tooltip(tr("自定义波特率"))
-                                .small()
-                                .ghost()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_custom_baud(window, cx);
-                                })),
                         )
                         .into_any_element(),
-                    cx,
-                ))
-                .child(field_row(
-                    tr("数据位"),
-                    choice_button(
-                        "data-bits",
-                        app.settings.serial.data_bits.label(),
-                        data_bits,
-                        weak.clone(),
-                    )
-                    .into_any_element(),
-                    cx,
-                ))
-                .child(field_row(
-                    tr("停止位"),
-                    choice_button(
-                        "stop-bits",
-                        app.settings.serial.stop_bits.label(),
-                        stop_bits,
-                        weak.clone(),
-                    )
-                    .into_any_element(),
-                    cx,
-                ))
-                .child(field_row(
-                    tr("校验位"),
-                    choice_button(
-                        "parity",
-                        tr(app.settings.serial.parity.label()),
-                        parity,
-                        weak.clone(),
-                    )
-                    .into_any_element(),
-                    cx,
-                ))
-                .child(field_row(
-                    tr("流控"),
-                    choice_button(
-                        "flow",
-                        tr(app.settings.serial.flow.label()),
-                        flow,
-                        weak.clone(),
-                    )
-                    .into_any_element(),
-                    cx,
-                ))
-                .child(field_row(
-                    tr("DTR / RTS"),
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Switch::new("dtr")
-                                .checked(dtr)
-                                .label("DTR")
-                                .on_change(cx.listener(|this, value, _, cx| {
+                        cx,
+                    ))
+                    .child(serial_row(
+                        tr("校验位"),
+                        combo_button(
+                            "parity",
+                            tr(app.settings.serial.parity.label()),
+                            parity,
+                            is_open,
+                            ComboWidth::Fixed(SERIAL_COMBO_WIDTH),
+                            weak.clone(),
+                        )
+                        .into_any_element(),
+                        cx,
+                    ))
+                    .child(serial_row(
+                        tr("流控"),
+                        combo_button(
+                            "flow",
+                            tr(app.settings.serial.flow.label()),
+                            flow,
+                            is_open,
+                            ComboWidth::Fixed(SERIAL_COMBO_WIDTH),
+                            weak.clone(),
+                        )
+                        .into_any_element(),
+                        cx,
+                    ))
+                    // DTR / RTS 在 egui 里是一对复选框，串口打开时仍然可用
+                    // （改动即时下发 set_dtr / set_rts）。
+                    .child(serial_row(
+                        tr("DTR / RTS"),
+                        h_flex()
+                            .gap_2()
+                            .child(Checkbox::new("dtr").checked(dtr).label("DTR").on_change(
+                                cx.listener(|this, value, _, cx| {
                                     this.settings.serial.dtr = *value;
                                     this.apply_line_state(cx);
                                     cx.notify();
-                                })),
-                        )
-                        .child(
-                            Switch::new("rts")
-                                .checked(rts)
-                                .label("RTS")
-                                .on_change(cx.listener(|this, value, _, cx| {
+                                }),
+                            ))
+                            .child(Checkbox::new("rts").checked(rts).label("RTS").on_change(
+                                cx.listener(|this, value, _, cx| {
                                     this.settings.serial.rts = *value;
                                     this.apply_line_state(cx);
                                     cx.notify();
-                                })),
-                        )
-                        .into_any_element(),
-                    cx,
-                ))
-                .child(
-                    h_flex()
-                        .id("serial-open-row")
-                        .test_support()
-                        .w_full()
-                        .justify_center()
-                        .child(
-                            div()
-                                .w(px(open_button_width))
-                                // 居中后整体左移 16px：右外边距是两倍偏移量，
-                                // flex 的居中会把外边距算进去。
-                                .mr(px(32.0))
-                                .child(
+                                }),
+                            ))
+                            .into_any_element(),
+                        cx,
+                    ))
+                    // 打开按钮：egui 在网格后加 4px 间距；按钮宽度限制在
+                    // 96..168 并整体左移 16px（右外边距是两倍偏移量，flex 的
+                    // 居中会把外边距算进去）。
+                    .child(
+                        h_flex()
+                            .id("serial-open-row")
+                            .test_support()
+                            .w_full()
+                            .justify_center()
+                            .mt(px(4.0))
+                            .child(
+                                div().w(px(open_button_width)).mr(px(32.0)).child(
                                     Button::new("toggle-port")
                                         .label(if is_open {
                                             tr("关闭串口")
@@ -1250,22 +1330,24 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
                                             cx.notify();
                                         })),
                                 ),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(crate::i18n::tr1("当前: {}", summary))),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(tr(
-                            "提示: 串口打开时无法修改通信参数，需先关闭串口",
-                        ))),
-                )
+                            ),
+                    )
+                    // egui 的 ui.small：两行说明文字比正文小一号。
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(crate::i18n::tr1("当前: {}", summary))),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(tr(
+                                "提示: 串口打开时无法修改通信参数，需先关闭串口",
+                            ))),
+                    ),
+            )
         })
         // 统计区同样可折叠：egui 版在这里是第二个 CollapsingHeader。
         .child(
@@ -1330,6 +1412,28 @@ fn field_row(label: &'static str, control: AnyElement, cx: &mut Context<XcomApp>
             div()
                 .text_sm()
                 .flex_shrink_0()
+                .child(SharedString::from(label)),
+        )
+        .child(div().flex_1().min_w(px(0.0)).child(control))
+        .text_color(cx.theme().foreground)
+        .into_any_element()
+}
+
+/// egui 的 serial_grid 行：固定宽度的标签列 + 紧跟其后的控件。
+///
+/// egui 的 `Grid::new("serial_grid")` 把标签放进自动宽度的第一列（最宽的
+/// 是 `DTR / RTS`），控件列左对齐、不拉伸到面板边缘 —— 与 [`field_row`]
+/// 的“标签靠左、控件撑满”排布不同。
+fn serial_row(label: &'static str, control: AnyElement, cx: &Context<XcomApp>) -> AnyElement {
+    h_flex()
+        .w_full()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            div()
+                .w(px(SERIAL_LABEL_WIDTH))
+                .flex_shrink_0()
+                .text_sm()
                 .child(SharedString::from(label)),
         )
         .child(div().flex_1().min_w(px(0.0)).child(control))
@@ -2170,6 +2274,7 @@ fn protocol_panel(
                 "checksum",
                 tr(config.checksum.label()),
                 checksum_items,
+                false,
                 weak.clone(),
             )
             .into_any_element(),

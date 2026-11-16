@@ -2394,7 +2394,9 @@ mod ui_tests {
     use super::*;
     use gpui_kit::component::WindowExt as _;
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{TestAppContext, WindowOptions};
+    use gpui_kit::{
+        Modifiers, MouseDownEvent, MouseMoveEvent, MouseUpEvent, TestAppContext, WindowOptions,
+    };
 
     /// Clicks are dispatched through process-wide window state, so two tests
     /// driving a window at the same time can deliver a click to the other
@@ -2549,6 +2551,24 @@ mod ui_tests {
             assert!(
                 (96.0..=168.5).contains(&width),
                 "open button must stay between 96 and 168px, got {width:.2}px"
+            );
+
+            // egui 的 serial_grid：下拉框固定 140px、控件列左对齐，控件
+            // 不拉伸到面板右缘。
+            let data_bits = window.find("data-bits").bounds();
+            let grid = window.find("serial-grid").bounds();
+            assert!(
+                (px(data_bits.size.width) - 140.0).abs() <= 0.5,
+                "the serial combos are egui's fixed 140px wide, got {:.1}px",
+                px(data_bits.size.width)
+            );
+            assert!(
+                (left(data_bits) - left(port)).abs() <= 0.5,
+                "the control column must align across rows: {data_bits:?} vs {port:?}"
+            );
+            assert!(
+                right(data_bits) + 16.0 <= right(grid),
+                "the combos must not stretch to the panel edge: {data_bits:?} vs {grid:?}"
             );
         })
         .unwrap();
@@ -2935,6 +2955,57 @@ mod ui_tests {
                 to_f32(header.origin.y)
             );
 
+            // A quick flick is one move event between the press and the
+            // release, so every flick is exact, with no drag threshold to
+            // hand the first move to the next event.
+            window.close_all_dialogs(cx);
+            view.update(cx, |app, cx| app.open_highlight(window, cx));
+            window.render_frame(cx);
+            let before = window.find("surface").bounds();
+            let header = window.find("dialog-header").bounds();
+            let grab = gpui_kit::point(
+                gpui_kit::px(to_f32(header.origin.x) + to_f32(header.size.width) / 2.),
+                gpui_kit::px(to_f32(header.origin.y) + to_f32(header.size.height) / 2.),
+            );
+            let flick = grab + gpui_kit::point(gpui_kit::px(60.), gpui_kit::px(45.));
+            let modifiers = Modifiers::default();
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseDown(MouseDownEvent {
+                    button: gpui_kit::MouseButton::Left,
+                    position: grab,
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseMove(MouseMoveEvent {
+                    position: flick,
+                    pressed_button: Some(gpui_kit::MouseButton::Left),
+                    modifiers,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseUp(MouseUpEvent {
+                    button: gpui_kit::MouseButton::Left,
+                    position: flick,
+                    modifiers,
+                    click_count: 1,
+                }),
+                cx,
+            );
+            window.render_frame(cx);
+            let after = window.find("surface").bounds();
+            assert!(
+                (to_f32(after.origin.x) - to_f32(before.origin.x) - 60.).abs() <= 1.
+                    && (to_f32(after.origin.y) - to_f32(before.origin.y) - 45.).abs() <= 1.,
+                "a single-move flick moved the window {:.1}/{:.1}px, expected 60/45",
+                to_f32(after.origin.x) - to_f32(before.origin.x),
+                to_f32(after.origin.y) - to_f32(before.origin.y)
+            );
+
             // Reopening centres the window again, the way egui's one-shot
             // `center_on_open` flag did.
             window.close_all_dialogs(cx);
@@ -2945,6 +3016,78 @@ mod ui_tests {
                 (to_f32(reopened.origin.x) - to_f32(before.origin.x)).abs() <= 1.
                     && (to_f32(reopened.origin.y) - to_f32(before.origin.y)).abs() <= 1.,
                 "a reopened window did not centre itself"
+            );
+        })
+        .unwrap();
+    }
+
+    /// The custom baud window has no title bar in egui (`title_bar(false)`),
+    /// and egui falls back to `WindowDrag::Anywhere` for such windows: a
+    /// press anywhere on the window body moves it, while interactive
+    /// controls consume the press instead.
+    #[gpui_kit::test]
+    fn the_baud_window_drags_from_its_body(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            let to_f32 = |value: gpui_kit::Pixels| f32::from(value);
+            view.update(cx, |app, cx| app.open_custom_baud(window, cx));
+            window.render_frame(cx);
+
+            let before = window.find("surface").bounds();
+            let body = window.find("baud-body").bounds();
+            // 抓窗口体的左下空白（不在任何控件上），窗口应整体跟随。
+            let grab = gpui_kit::point(
+                gpui_kit::px(to_f32(body.origin.x) + 20.),
+                gpui_kit::px(to_f32(body.origin.y) + to_f32(body.size.height) - 10.),
+            );
+            window.drag(
+                grab,
+                grab + gpui_kit::point(gpui_kit::px(35.), gpui_kit::px(25.)),
+                cx,
+            );
+            window.render_frame(cx);
+            let after = window.find("surface").bounds();
+            assert!(
+                (to_f32(after.origin.x) - to_f32(before.origin.x) - 35.).abs() <= 1.
+                    && (to_f32(after.origin.y) - to_f32(before.origin.y) - 25.).abs() <= 1.,
+                "a body drag of 35/25 moved the surface {:.1}/{:.1}px",
+                to_f32(after.origin.x) - to_f32(before.origin.x),
+                to_f32(after.origin.y) - to_f32(before.origin.y)
+            );
+
+            // 按住输入行拖动是编辑选区，不是窗口拖动：控件消费按下，
+            // 窗口原地不动。
+            window.close_all_dialogs(cx);
+            view.update(cx, |app, cx| app.open_custom_baud(window, cx));
+            window.render_frame(cx);
+            let before = window.find("surface").bounds();
+            let row = window.find("baud-add-row").bounds();
+            let grab = gpui_kit::point(
+                gpui_kit::px(to_f32(row.origin.x) + 30.),
+                gpui_kit::px(to_f32(row.origin.y) + to_f32(row.size.height) / 2.),
+            );
+            window.drag(
+                grab,
+                grab + gpui_kit::point(gpui_kit::px(30.), gpui_kit::px(20.)),
+                cx,
+            );
+            window.render_frame(cx);
+            let after = window.find("surface").bounds();
+            assert!(
+                (to_f32(after.origin.x) - to_f32(before.origin.x)).abs() <= 1.
+                    && (to_f32(after.origin.y) - to_f32(before.origin.y)).abs() <= 1.,
+                "dragging from the input row moved the window {:.1}/{:.1}px",
+                to_f32(after.origin.x) - to_f32(before.origin.x),
+                to_f32(after.origin.y) - to_f32(before.origin.y)
             );
         })
         .unwrap();

@@ -6,7 +6,6 @@
 //! controls inside read the retained application entity through a weak handle;
 //! a change updates the settings and the dialog layer redraws.
 
-use gpui_kit::AppContext as _;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, WindowExt,
@@ -20,10 +19,11 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, DragMoveEvent, Empty, InteractiveElement as _, IntoElement, MouseButton,
-    ParentElement as _, Pixels, Point, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, TestSupportExt as _, WeakEntity, Window, div, point, px,
+    AnyElement, Bounds, Context, DispatchPhase, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, SharedString,
+    Size, Styled as _, TestSupportExt as _, WeakEntity, Window, canvas, div, point, px,
 };
+use std::{cell::RefCell, rc::Rc};
 
 use crate::app::{Action, Choice, XcomApp};
 use crate::i18n::tr;
@@ -56,6 +56,12 @@ const HIGHLIGHT_WINDOW_W: f32 = 800.0;
 const HIGHLIGHT_WINDOW_H: f32 = 600.0;
 const CUSTOM_BAUD_WINDOW_W: f32 = 320.0;
 const CUSTOM_BAUD_WINDOW_H: f32 = 340.0;
+
+/// How far a drag region reaches past its painted bounds: the dialog layer's
+/// 16 px surface padding (and the same value again as the title/body gap)
+/// plus the 1 px surface border.  With it the regions tile the whole surface,
+/// so an egui-style drag starts from any empty spot on the dialog frame.
+const SURFACE_INFLATE: f32 = 17.0;
 
 fn hl_header(text: impl Into<SharedString>, width: f32, cx: &gpui_kit::App) -> AnyElement {
     div()
@@ -109,6 +115,7 @@ fn header(
     layout: gpui_kit::WindowButtonLayout,
     title: impl Into<SharedString>,
     icon: Option<gpui_kit::component::IconName>,
+    guards: &DragGuards,
     cx: &gpui_kit::App,
 ) -> AnyElement {
     let close_on_left = layout
@@ -119,36 +126,13 @@ fn header(
     let mut row = h_flex()
         .id("dialog-header")
         .test_support()
+        .relative()
         .w_full()
         .items_center()
         .gap_2()
-        // Dragging starts like any gpui drag, after the pointer leaves the
-        // click threshold, so pressing the close control still clicks it.
-        .on_mouse_down(MouseButton::Left, {
-            let weak = weak.clone();
-            move |event, _, cx| {
-                if let Some(entity) = weak.upgrade() {
-                    entity.update(cx, |app, _| app.dialog_drag.begin(event.position));
-                }
-            }
-        })
-        .on_drag(DialogDragged, |_, _, _, cx| {
-            cx.stop_propagation();
-            cx.new(|_| DialogDragged)
-        })
-        .on_drag_move({
-            let weak = weak.clone();
-            move |event: &DragMoveEvent<DialogDragged>, window, cx| {
-                if let Some(entity) = weak.upgrade() {
-                    entity.update(cx, |app, cx| {
-                        app.dialog_drag.drag(event, window);
-                        cx.notify();
-                    });
-                }
-            }
-        });
+        .child(drag_region(weak.clone(), guards.clone(), SURFACE_INFLATE));
     if close_on_left {
-        row = row.child(close_control());
+        row = row.child(barrier(close_control(), guards));
     }
     if let Some(icon) = icon {
         row = row.child(
@@ -193,7 +177,8 @@ fn onoff(
 pub(crate) struct DialogDrag {
     /// How far the open dialog sits from its centred resting place.
     pub(crate) offset: Point<Pixels>,
-    /// The pointer position and the offset when the current drag started.
+    /// The pointer position, the offset and the region that grabbed when the
+    /// current drag started.
     grab: Option<DragGrab>,
 }
 
@@ -201,51 +186,68 @@ pub(crate) struct DialogDrag {
 struct DragGrab {
     mouse: Point<Pixels>,
     offset: Point<Pixels>,
+    /// The size of the region the press landed in, which stays constant while
+    /// the surface moves.  Only that region's listener drives the drag.
+    region: Size<Pixels>,
 }
 
-/// The payload that marks a drag by a dialog's title row.
-#[derive(Clone)]
-struct DialogDragged;
-
-impl Render for DialogDragged {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
+/// The interactive controls a drag must leave alone, as painted this frame.
+/// The list is rebuilt every frame: each barrier records its painted bounds
+/// during paint, and the drag listener reads it when a press arrives.
+type DragGuards = Rc<RefCell<Vec<Bounds<Pixels>>>>;
 
 impl DialogDrag {
-    /// A drag started at `position`: later moves continue from here.
-    fn begin(&mut self, position: Point<Pixels>) {
+    /// A press inside a drag region starts tracking from here.
+    fn begin(&mut self, position: Point<Pixels>, region: Size<Pixels>) {
         self.grab = Some(DragGrab {
             mouse: position,
             offset: self.offset,
+            region,
         });
     }
 
-    /// Pulls the surface along the pointer, keeping the title row reachable
-    /// the way an egui window is: the row never leaves the viewport, even
-    /// when the dialog below it is taller.
-    fn drag(&mut self, event: &DragMoveEvent<DialogDragged>, window: &mut Window) {
-        let Some(grab) = self.grab else { return };
-        let candidate = grab.offset + (event.event.position - grab.mouse);
+    /// Pulls the surface along the pointer, keeping the grabbed region
+    /// reachable the way an egui window is: the region never leaves the
+    /// viewport, even when the dialog below it is taller.
+    fn drag_to(
+        &mut self,
+        position: Point<Pixels>,
+        region: Bounds<Pixels>,
+        view: Size<Pixels>,
+    ) -> bool {
+        let Some(grab) = &self.grab else {
+            return false;
+        };
+        if grab.region != region.size {
+            return false;
+        }
+        let candidate = grab.offset + (position - grab.mouse);
 
-        // The painted header bounds already carry the applied offset, so the
+        // The painted region bounds already carry the applied offset, so the
         // shift that lands the candidate inside the viewport is the clamped
-        // one.  8 px keeps the row clear of the window edge.
-        let bounds = event.bounds;
-        let view = window.viewport_size();
-        let row = f32::from(bounds.size.height);
+        // one.  8 px keeps the region clear of the window edge.
         let margin = 8.0;
-        let left = (f32::from(bounds.origin.x) + f32::from(candidate.x - self.offset.x))
+        let left = (f32::from(region.origin.x) + f32::from(candidate.x - self.offset.x))
             .max(margin)
-            .min(f32::from(view.width) - f32::from(bounds.size.width) - margin);
-        let top = (f32::from(bounds.origin.y) + f32::from(candidate.y - self.offset.y))
+            .min(f32::from(view.width) - f32::from(region.size.width) - margin);
+        let top = (f32::from(region.origin.y) + f32::from(candidate.y - self.offset.y))
             .max(margin)
-            .min(f32::from(view.height) - row - margin);
-        self.offset += point(
-            px(left - f32::from(bounds.origin.x)),
-            px(top - f32::from(bounds.origin.y)),
-        );
+            .min(f32::from(view.height) - f32::from(region.size.height) - margin);
+        let next = self.offset
+            + point(
+                px(left - f32::from(region.origin.x)),
+                px(top - f32::from(region.origin.y)),
+            );
+        if next == self.offset {
+            return false;
+        }
+        self.offset = next;
+        true
+    }
+
+    /// The button came up: the drag, if any, is over.
+    fn release(&mut self) -> bool {
+        self.grab.take().is_some()
     }
 }
 
@@ -255,6 +257,116 @@ fn dragged(dialog: Dialog, offset: Point<Pixels>) -> Dialog {
     dialog
         .ml(px(f32::from(offset.x)))
         .mt(px(f32::from(offset.y)))
+}
+
+/// egui 的 `WindowDrag::Anywhere`：`title_bar(false)` 的窗口按住任意空白处
+/// 都能拖动，交互控件消费指针按下。拖动由窗口级监听器按坐标驱动，它看不
+/// 到元素树，所以每个交互控件在这里登记自己的绘制矩形；落在矩形内的按下
+/// 是点击，不是拖动。
+fn barrier(control: impl IntoElement, guards: &DragGuards) -> impl IntoElement {
+    let guards = guards.clone();
+    div().relative().child(control).child(
+        canvas(
+            |_, _, _| (),
+            move |bounds, _, _, _| {
+                guards.borrow_mut().push(bounds);
+            },
+        )
+        .absolute()
+        .inset_0(),
+    )
+}
+
+/// Registers the window-level listeners that move the open dialog.
+///
+/// gpui's element-level mouse handlers reach the handler through the frame's
+/// hit test, which does not reach a dialog's empty surfaces on every platform
+/// state, and its `on_drag` mechanism waits for the drag threshold before the
+/// first move event is applied — so a quick flick lands one event late.  The
+/// drag here is instead driven by native `Window::on_mouse_event` listeners
+/// registered during paint, the way gpui's own tooltip layer tracks presses:
+/// they fire on the capture phase for every event, and each event carries the
+/// pointer position in itself, so the drag follows the pointer exactly from
+/// wherever it really is.
+///
+/// A press inside the region that is outside every guarded control begins the
+/// drag; moves then pull the surface until the button is released.  The
+/// listeners are re-registered every frame, so the bounds stay exact while the
+/// dialog moves.
+///
+/// The region is the element's painted bounds grown by `inflate` on every
+/// side.  The dialog layer pads the surface by 16 px around the title row and
+/// the body plus a 1 px border, and separates the two with a 16 px gap, so a
+/// 17 px inflation makes each region reach the surface edge: an egui window
+/// drags from its whole frame, not just from the text row.
+fn drag_region(weak: WeakEntity<XcomApp>, guards: DragGuards, inflate: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let region = Bounds {
+                origin: point(bounds.origin.x - px(inflate), bounds.origin.y - px(inflate)),
+                size: point(
+                    bounds.size.width + px(inflate * 2.),
+                    bounds.size.height + px(inflate * 2.),
+                )
+                .into(),
+            };
+            window.on_mouse_event({
+                let weak = weak.clone();
+                let guards = guards.clone();
+                move |event: &MouseDownEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Capture
+                        || event.button != MouseButton::Left
+                        || !region.contains(&event.position)
+                        || guards
+                            .borrow()
+                            .iter()
+                            .any(|guard| guard.contains(&event.position))
+                    {
+                        return;
+                    }
+                    if let Some(entity) = weak.upgrade() {
+                        entity.update(cx, |app, _| {
+                            app.dialog_drag.begin(event.position, region.size)
+                        });
+                    }
+                }
+            });
+            window.on_mouse_event({
+                let weak = weak.clone();
+                move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Capture {
+                        return;
+                    }
+                    if let Some(entity) = weak.upgrade() {
+                        let view = window.viewport_size();
+                        entity.update(cx, |app, cx| {
+                            if app.dialog_drag.drag_to(event.position, region, view) {
+                                cx.notify();
+                            }
+                        });
+                    }
+                }
+            });
+            window.on_mouse_event({
+                let weak = weak.clone();
+                move |_: &MouseUpEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Capture {
+                        return;
+                    }
+                    if let Some(entity) = weak.upgrade() {
+                        entity.update(cx, |app, cx| {
+                            if app.dialog_drag.release() {
+                                cx.notify();
+                            }
+                        });
+                    }
+                }
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
 }
 
 impl XcomApp {
@@ -267,11 +379,12 @@ impl XcomApp {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
             };
+            let guards: DragGuards = Rc::new(RefCell::new(Vec::new()));
             let app = entity.read(cx);
             dragged(
                 dialog
                     .close_button(false)
-                    .title(header(weak.clone(), layout, tr("关于 XCOM"), None, cx))
+                    .title(header(weak.clone(), layout, tr("关于 XCOM"), None, &guards, cx))
                     .width(px(520.0))
                     .child(
                         v_flex()
@@ -323,6 +436,7 @@ impl XcomApp {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
             };
+            let guards: DragGuards = Rc::new(RefCell::new(Vec::new()));
             let app = entity.read(cx);
             let rows = [
                 (tr("发送"), "Ctrl+Enter"),
@@ -337,7 +451,14 @@ impl XcomApp {
             dragged(
                 dialog
                     .close_button(false)
-                    .title(header(weak.clone(), layout, tr("快捷键"), None, cx))
+                    .title(header(
+                        weak.clone(),
+                        layout,
+                        tr("快捷键"),
+                        None,
+                        &guards,
+                        cx,
+                    ))
                     .width(px(420.0))
                     .child(
                         v_flex()
@@ -369,6 +490,7 @@ impl XcomApp {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
             };
+            let guards: DragGuards = Rc::new(RefCell::new(Vec::new()));
             let app = entity.read(cx);
             let fonts = app.settings.fonts.clone();
             let family_items = |selected: &Option<String>, kind: fn(Option<String>) -> Choice| {
@@ -396,7 +518,14 @@ impl XcomApp {
             dragged(
                 dialog
                     .close_button(false)
-                    .title(header(weak.clone(), layout, tr("字体设置"), None, cx))
+                    .title(header(
+                        weak.clone(),
+                        layout,
+                        tr("字体设置"),
+                        None,
+                        &guards,
+                        cx,
+                    ))
                     .width(px(FONT_WINDOW_W))
                     .child(
                         v_flex()
@@ -410,6 +539,7 @@ impl XcomApp {
                                         .clone()
                                         .unwrap_or_else(|| tr("系统默认").to_owned()),
                                     family_items(&fonts.ui_family, Choice::UiFont),
+                                    false,
                                     weak.clone(),
                                 ),
                             ))
@@ -419,6 +549,7 @@ impl XcomApp {
                                     "font-ui-size",
                                     format!("{} pt", fonts.ui_size),
                                     size_items(fonts.ui_size, 9, 24, Choice::UiSize),
+                                    false,
                                     weak.clone(),
                                 ),
                             ))
@@ -431,6 +562,7 @@ impl XcomApp {
                                         .clone()
                                         .unwrap_or_else(|| tr("系统等宽").to_owned()),
                                     family_items(&fonts.receive_family, Choice::ReceiveFont),
+                                    false,
                                     weak.clone(),
                                 ),
                             ))
@@ -440,6 +572,7 @@ impl XcomApp {
                                     "font-receive-size",
                                     format!("{} pt", fonts.receive_size),
                                     size_items(fonts.receive_size, 8, 32, Choice::ReceiveSize),
+                                    false,
                                     weak.clone(),
                                 ),
                             ))
@@ -452,6 +585,7 @@ impl XcomApp {
                                         .clone()
                                         .unwrap_or_else(|| tr("系统等宽").to_owned()),
                                     family_items(&fonts.send_family, Choice::SendFont),
+                                    false,
                                     weak.clone(),
                                 ),
                             ))
@@ -461,6 +595,7 @@ impl XcomApp {
                                     "font-send-size",
                                     format!("{} pt", fonts.send_size),
                                     size_items(fonts.send_size, 8, 32, Choice::SendSize),
+                                    false,
                                     weak.clone(),
                                 ),
                             ))
@@ -479,6 +614,7 @@ impl XcomApp {
                                             )
                                         })
                                         .collect::<Vec<_>>(),
+                                    false,
                                     weak.clone(),
                                 ),
                             ))
@@ -512,13 +648,21 @@ impl XcomApp {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
             };
+            let guards: DragGuards = Rc::new(RefCell::new(Vec::new()));
             let app = entity.read(cx);
             let colors = app.settings.log_colors;
             let palette = crate::theme::log_palette(cx, app.settings.theme, colors);
             dragged(
                 dialog
                     .close_button(false)
-                    .title(header(weak.clone(), layout, tr("接收区配色"), None, cx))
+                    .title(header(
+                        weak.clone(),
+                        layout,
+                        tr("接收区配色"),
+                        None,
+                        &guards,
+                        cx,
+                    ))
                     .width(px(LOG_COLORS_WINDOW_W))
                     .child(
                         v_flex()
@@ -580,6 +724,7 @@ impl XcomApp {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
             };
+            let guards: DragGuards = Rc::new(RefCell::new(Vec::new()));
             let app = entity.read(cx);
             let active = app.log_file.is_active();
             let path = app
@@ -590,7 +735,7 @@ impl XcomApp {
             dragged(
                 dialog
                     .close_button(false)
-                    .title(header(weak.clone(), layout, tr("日志文件"), None, cx))
+                    .title(header(weak.clone(), layout, tr("日志文件"), None, &guards, cx))
                     .width(px(LOG_FILE_WINDOW_W))
                     .child(
                         v_flex()
@@ -692,6 +837,7 @@ impl XcomApp {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
             };
+            let guards: DragGuards = Rc::new(RefCell::new(Vec::new()));
             let app = entity.read(cx);
             let rates = app.settings.serial.custom_bauds.clone();
             let input = app.inputs.custom_baud.clone();
@@ -713,35 +859,57 @@ impl XcomApp {
                         layout,
                         tr("自定义波特率"),
                         Some(gpui_kit::component::IconName::Settings2),
+                        &guards,
                         cx,
                     ))
                     .width(px(CUSTOM_BAUD_WINDOW_W))
                     .h(px(CUSTOM_BAUD_WINDOW_H))
                     .child(
+                        // egui 的自定义波特率窗口没有标题栏（title_bar(false)），
+                        // egui 对无标题栏窗口回退到 WindowDrag::Anywhere：按住
+                        // 窗口任意空白处都能拖动。这里给整个窗口体挂上同样的
+                        // 拖拽；交互控件用 barrier 登记自己的区域。窗口体要
+                        // 撑满对话框表面，拖动才覆盖标题行以下的全部空白。
                         v_flex()
+                            .id("baud-body")
+                            .test_support()
+                            .relative()
+                            .h_full()
                             .gap_2()
+                            .child(drag_region(weak.clone(), guards.clone(), SURFACE_INFLATE))
                             .child(div().text_sm().child(SharedString::from(tr("添加波特率"))))
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(div().flex_1().min_w(px(0.0)).child(Input::new(&input)))
-                                    .child(Button::new("baud-add").label(tr("添加")).on_click({
-                                        let weak = weak.clone();
-                                        let input = input.clone();
-                                        move |_, _, cx| {
-                                            if let Ok(rate) =
-                                                input.read(cx).value().trim().parse::<u32>()
+                            .child(barrier(
+                                div().id("baud-add-row").test_support().w_full().child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(
+                                            div().flex_1().min_w(px(0.0)).child(Input::new(&input)),
+                                        )
+                                        .child(Button::new("baud-add").label(tr("添加")).on_click(
                                             {
-                                                let _ = weak.update(cx, |this, cx| {
-                                                    if this.settings.serial.add_custom_baud(rate) {
-                                                        this.mark_settings_dirty();
-                                                        cx.notify();
+                                                let weak = weak.clone();
+                                                let input = input.clone();
+                                                move |_, _, cx| {
+                                                    if let Ok(rate) =
+                                                        input.read(cx).value().trim().parse::<u32>()
+                                                    {
+                                                        let _ = weak.update(cx, |this, cx| {
+                                                            if this
+                                                                .settings
+                                                                .serial
+                                                                .add_custom_baud(rate)
+                                                            {
+                                                                this.mark_settings_dirty();
+                                                                cx.notify();
+                                                            }
+                                                        });
                                                     }
-                                                });
-                                            }
-                                        }
-                                    })),
-                            )
+                                                }
+                                            },
+                                        )),
+                                ),
+                                &guards,
+                            ))
                             .when(!can_add, |this| {
                                 this.child(
                                     div()
@@ -782,7 +950,7 @@ impl XcomApp {
                                                     .child(SharedString::from("bps")),
                                             )
                                             .child(div().flex_1())
-                                            .child(
+                                            .child(barrier(
                                                 Button::new(("baud-remove", rate))
                                                     .label("−")
                                                     .tooltip(tr("删除"))
@@ -800,7 +968,8 @@ impl XcomApp {
                                                             });
                                                         }
                                                     }),
-                                            )
+                                                &guards,
+                                            ))
                                     }))
                                     .into_any_element()
                             }),
@@ -819,12 +988,13 @@ impl XcomApp {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
             };
+            let guards: DragGuards = Rc::new(RefCell::new(Vec::new()));
             let app = entity.read(cx);
             let rules = app.settings.highlights.rules.clone();
             dragged(
                 dialog
                     .close_button(false)
-                    .title(header(weak.clone(), layout, tr("关键字高亮"), None, cx))
+                    .title(header(weak.clone(), layout, tr("关键字高亮"), None, &guards, cx))
                     .width(px(HIGHLIGHT_WINDOW_W))
                     .h(px(HIGHLIGHT_WINDOW_H))
                     .child(
