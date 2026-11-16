@@ -3,3 +3,4 @@
 *.crate
 src/ui/panels.rs.1
 docs/adr/
+/.workbuddy/
