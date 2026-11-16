@@ -6,12 +6,13 @@
 //! controls inside read the retained application entity through a weak handle;
 //! a change updates the settings and the dialog layer redraws.
 
+use gpui_kit::AppContext as _;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants as _},
     checkbox::Checkbox,
-    dialog::{DialogClose, DialogFooter},
+    dialog::{Dialog, DialogClose, DialogFooter},
     h_flex,
     input::Input,
     switch::Switch,
@@ -19,8 +20,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    Styled as _, TestSupportExt as _, WeakEntity, Window, div, px,
+    AnyElement, Context, DragMoveEvent, Empty, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, Pixels, Point, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, TestSupportExt as _, WeakEntity, Window, div, point, px,
 };
 
 use crate::app::{Action, Choice, XcomApp};
@@ -96,12 +98,14 @@ fn close_control() -> impl IntoElement {
 
 /// A dialog header that follows the egui windows: a small close control on
 /// whichever side the desktop puts its window buttons (see ADR 0001), the
-/// optional glyph, then the title.
+/// optional glyph, then the title.  The whole row drags the dialog, the way
+/// an egui window's title bar moves the window.
 ///
 /// gpui's `Dialog` always draws its close button on the right.  The egui
 /// version followed the desktop's `button-layout` instead, so the built-in
 /// button is turned off and this header draws its own.
 fn header(
+    weak: WeakEntity<XcomApp>,
     layout: gpui_kit::WindowButtonLayout,
     title: impl Into<SharedString>,
     icon: Option<gpui_kit::component::IconName>,
@@ -117,7 +121,32 @@ fn header(
         .test_support()
         .w_full()
         .items_center()
-        .gap_2();
+        .gap_2()
+        // Dragging starts like any gpui drag, after the pointer leaves the
+        // click threshold, so pressing the close control still clicks it.
+        .on_mouse_down(MouseButton::Left, {
+            let weak = weak.clone();
+            move |event, _, cx| {
+                if let Some(entity) = weak.upgrade() {
+                    entity.update(cx, |app, _| app.dialog_drag.begin(event.position));
+                }
+            }
+        })
+        .on_drag(DialogDragged, |_, _, _, cx| {
+            cx.stop_propagation();
+            cx.new(|_| DialogDragged)
+        })
+        .on_drag_move({
+            let weak = weak.clone();
+            move |event: &DragMoveEvent<DialogDragged>, window, cx| {
+                if let Some(entity) = weak.upgrade() {
+                    entity.update(cx, |app, cx| {
+                        app.dialog_drag.drag(event, window);
+                        cx.notify();
+                    });
+                }
+            }
+        });
     if close_on_left {
         row = row.child(close_control());
     }
@@ -154,17 +183,98 @@ fn onoff(
         })
 }
 
+/// Where a dragged dialog sits, and the drag in progress.
+///
+/// The dialog layer keeps its surfaces centred; a drag records how far the
+/// user pulled the surface away from that resting place, and the surface is
+/// shifted by that offset through margins.  The layer's popup stays where it
+/// was, so focus trapping, the overlay and dismissal keep working unchanged.
+#[derive(Default)]
+pub(crate) struct DialogDrag {
+    /// How far the open dialog sits from its centred resting place.
+    pub(crate) offset: Point<Pixels>,
+    /// The pointer position and the offset when the current drag started.
+    grab: Option<DragGrab>,
+}
+
+#[derive(Clone, Copy)]
+struct DragGrab {
+    mouse: Point<Pixels>,
+    offset: Point<Pixels>,
+}
+
+/// The payload that marks a drag by a dialog's title row.
+#[derive(Clone)]
+struct DialogDragged;
+
+impl Render for DialogDragged {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+impl DialogDrag {
+    /// A drag started at `position`: later moves continue from here.
+    fn begin(&mut self, position: Point<Pixels>) {
+        self.grab = Some(DragGrab {
+            mouse: position,
+            offset: self.offset,
+        });
+    }
+
+    /// Pulls the surface along the pointer, keeping the title row reachable
+    /// the way an egui window is: the row never leaves the viewport, even
+    /// when the dialog below it is taller.
+    fn drag(&mut self, event: &DragMoveEvent<DialogDragged>, window: &mut Window) {
+        let Some(grab) = self.grab else { return };
+        let candidate = grab.offset + (event.event.position - grab.mouse);
+
+        // The painted header bounds already carry the applied offset, so the
+        // shift that lands the candidate inside the viewport is the clamped
+        // one.  8 px keeps the row clear of the window edge.
+        let bounds = event.bounds;
+        let view = window.viewport_size();
+        let row = f32::from(bounds.size.height);
+        let margin = 8.0;
+        let left = (f32::from(bounds.origin.x) + f32::from(candidate.x - self.offset.x))
+            .max(margin)
+            .min(f32::from(view.width) - f32::from(bounds.size.width) - margin);
+        let top = (f32::from(bounds.origin.y) + f32::from(candidate.y - self.offset.y))
+            .max(margin)
+            .min(f32::from(view.height) - row - margin);
+        self.offset += point(
+            px(left - f32::from(bounds.origin.x)),
+            px(top - f32::from(bounds.origin.y)),
+        );
+    }
+}
+
+/// Shifts the dialog surface to where the user dragged it.  The offset was
+/// clamped while dragging, so it is applied as-is.
+fn dragged(dialog: Dialog, offset: Point<Pixels>) -> Dialog {
+    dialog
+        .ml(px(f32::from(offset.x)))
+        .mt(px(f32::from(offset.y)))
+}
+
 impl XcomApp {
     pub(crate) fn open_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialog_drag = DialogDrag::default();
         let version = env!("CARGO_PKG_VERSION");
         let layout = self.button_layout;
+        let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, cx| {
-            dialog
-                .close_button(false)
-                .title(header(layout, tr("关于 XCOM"), None, cx))
-                .width(px(520.0))
-                .child(
-                    v_flex()
+            let Some(entity) = weak.upgrade() else {
+                return dialog;
+            };
+            let app = entity.read(cx);
+            dragged(
+                dialog
+                    .close_button(false)
+                    .title(header(weak.clone(), layout, tr("关于 XCOM"), None, cx))
+                    .width(px(520.0))
+                    .child(
+                        v_flex()
                         .gap_2()
                         .child(
                             div()
@@ -198,13 +308,22 @@ impl XcomApp {
                         .child(div().text_sm().child(SharedString::from(tr(
                             "本软件为开源实现，界面不含任何广告。",
                         )))),
-                )
+                ),
+                app.dialog_drag.offset,
+            )
                 .footer(footer())
         });
     }
 
     pub(crate) fn open_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialog_drag = DialogDrag::default();
+        let layout = self.button_layout;
+        let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, cx| {
+            let Some(entity) = weak.upgrade() else {
+                return dialog;
+            };
+            let app = entity.read(cx);
             let rows = [
                 (tr("发送"), "Ctrl+Enter"),
                 (tr("打开 / 关闭串口"), "Ctrl+O"),
@@ -215,29 +334,34 @@ impl XcomApp {
                 (tr("全选"), "Ctrl+A"),
                 (tr("退出"), "Ctrl+Q"),
             ];
-            dialog
-                .title(tr("快捷键"))
-                .width(px(420.0))
-                .child(
-                    v_flex()
-                        .gap_2()
-                        .children(rows.into_iter().map(|(label, key)| {
-                            h_flex()
-                                .justify_between()
-                                .child(div().child(SharedString::from(label)))
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(SharedString::from(key)),
-                                )
-                        })),
-                )
-                .footer(footer())
+            dragged(
+                dialog
+                    .close_button(false)
+                    .title(header(weak.clone(), layout, tr("快捷键"), None, cx))
+                    .width(px(420.0))
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .children(rows.into_iter().map(|(label, key)| {
+                                h_flex()
+                                    .justify_between()
+                                    .child(div().child(SharedString::from(label)))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(SharedString::from(key)),
+                                    )
+                            })),
+                    ),
+                app.dialog_drag.offset,
+            )
+            .footer(footer())
         });
     }
 
     pub(crate) fn open_font_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialog_drag = DialogDrag::default();
         let weak = cx.entity().downgrade();
         let layout = self.button_layout;
         let families = crate::fonts::available_families();
@@ -269,114 +393,119 @@ impl XcomApp {
                     })
                     .collect::<Vec<_>>()
             };
-            dialog
-                .close_button(false)
-                .title(header(layout, tr("字体设置"), None, cx))
-                .width(px(FONT_WINDOW_W))
-                .child(
-                    v_flex()
-                        .gap_3()
-                        .child(field(
-                            tr("界面字体"),
-                            super::panels::choice_button(
-                                "font-ui-family",
-                                fonts
-                                    .ui_family
-                                    .clone()
-                                    .unwrap_or_else(|| tr("系统默认").to_owned()),
-                                family_items(&fonts.ui_family, Choice::UiFont),
-                                weak.clone(),
+            dragged(
+                dialog
+                    .close_button(false)
+                    .title(header(weak.clone(), layout, tr("字体设置"), None, cx))
+                    .width(px(FONT_WINDOW_W))
+                    .child(
+                        v_flex()
+                            .gap_3()
+                            .child(field(
+                                tr("界面字体"),
+                                super::panels::choice_button(
+                                    "font-ui-family",
+                                    fonts
+                                        .ui_family
+                                        .clone()
+                                        .unwrap_or_else(|| tr("系统默认").to_owned()),
+                                    family_items(&fonts.ui_family, Choice::UiFont),
+                                    weak.clone(),
+                                ),
+                            ))
+                            .child(field(
+                                tr("界面字号"),
+                                super::panels::choice_button(
+                                    "font-ui-size",
+                                    format!("{} pt", fonts.ui_size),
+                                    size_items(fonts.ui_size, 9, 24, Choice::UiSize),
+                                    weak.clone(),
+                                ),
+                            ))
+                            .child(field(
+                                tr("接收区字体"),
+                                super::panels::choice_button(
+                                    "font-receive-family",
+                                    fonts
+                                        .receive_family
+                                        .clone()
+                                        .unwrap_or_else(|| tr("系统等宽").to_owned()),
+                                    family_items(&fonts.receive_family, Choice::ReceiveFont),
+                                    weak.clone(),
+                                ),
+                            ))
+                            .child(field(
+                                tr("接收区字号"),
+                                super::panels::choice_button(
+                                    "font-receive-size",
+                                    format!("{} pt", fonts.receive_size),
+                                    size_items(fonts.receive_size, 8, 32, Choice::ReceiveSize),
+                                    weak.clone(),
+                                ),
+                            ))
+                            .child(field(
+                                tr("发送区字体"),
+                                super::panels::choice_button(
+                                    "font-send-family",
+                                    fonts
+                                        .send_family
+                                        .clone()
+                                        .unwrap_or_else(|| tr("系统等宽").to_owned()),
+                                    family_items(&fonts.send_family, Choice::SendFont),
+                                    weak.clone(),
+                                ),
+                            ))
+                            .child(field(
+                                tr("发送区字号"),
+                                super::panels::choice_button(
+                                    "font-send-size",
+                                    format!("{} pt", fonts.send_size),
+                                    size_items(fonts.send_size, 8, 32, Choice::SendSize),
+                                    weak.clone(),
+                                ),
+                            ))
+                            .child(field(
+                                tr("行距"),
+                                super::panels::choice_button(
+                                    "line-spacing",
+                                    format!("{:.0} pt", app.settings.line_spacing),
+                                    (0..=40)
+                                        .map(|value| {
+                                            (
+                                                format!("{value} pt"),
+                                                Choice::LineSpacing(value as f32),
+                                                (app.settings.line_spacing - value as f32).abs()
+                                                    < 0.01,
+                                            )
+                                        })
+                                        .collect::<Vec<_>>(),
+                                    weak.clone(),
+                                ),
+                            ))
+                            // egui spells out what 0 means and that changes apply
+                            // to the text areas right away.
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(tr("行距 0 表示使用字体默认行高。"))),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(tr(
+                                        "字体修改会立即应用到对应的文本区。",
+                                    ))),
                             ),
-                        ))
-                        .child(field(
-                            tr("界面字号"),
-                            super::panels::choice_button(
-                                "font-ui-size",
-                                format!("{} pt", fonts.ui_size),
-                                size_items(fonts.ui_size, 9, 24, Choice::UiSize),
-                                weak.clone(),
-                            ),
-                        ))
-                        .child(field(
-                            tr("接收区字体"),
-                            super::panels::choice_button(
-                                "font-receive-family",
-                                fonts
-                                    .receive_family
-                                    .clone()
-                                    .unwrap_or_else(|| tr("系统等宽").to_owned()),
-                                family_items(&fonts.receive_family, Choice::ReceiveFont),
-                                weak.clone(),
-                            ),
-                        ))
-                        .child(field(
-                            tr("接收区字号"),
-                            super::panels::choice_button(
-                                "font-receive-size",
-                                format!("{} pt", fonts.receive_size),
-                                size_items(fonts.receive_size, 8, 32, Choice::ReceiveSize),
-                                weak.clone(),
-                            ),
-                        ))
-                        .child(field(
-                            tr("发送区字体"),
-                            super::panels::choice_button(
-                                "font-send-family",
-                                fonts
-                                    .send_family
-                                    .clone()
-                                    .unwrap_or_else(|| tr("系统等宽").to_owned()),
-                                family_items(&fonts.send_family, Choice::SendFont),
-                                weak.clone(),
-                            ),
-                        ))
-                        .child(field(
-                            tr("发送区字号"),
-                            super::panels::choice_button(
-                                "font-send-size",
-                                format!("{} pt", fonts.send_size),
-                                size_items(fonts.send_size, 8, 32, Choice::SendSize),
-                                weak.clone(),
-                            ),
-                        ))
-                        .child(field(
-                            tr("行距"),
-                            super::panels::choice_button(
-                                "line-spacing",
-                                format!("{:.0} pt", app.settings.line_spacing),
-                                (0..=40)
-                                    .map(|value| {
-                                        (
-                                            format!("{value} pt"),
-                                            Choice::LineSpacing(value as f32),
-                                            (app.settings.line_spacing - value as f32).abs() < 0.01,
-                                        )
-                                    })
-                                    .collect::<Vec<_>>(),
-                                weak.clone(),
-                            ),
-                        ))
-                        // egui spells out what 0 means and that changes apply
-                        // to the text areas right away.
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(SharedString::from(tr("行距 0 表示使用字体默认行高。"))),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(SharedString::from(tr(
-                                    "字体修改会立即应用到对应的文本区。",
-                                ))),
-                        ),
-                )
+                    ),
+                app.dialog_drag.offset,
+            )
         });
     }
 
     pub(crate) fn open_log_colors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialog_drag = DialogDrag::default();
         let weak = cx.entity().downgrade();
         let layout = self.button_layout;
         window.open_dialog(cx, move |dialog, _, cx| {
@@ -386,59 +515,65 @@ impl XcomApp {
             let app = entity.read(cx);
             let colors = app.settings.log_colors;
             let palette = crate::theme::log_palette(cx, app.settings.theme, colors);
-            dialog
-                .close_button(false)
-                .title(header(layout, tr("接收区配色"), None, cx))
-                .width(px(LOG_COLORS_WINDOW_W))
-                .child(
-                    v_flex()
-                        .gap_3()
-                        .child(onoff(
-                            weak.clone(),
-                            colors.enabled,
-                            tr("自定义接收区配色"),
-                            |this, value| this.settings.log_colors.enabled = value,
-                        ))
-                        // egui puts both colour pickers on one row, labelled
-                        // 字色 / 底色; the hex field stands in for the picker.
-                        .child(
-                            h_flex()
-                                .gap_3()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .w(px(120.0))
-                                        .child(field(tr("字色"), Input::new(&app.inputs.log_fg))),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(120.0))
-                                        .child(field(tr("底色"), Input::new(&app.inputs.log_bg))),
-                                ),
-                        )
-                        .child(div().h(px(1.0)).w_full().bg(cx.theme().border))
-                        .child(div().text_sm().child(SharedString::from(tr("预览"))))
-                        .child(
-                            div()
-                                .p_3()
-                                .rounded(cx.theme().radius)
-                                .bg(palette.background)
-                                .text_color(palette.foreground)
-                                .child(SharedString::from(tr("接收区示例"))),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(SharedString::from(tr(
-                                    "接收的数据以 -> 开头，发送的数据以 <- 开头",
-                                ))),
-                        ),
-                )
+            dragged(
+                dialog
+                    .close_button(false)
+                    .title(header(weak.clone(), layout, tr("接收区配色"), None, cx))
+                    .width(px(LOG_COLORS_WINDOW_W))
+                    .child(
+                        v_flex()
+                            .gap_3()
+                            .child(onoff(
+                                weak.clone(),
+                                colors.enabled,
+                                tr("自定义接收区配色"),
+                                |this, value| this.settings.log_colors.enabled = value,
+                            ))
+                            // egui puts both colour pickers on one row, labelled
+                            // 字色 / 底色; the hex field stands in for the picker.
+                            .child(
+                                h_flex()
+                                    .gap_3()
+                                    .items_center()
+                                    .child(
+                                        div().w(px(120.0)).child(field(
+                                            tr("字色"),
+                                            Input::new(&app.inputs.log_fg),
+                                        )),
+                                    )
+                                    .child(
+                                        div().w(px(120.0)).child(field(
+                                            tr("底色"),
+                                            Input::new(&app.inputs.log_bg),
+                                        )),
+                                    ),
+                            )
+                            .child(div().h(px(1.0)).w_full().bg(cx.theme().border))
+                            .child(div().text_sm().child(SharedString::from(tr("预览"))))
+                            .child(
+                                div()
+                                    .p_3()
+                                    .rounded(cx.theme().radius)
+                                    .bg(palette.background)
+                                    .text_color(palette.foreground)
+                                    .child(SharedString::from(tr("接收区示例"))),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(tr(
+                                        "接收的数据以 -> 开头，发送的数据以 <- 开头",
+                                    ))),
+                            ),
+                    ),
+                app.dialog_drag.offset,
+            )
         });
     }
 
     pub(crate) fn open_log_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialog_drag = DialogDrag::default();
         let weak = cx.entity().downgrade();
         let layout = self.button_layout;
         window.open_dialog(cx, move |dialog, _, cx| {
@@ -452,12 +587,13 @@ impl XcomApp {
                 .path()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default();
-            dialog
-                .close_button(false)
-                .title(header(layout, tr("日志文件"), None, cx))
-                .width(px(LOG_FILE_WINDOW_W))
-                .child(
-                    v_flex()
+            dragged(
+                dialog
+                    .close_button(false)
+                    .title(header(weak.clone(), layout, tr("日志文件"), None, cx))
+                    .width(px(LOG_FILE_WINDOW_W))
+                    .child(
+                        v_flex()
                         .gap_3()
                         .child(field(tr("保存目录"), Input::new(&app.inputs.log_dir)))
                         .child(
@@ -542,11 +678,14 @@ impl XcomApp {
                                     .child(SharedString::from(tr("未启用：不会创建文件。"))),
                             )
                         }),
-                )
+                    ),
+                app.dialog_drag.offset,
+            )
         });
     }
 
     pub(crate) fn open_custom_baud(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialog_drag = DialogDrag::default();
         let weak = cx.entity().downgrade();
         let layout = self.button_layout;
         window.open_dialog(cx, move |dialog, _, cx| {
@@ -566,108 +705,113 @@ impl XcomApp {
                 tr("该波特率已存在或为标准值")
             };
             let mono = cx.theme().mono_font_family.clone();
-            dialog
-                .close_button(false)
-                .title(header(
-                    layout,
-                    tr("自定义波特率"),
-                    Some(gpui_kit::component::IconName::Settings2),
-                    cx,
-                ))
-                .width(px(CUSTOM_BAUD_WINDOW_W))
-                .h(px(CUSTOM_BAUD_WINDOW_H))
-                .child(
-                    v_flex()
-                        .gap_2()
-                        .child(div().text_sm().child(SharedString::from(tr("添加波特率"))))
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(div().flex_1().min_w(px(0.0)).child(Input::new(&input)))
-                                .child(Button::new("baud-add").label(tr("添加")).on_click({
-                                    let weak = weak.clone();
-                                    let input = input.clone();
-                                    move |_, _, cx| {
-                                        if let Ok(rate) =
-                                            input.read(cx).value().trim().parse::<u32>()
-                                        {
-                                            let _ = weak.update(cx, |this, cx| {
-                                                if this.settings.serial.add_custom_baud(rate) {
-                                                    this.mark_settings_dirty();
-                                                    cx.notify();
-                                                }
-                                            });
+            dragged(
+                dialog
+                    .close_button(false)
+                    .title(header(
+                        weak.clone(),
+                        layout,
+                        tr("自定义波特率"),
+                        Some(gpui_kit::component::IconName::Settings2),
+                        cx,
+                    ))
+                    .width(px(CUSTOM_BAUD_WINDOW_W))
+                    .h(px(CUSTOM_BAUD_WINDOW_H))
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child(div().text_sm().child(SharedString::from(tr("添加波特率"))))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().flex_1().min_w(px(0.0)).child(Input::new(&input)))
+                                    .child(Button::new("baud-add").label(tr("添加")).on_click({
+                                        let weak = weak.clone();
+                                        let input = input.clone();
+                                        move |_, _, cx| {
+                                            if let Ok(rate) =
+                                                input.read(cx).value().trim().parse::<u32>()
+                                            {
+                                                let _ = weak.update(cx, |this, cx| {
+                                                    if this.settings.serial.add_custom_baud(rate) {
+                                                        this.mark_settings_dirty();
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }
                                         }
-                                    }
-                                })),
-                        )
-                        .when(!can_add, |this| {
-                            this.child(
+                                    })),
+                            )
+                            .when(!can_add, |this| {
+                                this.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(SharedString::from(hint)),
+                                )
+                            })
+                            .child(div().h(px(1.0)).w_full().bg(cx.theme().border))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .child(SharedString::from(tr("已保存的自定义波特率"))),
+                            )
+                            .child(if rates.is_empty() {
                                 div()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(SharedString::from(hint)),
-                            )
-                        })
-                        .child(div().h(px(1.0)).w_full().bg(cx.theme().border))
-                        .child(
-                            div()
-                                .text_sm()
-                                .child(SharedString::from(tr("已保存的自定义波特率"))),
-                        )
-                        .child(if rates.is_empty() {
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(SharedString::from(tr("暂无自定义波特率")))
-                                .into_any_element()
-                        } else {
-                            v_flex()
-                                .gap_1()
-                                .children(rates.into_iter().map(|rate| {
-                                    h_flex()
-                                        .gap_2()
-                                        .items_center()
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .font_family(mono.clone())
-                                                .child(SharedString::from(rate.to_string())),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(SharedString::from("bps")),
-                                        )
-                                        .child(div().flex_1())
-                                        .child(
-                                            Button::new(("baud-remove", rate))
-                                                .label("−")
-                                                .tooltip(tr("删除"))
-                                                .ghost()
-                                                .small()
-                                                .on_click({
-                                                    let weak = weak.clone();
-                                                    move |_, _, cx| {
-                                                        let _ = weak.update(cx, |this, cx| {
-                                                            this.settings
-                                                                .serial
-                                                                .remove_custom_baud(rate);
-                                                            this.mark_settings_dirty();
-                                                            cx.notify();
-                                                        });
-                                                    }
-                                                }),
-                                        )
-                                }))
-                                .into_any_element()
-                        }),
-                )
+                                    .child(SharedString::from(tr("暂无自定义波特率")))
+                                    .into_any_element()
+                            } else {
+                                v_flex()
+                                    .gap_1()
+                                    .children(rates.into_iter().map(|rate| {
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_family(mono.clone())
+                                                    .child(SharedString::from(rate.to_string())),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(SharedString::from("bps")),
+                                            )
+                                            .child(div().flex_1())
+                                            .child(
+                                                Button::new(("baud-remove", rate))
+                                                    .label("−")
+                                                    .tooltip(tr("删除"))
+                                                    .ghost()
+                                                    .small()
+                                                    .on_click({
+                                                        let weak = weak.clone();
+                                                        move |_, _, cx| {
+                                                            let _ = weak.update(cx, |this, cx| {
+                                                                this.settings
+                                                                    .serial
+                                                                    .remove_custom_baud(rate);
+                                                                this.mark_settings_dirty();
+                                                                cx.notify();
+                                                            });
+                                                        }
+                                                    }),
+                                            )
+                                    }))
+                                    .into_any_element()
+                            }),
+                    ),
+                app.dialog_drag.offset,
+            )
         });
     }
 
     pub(crate) fn open_highlight(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialog_drag = DialogDrag::default();
         self.rebuild_highlight_inputs(window, cx);
         let weak = cx.entity().downgrade();
         let layout = self.button_layout;
@@ -677,13 +821,14 @@ impl XcomApp {
             };
             let app = entity.read(cx);
             let rules = app.settings.highlights.rules.clone();
-            dialog
-                .close_button(false)
-                .title(header(layout, tr("关键字高亮"), None, cx))
-                .width(px(HIGHLIGHT_WINDOW_W))
-                .h(px(HIGHLIGHT_WINDOW_H))
-                .child(
-                    v_flex()
+            dragged(
+                dialog
+                    .close_button(false)
+                    .title(header(weak.clone(), layout, tr("关键字高亮"), None, cx))
+                    .width(px(HIGHLIGHT_WINDOW_W))
+                    .h(px(HIGHLIGHT_WINDOW_H))
+                    .child(
+                        v_flex()
                         .gap_2()
                         .child(
                             v_flex()
@@ -896,7 +1041,9 @@ impl XcomApp {
                                     "勾选行首的启用开关后规则才生效；默认按字面匹配、区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
                                 ))),
                         ),
-                )
+                    ),
+                app.dialog_drag.offset,
+            )
         });
     }
 

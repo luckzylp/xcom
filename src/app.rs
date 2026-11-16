@@ -365,6 +365,9 @@ pub struct XcomApp {
     /// Whether the left panel's 串口设置 section is expanded.  Like egui's
     /// `CollapsingHeader` this lives in memory only, not in the settings file.
     pub(crate) serial_section_open: bool,
+    /// How far the open dialog has been dragged from its centred resting
+    /// place; see `ui::dialogs::DialogDrag`.
+    pub(crate) dialog_drag: crate::ui::dialogs::DialogDrag,
 
     pub(crate) messages: Vec<Message>,
     pub(crate) last_timed_send: Option<Instant>,
@@ -505,6 +508,7 @@ impl XcomApp {
             pending_rx: Vec::new(),
             show_paused: false,
             serial_section_open: true,
+            dialog_drag: Default::default(),
             stats_section_open: true,
             messages: Vec::new(),
             last_timed_send: None,
@@ -2864,6 +2868,86 @@ mod ui_tests {
         gpui_kit::base::test_support::texts(window)
             .into_iter()
             .any(|text| text.visible() && text.text() == "关闭")
+    }
+
+    /// Dialogs follow the pointer when their title row is dragged, the way the
+    /// egui windows moved, and the row stays inside the viewport however far
+    /// the pointer goes.  Reopening a window centres it again, as main's
+    /// `center_on_open` did.
+    #[gpui_kit::test]
+    fn dialogs_follow_a_title_row_drag(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            let to_f32 = |value: gpui_kit::Pixels| f32::from(value);
+            view.update(cx, |app, cx| app.open_highlight(window, cx));
+            window.render_frame(cx);
+
+            let before = window.find("surface").bounds();
+            let header = window.find("dialog-header").bounds();
+            let center = gpui_kit::point(
+                gpui_kit::px(to_f32(header.origin.x) + to_f32(header.size.width) / 2.),
+                gpui_kit::px(to_f32(header.origin.y) + to_f32(header.size.height) / 2.),
+            );
+            window.drag(
+                center,
+                center + gpui_kit::point(gpui_kit::px(40.), gpui_kit::px(30.)),
+                cx,
+            );
+            window.render_frame(cx);
+            let after = window.find("surface").bounds();
+            assert!(
+                (to_f32(after.origin.x) - to_f32(before.origin.x) - 40.).abs() <= 1.,
+                "a 40 px right drag moved the window {:.1}px",
+                to_f32(after.origin.x) - to_f32(before.origin.x)
+            );
+            assert!(
+                (to_f32(after.origin.y) - to_f32(before.origin.y) - 30.).abs() <= 1.,
+                "a 30 px down drag moved the window {:.1}px",
+                to_f32(after.origin.y) - to_f32(before.origin.y)
+            );
+
+            // However far the pointer runs, the title row stays reachable.
+            let header = window.find("dialog-header").bounds();
+            let center = gpui_kit::point(
+                gpui_kit::px(to_f32(header.origin.x) + to_f32(header.size.width) / 2.),
+                gpui_kit::px(to_f32(header.origin.y) + to_f32(header.size.height) / 2.),
+            );
+            window.drag(
+                center,
+                center - gpui_kit::point(gpui_kit::px(4000.), gpui_kit::px(4000.)),
+                cx,
+            );
+            window.render_frame(cx);
+            let header = window.find("dialog-header").bounds();
+            assert!(
+                to_f32(header.origin.x) >= 0. && to_f32(header.origin.y) >= 0.,
+                "the title row left the viewport at ({:.1}, {:.1})",
+                to_f32(header.origin.x),
+                to_f32(header.origin.y)
+            );
+
+            // Reopening centres the window again, the way egui's one-shot
+            // `center_on_open` flag did.
+            window.close_all_dialogs(cx);
+            view.update(cx, |app, cx| app.open_highlight(window, cx));
+            window.render_frame(cx);
+            let reopened = window.find("surface").bounds();
+            assert!(
+                (to_f32(reopened.origin.x) - to_f32(before.origin.x)).abs() <= 1.
+                    && (to_f32(reopened.origin.y) - to_f32(before.origin.y)).abs() <= 1.,
+                "a reopened window did not centre itself"
+            );
+        })
+        .unwrap();
     }
 
     /// The settings windows open at main's egui `default_size`, so switching
