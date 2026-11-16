@@ -2835,11 +2835,11 @@ mod ui_tests {
         .unwrap();
     }
 
-    /// The baud-rate and keyword-highlighting windows carry no close control:
-    /// their title row holds the title only, and the footer button closes them,
-    /// the way the egui windows behaved.
+    /// The baud-rate and keyword-highlighting windows are laid out like the
+    /// egui ones: the title row carries the close control the desktop's
+    /// button layout asks for, and there is no footer button below.
     #[gpui_kit::test]
-    fn the_baud_and_highlight_windows_have_no_close_control(cx: &mut TestAppContext) {
+    fn the_baud_and_highlight_windows_close_like_the_egui_ones(cx: &mut TestAppContext) {
         let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
         let settings = crate::settings::Settings::default();
@@ -2858,8 +2858,8 @@ mod ui_tests {
                 "the baud window must still have its title row"
             );
             assert!(
-                window.try_find("dialog-close").is_none(),
-                "the baud window must not offer a close control"
+                window.try_find("dialog-close").is_some(),
+                "the baud window must offer the egui header close control"
             );
 
             window.close_all_dialogs(cx);
@@ -2870,8 +2870,8 @@ mod ui_tests {
                 "the highlight window must still have its title row"
             );
             assert!(
-                window.try_find("dialog-close").is_none(),
-                "the highlight window must not offer a close control"
+                window.try_find("dialog-close").is_some(),
+                "the highlight window must offer the egui header close control"
             );
         })
         .unwrap();

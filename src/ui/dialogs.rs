@@ -81,29 +81,19 @@ fn close_control() -> impl IntoElement {
         .on_click(|_, window, cx| window.close_all_dialogs(cx))
 }
 
-/// A dialog header whose close control sits on the desktop's side.
+/// A dialog header that follows the egui windows: a small close control on
+/// whichever side the desktop puts its window buttons (see ADR 0001), the
+/// optional glyph, then the title.
 ///
 /// gpui's `Dialog` always draws its close button on the right.  The egui
-/// version followed the desktop's `button-layout` instead (see ADR 0001), so
-/// the built-in button is turned off and this header draws its own on
-/// whichever side the window buttons use.
-/// A dialog title row without a close control.
-///
-/// The two settings windows that own their whole look (custom baud rates and
-/// keyword highlighting) are closed from their footer button, the way the egui
-/// windows were, so their title row carries the icon and the title only.
-fn title_only(title: impl Into<SharedString>) -> AnyElement {
-    h_flex()
-        .id("dialog-header")
-        .test_support()
-        .w_full()
-        .items_center()
-        .gap_2()
-        .child(div().flex_1().text_base().font_bold().child(title.into()))
-        .into_any_element()
-}
-
-fn header(layout: gpui_kit::WindowButtonLayout, title: impl Into<SharedString>) -> AnyElement {
+/// version followed the desktop's `button-layout` instead, so the built-in
+/// button is turned off and this header draws its own.
+fn header(
+    layout: gpui_kit::WindowButtonLayout,
+    title: impl Into<SharedString>,
+    icon: Option<gpui_kit::component::IconName>,
+    cx: &gpui_kit::App,
+) -> AnyElement {
     let close_on_left = layout
         .left
         .iter()
@@ -117,6 +107,13 @@ fn header(layout: gpui_kit::WindowButtonLayout, title: impl Into<SharedString>) 
         .gap_2();
     if close_on_left {
         row = row.child(close_control());
+    }
+    if let Some(icon) = icon {
+        row = row.child(
+            gpui_kit::component::Icon::new(icon)
+                .size_4()
+                .text_color(cx.theme().foreground),
+        );
     }
     row = row.child(div().flex_1().child(title.into()));
     if !close_on_left {
@@ -148,10 +145,10 @@ impl XcomApp {
     pub(crate) fn open_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let version = env!("CARGO_PKG_VERSION");
         let layout = self.button_layout;
-        window.open_dialog(cx, move |dialog, _, _cx| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             dialog
                 .close_button(false)
-                .title(header(layout, tr("关于 XCOM")))
+                .title(header(layout, tr("关于 XCOM"), None, cx))
                 .width(px(520.0))
                 .child(
                     v_flex()
@@ -535,6 +532,7 @@ impl XcomApp {
 
     pub(crate) fn open_custom_baud(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
+        let layout = self.button_layout;
         window.open_dialog(cx, move |dialog, _, cx| {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
@@ -542,17 +540,34 @@ impl XcomApp {
             let app = entity.read(cx);
             let rates = app.settings.serial.custom_bauds.clone();
             let input = app.inputs.custom_baud.clone();
+            // The add-row hint mirrors egui: it reads the pending value so the
+            // reason the button is disabled is always spelled out.
+            let pending = input.read(cx).value().trim().parse::<u32>().ok();
+            let can_add = pending.is_some_and(|rate| app.settings.serial.can_add_custom_baud(rate));
+            let hint = if rates.len() >= crate::serial::config::MAX_CUSTOM_BAUDS {
+                tr("自定义波特率列表已满")
+            } else {
+                tr("该波特率已存在或为标准值")
+            };
+            let mono = cx.theme().mono_font_family.clone();
             dialog
                 .close_button(false)
-                .title(title_only(tr("自定义波特率")))
-                .width(px(460.0))
+                .title(header(
+                    layout,
+                    tr("自定义波特率"),
+                    Some(gpui_kit::component::IconName::Settings2),
+                    cx,
+                ))
+                .width(px(320.0))
                 .child(
                     v_flex()
-                        .gap_3()
-                        .child(field(
-                            tr("添加波特率"),
-                            h_flex().gap_2().child(Input::new(&input)).child(
-                                Button::new("baud-add").label(tr("添加")).on_click({
+                        .gap_2()
+                        .child(div().text_sm().child(SharedString::from(tr("添加波特率"))))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(div().flex_1().min_w(px(0.0)).child(Input::new(&input)))
+                                .child(Button::new("baud-add").label(tr("添加")).on_click({
                                     let weak = weak.clone();
                                     let input = input.clone();
                                     move |_, _, cx| {
@@ -567,13 +582,20 @@ impl XcomApp {
                                             });
                                         }
                                     }
-                                }),
-                            ),
-                        ))
+                                })),
+                        )
+                        .when(!can_add, |this| {
+                            this.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(hint)),
+                            )
+                        })
+                        .child(div().h(px(1.0)).w_full().bg(cx.theme().border))
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(cx.theme().muted_foreground)
                                 .child(SharedString::from(tr("已保存的自定义波特率"))),
                         )
                         .child(if rates.is_empty() {
@@ -587,12 +609,27 @@ impl XcomApp {
                                 .gap_1()
                                 .children(rates.into_iter().map(|rate| {
                                     h_flex()
-                                        .justify_between()
-                                        .child(div().child(SharedString::from(rate.to_string())))
+                                        .gap_2()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_family(mono.clone())
+                                                .child(SharedString::from(rate.to_string())),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(SharedString::from("bps")),
+                                        )
+                                        .child(div().flex_1())
                                         .child(
                                             Button::new(("baud-remove", rate))
-                                                .label(tr("删除"))
+                                                .label("−")
+                                                .tooltip(tr("删除"))
                                                 .ghost()
+                                                .small()
                                                 .on_click({
                                                     let weak = weak.clone();
                                                     move |_, _, cx| {
@@ -610,13 +647,13 @@ impl XcomApp {
                                 .into_any_element()
                         }),
                 )
-                .footer(footer())
         });
     }
 
     pub(crate) fn open_highlight(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rebuild_highlight_inputs(window, cx);
         let weak = cx.entity().downgrade();
+        let layout = self.button_layout;
         window.open_dialog(cx, move |dialog, _, cx| {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
@@ -625,8 +662,8 @@ impl XcomApp {
             let rules = app.settings.highlights.rules.clone();
             dialog
                 .close_button(false)
-                .title(title_only(tr("关键字高亮")))
-                .width(px(840.0))
+                .title(header(layout, tr("关键字高亮"), None, cx))
+                .width(px(800.0))
                 .child(
                     v_flex()
                         .gap_2()
@@ -655,13 +692,15 @@ impl XcomApp {
                                             .child(SharedString::from(tr("暂无关键字"))),
                                     )
                                 })
-                                .children(rules.iter().enumerate().map(|(index, rule)| {
-                                    let inputs = &app.highlight_inputs[index];
-                                    let invalid = rule.regex
-                                        && crate::highlight::validate_regex(&rule.text).is_err();
-                                    v_flex()
-                                        .gap_1()
-                                        .child(
+                                .children(rules.iter().enumerate().flat_map(
+                                    |(index, rule)| {
+                                        let inputs = &app.highlight_inputs[index];
+                                        let invalid = rule.regex
+                                            && crate::highlight::validate_regex(&rule.text)
+                                                .is_err();
+                                        let rule_row = v_flex()
+                                            .gap_1()
+                                            .child(
                                             h_flex()
                                                 .w_full()
                                                 .gap(px(HL_COL_GAP))
@@ -772,16 +811,32 @@ impl XcomApp {
                                                                 }),
                                                         ),
                                                 ),
-                                        )
-                                        .when(invalid, |this| {
-                                            this.child(
+                                        );
+                                        let row = rule_row
+                                            .when(invalid, |this| {
+                                                this.child(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(cx.theme().danger)
+                                                        .child(SharedString::from(tr("正则无效"))),
+                                                )
+                                            })
+                                            .into_any_element();
+                                        // egui 在两条规则之间画一条分隔线，最后一行后面没有。
+                                        if index + 1 < rules.len() {
+                                            vec![
+                                                row,
                                                 div()
-                                                    .text_sm()
-                                                    .text_color(cx.theme().danger)
-                                                    .child(SharedString::from(tr("正则无效"))),
-                                            )
-                                        })
-                                }))
+                                                    .h(px(1.0))
+                                                    .w_full()
+                                                    .bg(cx.theme().border)
+                                                    .into_any_element(),
+                                            ]
+                                        } else {
+                                            vec![row]
+                                        }
+                                    },
+                                ))
                                 .into_any_element(),
                         )
                         // egui 把添加按钮和规则数放在表下面，帮助文字压尾。
@@ -824,7 +879,6 @@ impl XcomApp {
                                 ))),
                         ),
                 )
-                .footer(footer())
         });
     }
 
