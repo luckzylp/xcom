@@ -14,8 +14,8 @@ use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::{
     AnyElement, Bounds, ClipboardItem, Context, Font, Hsla, InteractiveElement as _, IntoElement,
     MouseButton, ParentElement as _, Pixels, Point, ShapedLine, SharedString,
-    StatefulInteractiveElement as _, Styled as _, TextAlign, TextRun, Window, canvas, div, fill,
-    point, px, size,
+    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, TextAlign, TextRun, Window,
+    canvas, div, fill, point, px, size,
 };
 
 use crate::app::{LOG_CONTEXT, XcomApp};
@@ -417,6 +417,7 @@ impl XcomApp {
         let empty = total_rows == 0;
         let mut body = div()
             .id("log-scroll")
+            .test_support()
             .relative()
             .size_full()
             .overflow_scroll()

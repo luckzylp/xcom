@@ -2787,8 +2787,9 @@ mod ui_tests {
         .unwrap();
     }
 
-    /// The send box fills the send area, and the action buttons end at the
-    /// area's right edge rather than trailing the options.
+    /// The send box fills the send area, the area spans the center column,
+    /// and the action buttons end at the area's right edge rather than
+    /// trailing the options.
     #[gpui_kit::test]
     fn the_send_area_fills_its_height_and_right_aligns_the_actions(cx: &mut TestAppContext) {
         let _guard = ui_test_lock();
@@ -2808,6 +2809,18 @@ mod ui_tests {
             let area = window.find("send-area").bounds();
             let input = window.find("send-input-box").bounds();
             let actions = window.find("send-actions").bounds();
+            let log = window.find("log-scroll").bounds();
+
+            // The send area is a child of the same resizable panel column as
+            // the log, so its right edge is the column's right edge.  Without
+            // `w_full` it hugs its content and leaves a blank strip.
+            let area_right = px(area.origin.x) + px(area.size.width);
+            let log_right = px(log.origin.x) + px(log.size.width);
+            assert!(
+                (area_right - log_right).abs() <= 1.0,
+                "the send area ends {:.2}px short of the center column's right edge",
+                log_right - area_right
+            );
 
             // The send box and the action group both sit inside the area's
             // 8 px padding, so their right edges line up with each other.
@@ -2830,6 +2843,15 @@ mod ui_tests {
                 px(input.size.height) >= 56.0,
                 "the send box must take the leftover height, got {:.2}px",
                 px(input.size.height)
+            );
+            // The box spans the area's width too: it must not hug the
+            // toolbar's content width.
+            let input_width = px(input.size.width);
+            let area_width = px(area.size.width);
+            assert!(
+                input_width >= area_width - 17.0,
+                "the send box is {:.2}px narrower than the padded area",
+                area_width - input_width
             );
         })
         .unwrap();

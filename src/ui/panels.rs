@@ -1509,6 +1509,9 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
     let mut area = v_flex()
         .id("send-area")
         .test_support()
+        // 可调整面板是行方向的 flex 容器：不写 w_full 时整个发送区会按内容
+        // 收缩，右边留出一大条空白（面板的 size_full 只负责自身）。
+        .w_full()
         .h_full()
         .gap_2()
         .p_2()
@@ -1522,6 +1525,7 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
                 .test_support()
                 .flex_1()
                 .min_h(px(56.0))
+                .min_w(px(0.0))
                 .child(
                     Textarea::new(&app.send_input)
                         .h(relative(1.0))
