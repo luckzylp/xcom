@@ -11,9 +11,11 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants as _},
     checkbox::Checkbox,
+    color_picker::ColorPicker,
     dialog::{Dialog, DialogClose, DialogFooter},
     h_flex,
     input::Input,
+    scroll::ScrollableElement as _,
     switch::Switch,
     v_flex,
 };
@@ -40,7 +42,7 @@ fn footer() -> DialogFooter {
 /// the action column for the `.*` toggle plus the delete button.
 const HL_INDEX_W: f32 = 30.0;
 const HL_ENABLE_W: f32 = 34.0;
-const HL_COLOR_W: f32 = 88.0;
+const HL_COLOR_W: f32 = 52.0;
 const HL_ACTION_W: f32 = 60.0;
 const HL_COL_GAP: f32 = 8.0;
 
@@ -54,6 +56,14 @@ const LOG_COLORS_WINDOW_W: f32 = 440.0;
 const LOG_FILE_WINDOW_W: f32 = 480.0;
 const HIGHLIGHT_WINDOW_W: f32 = 800.0;
 const HIGHLIGHT_WINDOW_H: f32 = 600.0;
+/// Height the keyword window's body gets out of [`HIGHLIGHT_WINDOW_H`].
+///
+/// The surface spends the rest on its 16 px padding, 1 px border and the title
+/// row with the gap under it.  The body needs a definite height of its own:
+/// the dialog layer puts its children in a scroll area, where a percentage
+/// height would grow with the content instead of bounding it, and the rule
+/// list would push the add row out of the window.
+const HIGHLIGHT_BODY_H: f32 = HIGHLIGHT_WINDOW_H - 60.0;
 const CUSTOM_BAUD_WINDOW_W: f32 = 320.0;
 const CUSTOM_BAUD_WINDOW_H: f32 = 340.0;
 
@@ -82,6 +92,30 @@ fn hl_header_flex(text: impl Into<SharedString>, cx: &gpui_kit::App) -> AnyEleme
         .font_bold()
         .text_color(cx.theme().muted_foreground)
         .child(text.into())
+        .into_any_element()
+}
+
+/// Wraps the keyword list in the scroll area that keeps it inside the window.
+///
+/// Only the rules scroll: the column headers above and the add row below stay
+/// put, so the button that adds a rule is reachable however many rules there
+/// are.  The area is its own element with its own scroll state, and returning
+/// it erased keeps the picker's element types out of the dialog's expression.
+fn scrolling_rules(rows: impl IntoElement, empty: bool, cx: &gpui_kit::App) -> AnyElement {
+    v_flex()
+        .flex_1()
+        .min_h(px(0.0))
+        .overflow_y_scrollbar()
+        .id("hl-rows")
+        .when(empty, |this| {
+            this.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(tr("暂无关键字"))),
+            )
+        })
+        .child(rows)
         .into_any_element()
 }
 
@@ -999,7 +1033,11 @@ impl XcomApp {
                     .h(px(HIGHLIGHT_WINDOW_H))
                     .child(
                         v_flex()
+                        .id("hl-body")
+                        .test_support()
+                        .h(px(HIGHLIGHT_BODY_H))
                         .gap_2()
+                        // 表头固定在列表上方：规则再多，列标题也不跟着滚走。
                         .child(
                             v_flex()
                                 // 表头：与行共用同一组列宽（egui 的 #/启用/关键字/颜色/操作）
@@ -1016,16 +1054,11 @@ impl XcomApp {
                                         .child(hl_header(tr("颜色"), HL_COLOR_W, cx))
                                         .child(hl_header(tr("操作"), HL_ACTION_W, cx)),
                                 )
-                                .child(div().h(px(1.0)).w_full().bg(cx.theme().border))
-                                .when(rules.is_empty(), |this| {
-                                    this.child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(SharedString::from(tr("暂无关键字"))),
-                                    )
-                                })
-                                .children(rules.iter().enumerate().flat_map(
+                                .child(div().h(px(1.0)).w_full().bg(cx.theme().border)),
+                        )
+                        // 规则列表：超过一页时只有这里滚动，添加行固定留在最后一行。
+                        .child(scrolling_rules(
+                            v_flex().children(rules.iter().enumerate().flat_map(
                                     |(index, rule)| {
                                         let inputs = &app.highlight_inputs[index];
                                         let invalid = rule.regex
@@ -1085,7 +1118,7 @@ impl XcomApp {
                                                 )
                                                 .child(
                                                     div().w(px(HL_COLOR_W)).flex_shrink_0().child(
-                                                        Input::new(&inputs.color).w_full(),
+                                                        ColorPicker::new(&inputs.color).small(),
                                                     ),
                                                 )
                                                 .child(
@@ -1169,12 +1202,23 @@ impl XcomApp {
                                             vec![row]
                                         }
                                     },
-                                ))
-                                .into_any_element(),
+                                )),
+                            rules.is_empty(),
+                            cx,
+                        ))
+                        // 帮助文字压在列表下面，添加行留在整个窗口的最后一行。
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(tr(
+                                    "勾选行首的启用开关后规则才生效；默认按字面匹配、区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
+                                ))),
                         )
-                        // egui 把添加按钮和规则数放在表下面，帮助文字压尾。
                         .child(
                             h_flex()
+                                .id("hl-add-row")
+                                .test_support()
                                 .gap_2()
                                 .items_center()
                                 .child(
@@ -1202,14 +1246,6 @@ impl XcomApp {
                                             rules.len(),
                                         ))),
                                 ),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(SharedString::from(tr(
-                                    "勾选行首的启用开关后规则才生效；默认按字面匹配、区分大小写；点击 .* 后按正则表达式匹配（可用 (?i) 忽略大小写），重叠时较长匹配优先。",
-                                ))),
                         ),
                     ),
                 app.dialog_drag.offset,

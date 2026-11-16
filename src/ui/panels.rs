@@ -1561,22 +1561,14 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
                 })),
         );
 
+    // The button that sends sits at the group's trailing edge, after the ones
+    // that prepare a send: clear, history, file.
     let mut actions = h_flex()
         .id("send-actions")
         .test_support()
         .gap_2()
         .items_center()
         .flex_shrink_0()
-        .child(
-            Button::new("send")
-                .label(tr("发送"))
-                .primary()
-                .disabled(!open)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.send_once();
-                    cx.notify();
-                })),
-        )
         .child(
             Button::new("clear-send")
                 .label(tr("清除发送"))
@@ -1613,6 +1605,16 @@ fn send_area(app: &mut XcomApp, _window: &mut Window, cx: &mut Context<XcomApp>)
                 .disabled(!open)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.apply_action(Action::SendFile, window, cx);
+                })),
+        )
+        .child(
+            Button::new("send")
+                .label(tr("发送"))
+                .primary()
+                .disabled(!open)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.send_once();
+                    cx.notify();
                 })),
         );
     if file_progress.is_some() {

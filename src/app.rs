@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, InteractiveElement as _,
@@ -220,7 +221,8 @@ pub(crate) struct MultiRowInputs {
 /// Text inputs owned by one keyword-highlighting rule.
 pub(crate) struct HighlightRowInputs {
     pub text: Entity<InputState>,
-    pub color: Entity<InputState>,
+    /// The rule's colour, picked with a colour picker rather than typed as hex.
+    pub color: Entity<ColorPickerState>,
 }
 
 /// Numeric and short text inputs shared by the panels.
@@ -303,6 +305,24 @@ pub(crate) enum Action {
 /// Format an RGB triple as the `#RRGGBB` text the colour dialog edits.
 pub(crate) fn hex_color(rgb: [u8; 3]) -> String {
     format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+}
+
+/// The colour picker's colour for a stored RGB triple.
+pub(crate) fn rule_hsla(rgb: [u8; 3]) -> gpui_kit::Hsla {
+    gpui_kit::Rgba {
+        r: f32::from(rgb[0]) / 255.0,
+        g: f32::from(rgb[1]) / 255.0,
+        b: f32::from(rgb[2]) / 255.0,
+        a: 1.0,
+    }
+    .into()
+}
+
+/// The stored RGB triple for a colour the picker committed.
+pub(crate) fn rule_rgb(color: gpui_kit::Hsla) -> [u8; 3] {
+    let rgb = color.to_rgb();
+    let channel = |value: f32| (value * 255.0).round().clamp(0.0, 255.0) as u8;
+    [channel(rgb.r), channel(rgb.g), channel(rgb.b)]
 }
 
 /// Parse `#RRGGBB`, `RRGGBB` or `#RGB`.
@@ -1789,12 +1809,14 @@ impl XcomApp {
         self.highlight_subs.clear();
         self.highlight_inputs.clear();
         for index in 0..self.settings.highlights.rules.len() {
-            let (text, color) = {
-                let rule = &self.settings.highlights.rules[index];
-                (rule.text.clone(), hex_color(rule.color))
-            };
+            let rule = &self.settings.highlights.rules[index];
+            let text = rule.text.clone();
+            let color = rule_hsla(rule.color);
             let text_input = cx.new(|cx| InputState::new(window, cx).default_value(text));
-            let color_input = cx.new(|cx| InputState::new(window, cx).default_value(color));
+            // The picker owns the row's colour: its swatch is the control, and
+            // every commit (palette, slider or hex typed inside the popup)
+            // arrives as one event.
+            let color_input = cx.new(|cx| ColorPickerState::new(window, cx).default_value(color));
             self.highlight_subs.push(cx.subscribe_in(
                 &text_input,
                 window,
@@ -1810,13 +1832,13 @@ impl XcomApp {
             self.highlight_subs.push(cx.subscribe_in(
                 &color_input,
                 window,
-                move |this, state, event, _window, cx| {
-                    if matches!(event, InputEvent::Change)
-                        && let Some(rgb) = parse_color(&state.read(cx).value())
+                move |this, _state, event: &ColorPickerEvent, _window, cx| {
+                    if let ColorPickerEvent::Change(Some(color)) = event
                         && let Some(rule) = this.settings.highlights.rules.get_mut(index)
                     {
-                        rule.color = rgb;
+                        rule.color = rule_rgb(*color);
                         this.mark_settings_dirty();
+                        cx.notify();
                     }
                 },
             ));
@@ -2876,6 +2898,99 @@ mod ui_tests {
                 input_width >= area_width - 17.0,
                 "the send box is {:.2}px narrower than the padded area",
                 area_width - input_width
+            );
+        })
+        .unwrap();
+    }
+
+    /// The send row's actions read 清除发送, 历史, 发送文件, 发送 — the one that
+    /// sends sits at the group's trailing edge, after the ones that prepare it.
+    #[gpui_kit::test]
+    fn the_send_actions_follow_the_egui_order(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let px = |value: gpui_kit::Pixels| f32::from(value);
+            let order: [(&str, f32); 4] = [
+                (
+                    "clear-send",
+                    px(window.find("clear-send").bounds().origin.x),
+                ),
+                ("history", px(window.find("history").bounds().origin.x)),
+                ("send-file", px(window.find("send-file").bounds().origin.x)),
+                ("send", px(window.find("send").bounds().origin.x)),
+            ];
+            assert!(
+                order.windows(2).all(|pair| pair[0].1 < pair[1].1),
+                "the send actions are out of order: {order:?}"
+            );
+        })
+        .unwrap();
+    }
+
+    /// The keyword table scrolls inside the dialog while its add row stays put.
+    #[gpui_kit::test]
+    fn the_highlight_add_row_stays_at_the_bottom(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                app.settings.highlights.rules = vec![Default::default(); 2];
+                app.open_highlight(window, cx);
+            });
+            window.render_frame(cx);
+            let few = window.find("hl-add").bounds();
+
+            window.close_all_dialogs(cx);
+            window.render_frame(cx);
+
+            view.update(cx, |app, cx| {
+                app.settings.highlights.rules = vec![Default::default(); 30];
+                app.open_highlight(window, cx);
+            });
+            window.render_frame(cx);
+            let many = window.find("hl-add").bounds();
+            let body = window.find("hl-body").bounds();
+            let bottom = f32::from(body.origin.y) + f32::from(body.size.height);
+
+            assert!(
+                f32::from(many.origin.y) + f32::from(many.size.height) <= bottom + 1.0,
+                "the add row left the dialog: {many:?} in {body:?}"
+            );
+            assert!(
+                bottom - (f32::from(many.origin.y) + f32::from(many.size.height)) <= 14.0,
+                "the add row should be the dialog's last row: {many:?} in {body:?}"
+            );
+            assert!(
+                (f32::from(many.origin.y) - f32::from(few.origin.y)).abs() <= 1.0,
+                "the add row moved with the rule count: {few:?} -> {many:?}"
+            );
+            // The rule past the first page is laid out beyond the scroll area,
+            // which is the list scrolling instead of the dialog growing.
+            let row = window
+                .try_find(("hl-enabled", 29usize))
+                .expect("every rule row is laid out");
+            assert!(
+                f32::from(row.bounds().origin.y) > bottom,
+                "the last rule should be scrolled out of view: {:?}",
+                row.bounds()
             );
         })
         .unwrap();
