@@ -42,6 +42,19 @@ const HL_COLOR_W: f32 = 88.0;
 const HL_ACTION_W: f32 = 60.0;
 const HL_COL_GAP: f32 = 8.0;
 
+/// The sizes these windows open at.  They are main's egui `default_size`
+/// values, so the migrated windows keep the same footprint: the settings
+/// windows are as wide as egui made them, and the two windows that hold a
+/// table or a rate list keep egui's fixed height instead of shrinking onto
+/// their content.
+const FONT_WINDOW_W: f32 = 520.0;
+const LOG_COLORS_WINDOW_W: f32 = 440.0;
+const LOG_FILE_WINDOW_W: f32 = 480.0;
+const HIGHLIGHT_WINDOW_W: f32 = 800.0;
+const HIGHLIGHT_WINDOW_H: f32 = 600.0;
+const CUSTOM_BAUD_WINDOW_W: f32 = 320.0;
+const CUSTOM_BAUD_WINDOW_H: f32 = 340.0;
+
 fn hl_header(text: impl Into<SharedString>, width: f32, cx: &gpui_kit::App) -> AnyElement {
     div()
         .w(px(width))
@@ -226,6 +239,7 @@ impl XcomApp {
 
     pub(crate) fn open_font_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
+        let layout = self.button_layout;
         let families = crate::fonts::available_families();
         window.open_dialog(cx, move |dialog, _, cx| {
             let Some(entity) = weak.upgrade() else {
@@ -256,8 +270,9 @@ impl XcomApp {
                     .collect::<Vec<_>>()
             };
             dialog
-                .title(tr("字体设置"))
-                .width(px(560.0))
+                .close_button(false)
+                .title(header(layout, tr("字体设置"), None, cx))
+                .width(px(FONT_WINDOW_W))
                 .child(
                     v_flex()
                         .gap_3()
@@ -358,12 +373,12 @@ impl XcomApp {
                                 ))),
                         ),
                 )
-                .footer(footer())
         });
     }
 
     pub(crate) fn open_log_colors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
+        let layout = self.button_layout;
         window.open_dialog(cx, move |dialog, _, cx| {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
@@ -372,8 +387,9 @@ impl XcomApp {
             let colors = app.settings.log_colors;
             let palette = crate::theme::log_palette(cx, app.settings.theme, colors);
             dialog
-                .title(tr("接收区配色"))
-                .width(px(480.0))
+                .close_button(false)
+                .title(header(layout, tr("接收区配色"), None, cx))
+                .width(px(LOG_COLORS_WINDOW_W))
                 .child(
                     v_flex()
                         .gap_3()
@@ -419,12 +435,12 @@ impl XcomApp {
                                 ))),
                         ),
                 )
-                .footer(footer())
         });
     }
 
     pub(crate) fn open_log_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
+        let layout = self.button_layout;
         window.open_dialog(cx, move |dialog, _, cx| {
             let Some(entity) = weak.upgrade() else {
                 return dialog;
@@ -437,8 +453,9 @@ impl XcomApp {
                 .map(|path| path.display().to_string())
                 .unwrap_or_default();
             dialog
-                .title(tr("日志文件"))
-                .width(px(560.0))
+                .close_button(false)
+                .title(header(layout, tr("日志文件"), None, cx))
+                .width(px(LOG_FILE_WINDOW_W))
                 .child(
                     v_flex()
                         .gap_3()
@@ -526,7 +543,6 @@ impl XcomApp {
                             )
                         }),
                 )
-                .footer(footer())
         });
     }
 
@@ -558,7 +574,8 @@ impl XcomApp {
                     Some(gpui_kit::component::IconName::Settings2),
                     cx,
                 ))
-                .width(px(320.0))
+                .width(px(CUSTOM_BAUD_WINDOW_W))
+                .h(px(CUSTOM_BAUD_WINDOW_H))
                 .child(
                     v_flex()
                         .gap_2()
@@ -663,7 +680,8 @@ impl XcomApp {
             dialog
                 .close_button(false)
                 .title(header(layout, tr("关键字高亮"), None, cx))
-                .width(px(800.0))
+                .width(px(HIGHLIGHT_WINDOW_W))
+                .h(px(HIGHLIGHT_WINDOW_H))
                 .child(
                     v_flex()
                         .gap_2()

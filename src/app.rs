@@ -2857,6 +2857,98 @@ mod ui_tests {
         .unwrap();
     }
 
+    /// A footer 关闭 button is the one thing the egui windows never had: every
+    /// settings window closes from its title row, so no visible text reads
+    /// 关闭.
+    fn dialog_shows_footer_close(window: &gpui_kit::Window) -> bool {
+        gpui_kit::base::test_support::texts(window)
+            .into_iter()
+            .any(|text| text.visible() && text.text() == "关闭")
+    }
+
+    /// The settings windows open at main's egui `default_size`, so switching
+    /// between the two versions does not reflow them: 520, 440 and 480 wide for
+    /// the font, colour and log windows, and an exact 800×600 / 320×340
+    /// footprint for the highlight and baud windows.
+    #[gpui_kit::test]
+    fn the_settings_windows_keep_the_egui_default_sizes(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            let px = |value: gpui_kit::Pixels| f32::from(value);
+
+            view.update(cx, |app, cx| app.open_font_settings(window, cx));
+            window.render_frame(cx);
+            let bounds = window.find("surface").bounds();
+            assert_eq!(
+                px(bounds.size.width),
+                520.0,
+                "the font window keeps main's 520 px width"
+            );
+            assert!(
+                !dialog_shows_footer_close(window),
+                "the font window closes from its title row only"
+            );
+
+            window.close_all_dialogs(cx);
+            view.update(cx, |app, cx| app.open_log_colors(window, cx));
+            window.render_frame(cx);
+            let bounds = window.find("surface").bounds();
+            assert_eq!(
+                px(bounds.size.width),
+                440.0,
+                "the colour window keeps main's 440 px width"
+            );
+            assert!(
+                !dialog_shows_footer_close(window),
+                "the colour window closes from its title row only"
+            );
+
+            window.close_all_dialogs(cx);
+            view.update(cx, |app, cx| app.open_log_file(window, cx));
+            window.render_frame(cx);
+            let bounds = window.find("surface").bounds();
+            assert_eq!(
+                px(bounds.size.width),
+                480.0,
+                "the log window keeps main's 480 px width"
+            );
+            assert!(
+                !dialog_shows_footer_close(window),
+                "the log window closes from its title row only"
+            );
+
+            window.close_all_dialogs(cx);
+            view.update(cx, |app, cx| app.open_custom_baud(window, cx));
+            window.render_frame(cx);
+            let bounds = window.find("surface").bounds();
+            assert_eq!(
+                (px(bounds.size.width), px(bounds.size.height)),
+                (320.0, 340.0),
+                "the baud window is main's 320×340 default size"
+            );
+
+            window.close_all_dialogs(cx);
+            view.update(cx, |app, cx| app.open_highlight(window, cx));
+            window.render_frame(cx);
+            let bounds = window.find("surface").bounds();
+            assert_eq!(
+                (px(bounds.size.width), px(bounds.size.height)),
+                (800.0, 600.0),
+                "the highlight window is main's 800×600 default size"
+            );
+        })
+        .unwrap();
+    }
+
     /// The baud-rate and keyword-highlighting windows are laid out like the
     /// egui ones: the title row carries the close control the desktop's
     /// button layout asks for, and there is no footer button below.
