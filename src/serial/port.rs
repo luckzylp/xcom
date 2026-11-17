@@ -169,6 +169,9 @@ pub struct PortWatcher {
     handle: Option<JoinHandle<()>>,
     /// Most recent list, kept for callers that poll faster than the watcher.
     latest: Vec<PortDesc>,
+    /// Whether a list has ever been published.  Until then the empty `latest`
+    /// means "not known yet", not "no ports".
+    published: bool,
 }
 
 impl PortWatcher {
@@ -218,6 +221,7 @@ impl PortWatcher {
             reload,
             handle: Some(handle),
             latest: Vec::new(),
+            published: false,
         }
     }
 
@@ -229,14 +233,21 @@ impl PortWatcher {
 
     /// Replace the known list.  Tests inject ports here because the real
     /// enumeration cannot be controlled.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub fn set_ports(&mut self, ports: Vec<PortDesc>) {
         self.latest = ports;
+        self.published = true;
     }
 
     /// Latest known port list.
     pub fn ports(&self) -> &[PortDesc] {
         &self.latest
+    }
+
+    /// True once the watcher has published a list, so an empty `ports` is a
+    /// real answer rather than "the first enumeration is still running".
+    pub fn has_list(&self) -> bool {
+        self.published
     }
 
     /// Absorb any pending update.  Returns `true` when the list changed.
@@ -246,6 +257,7 @@ impl PortWatcher {
             match self.rx.try_recv() {
                 Ok(list) => {
                     self.latest = list;
+                    self.published = true;
                     changed = true;
                 }
                 Err(TryRecvError::Empty) => break,

@@ -31,6 +31,7 @@ use gpui_kit::{
 
 use crate::app::{Action, Choice, Level, SideTab, XcomApp};
 use crate::i18n::tr;
+use crate::serial::PortDesc;
 
 /// Height of the window header: the menu bar, and on Linux the window
 /// controls, share this one row.
@@ -639,6 +640,22 @@ fn port_item(
 const SERIAL_COMBO_WIDTH: f32 = 140.0;
 const SERIAL_LABEL_WIDTH: f32 = 64.0;
 
+/// The trigger label of the port combo.
+///
+/// Only a port the OS currently lists may show its own name: a remembered port
+/// that is gone cannot be opened, so displaying it just leads the user into an
+/// error when they press 打开.
+fn port_label(ports: &[PortDesc], current: &str) -> String {
+    if let Some(port) = ports.iter().find(|port| port.name == current) {
+        return port.display();
+    }
+    if ports.is_empty() {
+        tr("（无可用串口）").to_owned()
+    } else {
+        tr("（未选择串口）").to_owned()
+    }
+}
+
 fn port_choice_button(
     id: impl Into<gpui_kit::ElementId>,
     label: impl Into<SharedString>,
@@ -1084,7 +1101,7 @@ fn left_panel(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
     let weak = cx.entity().downgrade();
     let current_port = app.settings.serial.port.clone();
     let ports = app.ports.ports().to_vec();
-    let mut port_items: Vec<(String, Choice, bool, Option<String>)> = ports
+    let port_items: Vec<(String, Choice, bool, Option<String>)> = ports
         .iter()
         .map(|port| {
             (
@@ -1095,16 +1112,8 @@ fn left_panel(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
             )
         })
         .collect();
-    if !ports.iter().any(|port| port.name == current_port) && !current_port.is_empty() {
-        port_items.push((
-            current_port.clone(),
-            Choice::Port(current_port.clone()),
-            true,
-            None,
-        ));
-    }
-    // The trigger always has a label; the popup shows 未检测到串口 when the
-    // list is empty, so no placeholder row is added here.
+    // Only ports the OS lists are offered: a remembered name that no longer
+    // exists cannot be opened, so listing it just leads the user into an error.
     // The trigger shows the selected port's detail on hover.
     let current_detail = ports
         .iter()
@@ -1164,17 +1173,7 @@ fn left_panel(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
             )
         })
         .collect();
-    let port_label = ports
-        .iter()
-        .find(|port| port.name == current_port)
-        .map(|port| port.display())
-        .unwrap_or_else(|| {
-            if current_port.is_empty() {
-                tr("（无可用串口）").to_owned()
-            } else {
-                current_port.clone()
-            }
-        });
+    let port_label = port_label(ports.as_slice(), &current_port);
     let dtr = app.settings.serial.dtr;
     let rts = app.settings.serial.rts;
     let summary = app.settings.serial.summary();
@@ -2749,4 +2748,34 @@ fn stats_label_width(window: &Window, cx: &App) -> Pixels {
         .ceil()
         // A pixel of slack: rounded glyph advances can measure a hair short.
         + px(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::serial::port::PortKind;
+
+    fn usb(name: &str) -> PortDesc {
+        PortDesc {
+            name: name.to_owned(),
+            kind: PortKind::Usb {
+                vid: 0x1a86,
+                pid: 0x7523,
+                serial: None,
+                manufacturer: None,
+                product: None,
+            },
+        }
+    }
+
+    #[test]
+    fn a_remembered_port_that_is_gone_is_not_shown() {
+        // Nothing is plugged in: the combo must not offer the dead name.
+        assert_eq!(port_label(&[], "COM3"), tr("（无可用串口）"));
+        // A listed port shows its own name.
+        let ports = [usb("COM5"), usb("COM3")];
+        assert_eq!(port_label(&ports, "COM3"), "COM3");
+        // Ports exist, but not the remembered one.
+        assert_eq!(port_label(&ports[..1], "COM3"), tr("（未选择串口）"));
+    }
 }

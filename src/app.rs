@@ -825,31 +825,42 @@ impl XcomApp {
     /// Keep the selection pointing at a port that exists.
     ///
     /// The remembered port can vanish while XCOM is closed (an unplugged
-    /// adapter, a board that enumerates under a different name), and leaving it
-    /// selected makes the panel look stuck on something that can never open.
+    /// adapter, a board that enumerates under a different name).  Nothing is
+    /// decided before the watcher publishes its first list, because until then
+    /// an empty list only means "not enumerated yet".
     fn select_default_port(&mut self) {
         self.ports.poll();
-        let pick = Self::default_port(self.ports.ports(), &self.settings.serial.port);
-        if let Some(name) = pick {
-            self.settings.serial.port = name;
-            // Persist the correction: otherwise every start begins by showing
-            // the dead port again until something else marks the settings.
-            self.mark_settings_dirty();
+        if !self.ports.has_list() {
+            return;
         }
+        let Some(name) = Self::default_port(self.ports.ports(), &self.settings.serial.port) else {
+            return;
+        };
+        if name == self.settings.serial.port {
+            return;
+        }
+        self.settings.serial.port = name;
+        // Persist the correction: otherwise every start begins by showing the
+        // dead port again until something else marks the settings.
+        self.mark_settings_dirty();
     }
 
-    /// The port to select when `current` is gone: a USB adapter first, since
-    /// legacy UARTs and Bluetooth links are usually not what the user is after.
-    /// Returns `None` when the current selection is still present.
+    /// The port to select for `current`.  Returns `None` to keep the current
+    /// one, `Some("")` to clear it when nothing at all is plugged in, and
+    /// `Some(name)` to move to a port that does exist (a USB adapter first,
+    /// since legacy UARTs and Bluetooth links are rarely what the user wants).
     fn default_port(available: &[PortDesc], current: &str) -> Option<String> {
-        if available.is_empty() || available.iter().any(|p| p.name == current) {
+        if available.iter().any(|p| p.name == current) {
             return None;
         }
-        available
-            .iter()
-            .find(|p| p.is_usb())
-            .or_else(|| available.first())
-            .map(|p| p.name.clone())
+        Some(
+            available
+                .iter()
+                .find(|p| p.is_usb())
+                .or_else(|| available.first())
+                .map(|p| p.name.clone())
+                .unwrap_or_default(),
+        )
     }
 
     /// A different USB adapter to retry with, if the selected port cannot be
@@ -1007,7 +1018,13 @@ impl XcomApp {
 
     pub(crate) fn open_port(&mut self) {
         if self.settings.serial.port.trim().is_empty() {
-            self.error(tr("请先选择串口"));
+            // With nothing enumerated the old "select a port first" hint is
+            // misleading: there is nothing to select.
+            if self.ports.ports().is_empty() {
+                self.error(tr("未检测到串口，请检查设备连接后刷新"));
+            } else {
+                self.error(tr("请先选择串口"));
+            }
             return;
         }
         match self.link.open(&self.settings.serial) {
@@ -2586,6 +2603,43 @@ mod ui_tests {
     /// the open button is capped at 168 px and centred 16 px left of the
     /// section, so it reads as a control instead of a separator.
     #[gpui_kit::test]
+    /// A port remembered from the last session must not be offered once the OS
+    /// no longer lists it: it can only fail to open.
+    #[gpui_kit::test]
+    fn a_remembered_port_is_hidden_when_nothing_is_plugged_in(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let mut settings = crate::settings::Settings::default();
+        settings.serial.port = "COM4".to_owned();
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        view.update(cx, |app, _| {
+            app.ports.set_ports(Vec::new());
+            app.select_default_port();
+            assert!(
+                app.settings.serial.port.is_empty(),
+                "the dead port must be dropped, got {:?}",
+                app.settings.serial.port
+            );
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("port").label(),
+                Some(tr("（无可用串口）")),
+                "the combo must not offer a port that is gone"
+            );
+        })
+        .expect("render the window");
+    }
+
+    #[gpui_kit::test]
     fn the_serial_section_matches_the_egui_layout(cx: &mut TestAppContext) {
         let _guard = ui_test_lock();
         cx.update(gpui_kit::init);
@@ -4158,7 +4212,18 @@ mod port_tests {
     fn an_existing_selection_is_left_alone() {
         let ports = [usb("/dev/ttyUSB0"), pci("/dev/ttyS0")];
         assert_eq!(XcomApp::default_port(&ports, "/dev/ttyS0"), None);
-        assert_eq!(XcomApp::default_port(&[], "/dev/ttyS0"), None);
+    }
+
+    /// With nothing plugged in the remembered port is dropped, so the panel
+    /// shows 无可用串口 instead of offering a port that cannot open.
+    #[test]
+    fn nothing_plugged_in_clears_the_selection() {
+        assert_eq!(XcomApp::default_port(&[], "COM3").as_deref(), Some(""));
+        assert_eq!(
+            XcomApp::default_port(&[], "").as_deref(),
+            Some(""),
+            "an empty selection stays empty"
+        );
     }
 
     #[test]
