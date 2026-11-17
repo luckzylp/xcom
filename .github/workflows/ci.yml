@@ -126,7 +126,31 @@ jobs:
           key: ${{ matrix.target }}${{ matrix.suffix }}
       - name: Build (Linux, glibc 2.17)
         if: matrix.zig_target
+        env:
+          # The runner's GUI shared libraries (xkbcommon, freetype, ...) were
+          # built against a newer glibc than the 2.17 baseline the zig sysroot
+          # provides, so lld refuses their undefined references.  Those
+          # references live inside those libraries, not in this binary, and the
+          # loader resolves them against the target machine's own copy: let the
+          # link through instead of dropping the old-glibc artifact.
+          RUSTFLAGS: -C link-arg=-Wl,--allow-shlib-undefined
         run: cargo zigbuild --release --locked --target ${{ matrix.zig_target }}
+      # The link above was allowed to skip the shared libraries' own
+      # references, so prove it did not smuggle a newer glibc requirement into
+      # the artifact: the file must still ask for nothing past 2.17.
+      - name: Check the glibc symbol baseline
+        if: matrix.zig_target
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/xcom"
+          versions="$(readelf --version-info "$binary" | grep -o 'GLIBC_[0-9.]*' || true)"
+          highest="$(printf '%s\n' "$versions" | sed 's/GLIBC_//' | grep . | sort -uV | tail -n 1 || true)"
+          echo "highest glibc symbol required: ${highest:-none}"
+          if [ -n "$highest" ] && [ "$(printf '%s\n2.17\n' "$highest" | sort -V | tail -n 1)" != "2.17" ]; then
+            echo "::error::the artifact needs glibc ${highest}, above the 2.17 baseline"
+            exit 1
+          fi
       - name: Build
         if: ${{ !matrix.zig_target }}
         run: cargo build --release --target ${{ matrix.target }}
