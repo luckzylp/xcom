@@ -24,7 +24,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
-            libudev-dev
+            libudev-dev \
+            libfontconfig1-dev libfreetype6-dev
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
 
@@ -45,6 +46,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
             libudev-dev \
+            libfontconfig1-dev libfreetype6-dev \
             fonts-noto-cjk
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-targets
@@ -95,7 +97,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev \
-            libudev-dev
+            libudev-dev \
+            libfontconfig1-dev libfreetype6-dev
       # Both published setup-zig actions still declare `runs.using: node20`,
       # which workflow_actions_run_on_node_24 rejects, so zig is fetched here.
       - name: Install zig
