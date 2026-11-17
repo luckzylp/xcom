@@ -1256,8 +1256,7 @@ fn left_panel(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
                                     .tooltip(tr("刷新"))
                                     .small()
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.ports.poll();
-                                        this.info(tr("已刷新串口列表"));
+                                        this.refresh_ports();
                                         cx.notify();
                                     })),
                             )

@@ -6,4 +6,4 @@ pub mod port;
 
 pub use config::{DataBitsSel, FlowSel, ParitySel, SerialConfig, StopBitsSel};
 pub use link::{SerialEvent, SerialLink, Signals};
-pub use port::PortWatcher;
+pub use port::{PortDesc, PortWatcher};

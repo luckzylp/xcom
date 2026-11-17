@@ -319,6 +319,7 @@ static EN: &[(&str, &str)] = &[
     ("未检测到串口",           "No serial ports detected"),
     ("刷新",                  "Refresh"),
     ("已刷新串口列表",         "Port list refreshed"),
+    ("{}，已切换到 {}",       "{}, switched to {}"),
     ("波特率",                "Baud rate"),
     ("（自定义）",            "(custom)"),
     ("已保存的自定义波特率",   "Saved custom baud rates"),

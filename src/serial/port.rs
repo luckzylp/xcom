@@ -163,6 +163,9 @@ fn take_number(it: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u64 {
 pub struct PortWatcher {
     rx: Receiver<Vec<PortDesc>>,
     stop: Arc<AtomicBool>,
+    /// Set when the UI wants a fresh enumeration even if the list looks the
+    /// same, e.g. after a stale entry failed to open.
+    reload: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     /// Most recent list, kept for callers that poll faster than the watcher.
     latest: Vec<PortDesc>,
@@ -173,13 +176,21 @@ impl PortWatcher {
     pub fn spawn(interval: Duration) -> Self {
         let (tx, rx): (Sender<Vec<PortDesc>>, Receiver<Vec<PortDesc>>) = unbounded();
         let stop = Arc::new(AtomicBool::new(false));
+        let reload = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
+        let thread_reload = Arc::clone(&reload);
 
         let handle = thread::Builder::new()
             .name("port-watcher".to_owned())
             .spawn(move || {
                 let mut last: Option<Vec<PortDesc>> = None;
                 while !thread_stop.load(AtomicOrdering::Relaxed) {
+                    // A forced reload must republish even an unchanged list:
+                    // the caller is asking "look again", not "tell me what
+                    // changed".
+                    if thread_reload.swap(false, AtomicOrdering::Relaxed) {
+                        last = None;
+                    }
                     let ports = enumerate();
                     if last.as_ref() != Some(&ports) {
                         if tx.send(ports.clone()).is_err() {
@@ -187,12 +198,15 @@ impl PortWatcher {
                         }
                         last = Some(ports);
                     }
-                    // Sleep in slices so shutdown is prompt.
+                    // Sleep in slices so shutdown and reloads are prompt.
                     let mut slept = Duration::ZERO;
                     while slept < interval && !thread_stop.load(AtomicOrdering::Relaxed) {
                         let slice = Duration::from_millis(50).min(interval - slept);
                         thread::sleep(slice);
                         slept += slice;
+                        if thread_reload.load(AtomicOrdering::Relaxed) {
+                            break;
+                        }
                     }
                 }
             })
@@ -201,9 +215,23 @@ impl PortWatcher {
         Self {
             rx,
             stop,
+            reload,
             handle: Some(handle),
             latest: Vec::new(),
         }
+    }
+
+    /// Ask for a fresh enumeration.  The result arrives through `poll`, so the
+    /// caller sees it on the next tick rather than blocking the UI thread.
+    pub fn refresh(&self) {
+        self.reload.store(true, AtomicOrdering::Relaxed);
+    }
+
+    /// Replace the known list.  Tests inject ports here because the real
+    /// enumeration cannot be controlled.
+    #[cfg(all(test, unix))]
+    pub fn set_ports(&mut self, ports: Vec<PortDesc>) {
+        self.latest = ports;
     }
 
     /// Latest known port list.
@@ -245,6 +273,34 @@ impl Drop for PortWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Block until the watcher publishes something, or the deadline expires.
+    fn wait_for_change(watcher: &mut PortWatcher) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if watcher.poll() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn refresh_republishes_an_unchanged_list() {
+        // A long interval keeps the poll quiet, so anything `poll` sees after
+        // the first list can only come from the forced reload.
+        let mut watcher = PortWatcher::spawn(Duration::from_secs(30));
+        assert!(wait_for_change(&mut watcher), "the first list must arrive");
+        thread::sleep(Duration::from_millis(80));
+        assert!(!watcher.poll(), "the watcher should be idle now");
+
+        watcher.refresh();
+        assert!(
+            wait_for_change(&mut watcher),
+            "a refresh must republish even when the ports did not change"
+        );
+    }
 
     #[test]
     fn natural_sort_orders_numeric_suffixes() {

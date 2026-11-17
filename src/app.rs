@@ -20,7 +20,7 @@ use crate::i18n::tr;
 use crate::logfile::LogFile;
 use crate::logstore::LogStore;
 use crate::protocol::{ProtocolEngine, ProtocolEvent};
-use crate::serial::{PortWatcher, SerialEvent, SerialLink, Signals};
+use crate::serial::{PortDesc, PortWatcher, SerialEvent, SerialLink, Signals};
 use crate::settings::Settings;
 use crate::theme::ThemeMode;
 use crate::ui::log_view::LogViewState;
@@ -822,25 +822,57 @@ impl XcomApp {
 
     // -- lifecycle ----------------------------------------------------------
 
+    /// Keep the selection pointing at a port that exists.
+    ///
+    /// The remembered port can vanish while XCOM is closed (an unplugged
+    /// adapter, a board that enumerates under a different name), and leaving it
+    /// selected makes the panel look stuck on something that can never open.
     fn select_default_port(&mut self) {
         self.ports.poll();
-        let available = self.ports.ports();
-        if available.is_empty() {
-            return;
+        let pick = Self::default_port(self.ports.ports(), &self.settings.serial.port);
+        if let Some(name) = pick {
+            self.settings.serial.port = name;
+            // Persist the correction: otherwise every start begins by showing
+            // the dead port again until something else marks the settings.
+            self.mark_settings_dirty();
         }
-        let current_ok = available
+    }
+
+    /// The port to select when `current` is gone: a USB adapter first, since
+    /// legacy UARTs and Bluetooth links are usually not what the user is after.
+    /// Returns `None` when the current selection is still present.
+    fn default_port(available: &[PortDesc], current: &str) -> Option<String> {
+        if available.is_empty() || available.iter().any(|p| p.name == current) {
+            return None;
+        }
+        available
             .iter()
-            .any(|p| p.name == self.settings.serial.port);
-        if !current_ok {
-            let pick = available
-                .iter()
-                .find(|p| p.is_usb())
-                .or_else(|| available.first())
-                .map(|p| p.name.clone());
-            if let Some(name) = pick {
-                self.settings.serial.port = name;
-            }
-        }
+            .find(|p| p.is_usb())
+            .or_else(|| available.first())
+            .map(|p| p.name.clone())
+    }
+
+    /// A different USB adapter to retry with, if the selected port cannot be
+    /// opened.  A port can stay in the enumeration after its adapter is gone
+    /// (driver leftovers on Windows, an unconnected Bluetooth link), so being
+    /// listed is not proof that it opens.
+    fn fallback_port(&self, current: &str) -> Option<String> {
+        Self::pick_fallback(self.ports.ports(), current)
+    }
+
+    fn pick_fallback(available: &[PortDesc], current: &str) -> Option<String> {
+        available
+            .iter()
+            .find(|p| p.is_usb() && p.name != current)
+            .map(|p| p.name.clone())
+    }
+
+    /// Re-enumerate the ports instead of waiting for the watcher's next poll.
+    /// The list comes back through `pump_serial`, which also re-checks the
+    /// selection, so the button picks up a just-plugged adapter.
+    pub(crate) fn refresh_ports(&mut self) {
+        self.ports.refresh();
+        self.info(tr("已刷新串口列表"));
     }
 
     fn note_font_status(&mut self) {
@@ -979,22 +1011,48 @@ impl XcomApp {
             return;
         }
         match self.link.open(&self.settings.serial) {
-            Ok(()) => {
-                for note in self.link.take_notes() {
-                    self.warn(note);
+            Ok(()) => self.note_port_opened(),
+            Err(err) => {
+                // The remembered port may still be listed although its adapter
+                // is gone, which used to leave the user with an error and no
+                // obvious way out.  Try a plugged-in USB adapter instead.
+                let stale = self.settings.serial.port.clone();
+                // The panel may still be offering an adapter that has been
+                // gone since the list was read; ask for a fresh enumeration so
+                // the corrected selection shows up either way.
+                if self.ports.find(&stale).is_none() {
+                    self.ports.refresh();
                 }
-                self.auto.reset();
-                let encoding = self.effective_encoding();
-                self.log.set_encoding(encoding);
-                self.protocol.set_baud(self.settings.serial.baud);
-                let summary = self.settings.serial.summary();
-                let port = self.settings.serial.port.clone();
-                self.open_port_enumerated = self.ports.find(&port).is_some();
-                self.ok(crate::i18n::tr2("已打开 {} [{}]", port, summary));
-                self.mark_settings_dirty();
+                let Some(alt) = self.fallback_port(&stale) else {
+                    self.error(err);
+                    return;
+                };
+                self.settings.serial.port = alt.clone();
+                match self.link.open(&self.settings.serial) {
+                    Ok(()) => {
+                        self.warn(crate::i18n::tr2("{}，已切换到 {}", err, alt));
+                        self.note_port_opened();
+                    }
+                    Err(retry_err) => self.error(retry_err),
+                }
             }
-            Err(err) => self.error(err),
         }
+    }
+
+    /// Bookkeeping shared by the first attempt and the fallback retry.
+    fn note_port_opened(&mut self) {
+        for note in self.link.take_notes() {
+            self.warn(note);
+        }
+        self.auto.reset();
+        let encoding = self.effective_encoding();
+        self.log.set_encoding(encoding);
+        self.protocol.set_baud(self.settings.serial.baud);
+        let summary = self.settings.serial.summary();
+        let port = self.settings.serial.port.clone();
+        self.open_port_enumerated = self.ports.find(&port).is_some();
+        self.ok(crate::i18n::tr2("已打开 {} [{}]", port, summary));
+        self.mark_settings_dirty();
     }
 
     pub(crate) fn close_port(&mut self) {
@@ -1952,10 +2010,7 @@ impl XcomApp {
     ) {
         match action {
             Action::TogglePort => self.toggle_port(),
-            Action::RefreshPorts => {
-                self.ports.poll();
-                self.info(tr("已刷新串口列表"));
-            }
+            Action::RefreshPorts => self.refresh_ports(),
             Action::SaveReceived => self.save_received(false),
             Action::SaveRaw => self.save_received(true),
             Action::Quit => {
@@ -2396,8 +2451,7 @@ impl Render for XcomApp {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &RefreshPorts, _, cx| {
-                this.ports.poll();
-                this.info(tr("已刷新串口列表"));
+                this.refresh_ports();
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &SaveLog, _, cx| {
@@ -3980,6 +4034,150 @@ mod multi_tests {
             String::from_utf8_lossy(&pty.read_available(Duration::from_millis(150))),
             "A",
             "B was unchecked before its turn and must not be sent"
+        );
+    }
+
+    fn usb_port(name: &str) -> PortDesc {
+        use crate::serial::port::PortKind;
+        PortDesc {
+            name: name.to_owned(),
+            kind: PortKind::Usb {
+                vid: 0x1a86,
+                pid: 0x7523,
+                serial: None,
+                manufacturer: None,
+                product: None,
+            },
+        }
+    }
+
+    /// A remembered port can survive in the enumeration after its adapter is
+    /// gone (driver leftovers, a Bluetooth link that is not connected), which
+    /// left the panel stuck on a port that could never open.
+    #[gpui_kit::test]
+    fn opening_a_listed_but_dead_port_switches_to_the_usb_adapter(cx: &mut TestAppContext) {
+        let Some(pty) = TestPty::open() else {
+            return;
+        };
+        let Some(view) = open_app(cx, &pty) else {
+            return;
+        };
+        // `/dev/ttyUSB9` is listed as a USB adapter but is not a real device.
+        let stale = "/dev/ttyUSB9".to_owned();
+        let live = pty.slave_path.clone();
+        view.update(cx, |app, _| {
+            app.link.close();
+            app.ports.set_ports(vec![usb_port(&stale), usb_port(&live)]);
+            app.settings.serial.port = stale.clone();
+            app.open_port();
+
+            assert!(app.link.is_open(), "the live adapter must be opened");
+            assert_eq!(app.settings.serial.port, live, "the panel must follow");
+            let last = app.messages.last().expect("an open message");
+            assert_eq!(last.level, Level::Success, "{:?}", last.text);
+            assert!(last.text.contains(&live), "{:?}", last.text);
+            assert!(
+                app.messages
+                    .iter()
+                    .any(|m| m.level == Level::Warning && m.text.contains(&stale)),
+                "the failed port must still be reported: {:?}",
+                app.messages.iter().map(|m| &m.text).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_dead_port_without_a_second_adapter_reports_the_error(cx: &mut TestAppContext) {
+        let Some(pty) = TestPty::open() else {
+            return;
+        };
+        let Some(view) = open_app(cx, &pty) else {
+            return;
+        };
+        let stale = "/dev/ttyUSB9".to_owned();
+        view.update(cx, |app, _| {
+            app.link.close();
+            app.ports.set_ports(vec![usb_port(&stale)]);
+            app.settings.serial.port = stale.clone();
+            app.open_port();
+
+            assert!(!app.link.is_open(), "nothing could be opened");
+            assert_eq!(app.settings.serial.port, stale, "the selection is kept");
+            assert_eq!(
+                app.messages.last().map(|m| m.level),
+                Some(Level::Error),
+                "the failure must be reported"
+            );
+        });
+    }
+}
+
+/// Selection rules that decide which port the panel offers.
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+    use crate::serial::port::PortKind;
+
+    fn usb(name: &str) -> PortDesc {
+        PortDesc {
+            name: name.to_owned(),
+            kind: PortKind::Usb {
+                vid: 0x0403,
+                pid: 0x6001,
+                serial: None,
+                manufacturer: None,
+                product: None,
+            },
+        }
+    }
+
+    fn pci(name: &str) -> PortDesc {
+        PortDesc {
+            name: name.to_owned(),
+            kind: PortKind::Pci,
+        }
+    }
+
+    #[test]
+    fn a_vanished_selection_falls_back_to_a_usb_adapter() {
+        let ports = [pci("/dev/ttyS0"), usb("/dev/ttyUSB0")];
+        assert_eq!(
+            XcomApp::default_port(&ports, "/dev/ttyACM0").as_deref(),
+            Some("/dev/ttyUSB0"),
+            "a USB adapter wins over the legacy UART"
+        );
+        let only_pci = [pci("/dev/ttyS0")];
+        assert_eq!(
+            XcomApp::default_port(&only_pci, "COM3").as_deref(),
+            Some("/dev/ttyS0"),
+            "with no adapter plugged in the first listed port is better than nothing"
+        );
+    }
+
+    #[test]
+    fn an_existing_selection_is_left_alone() {
+        let ports = [usb("/dev/ttyUSB0"), pci("/dev/ttyS0")];
+        assert_eq!(XcomApp::default_port(&ports, "/dev/ttyS0"), None);
+        assert_eq!(XcomApp::default_port(&[], "/dev/ttyS0"), None);
+    }
+
+    #[test]
+    fn the_fallback_skips_the_port_that_just_failed() {
+        let ports = [usb("COM3"), usb("COM5")];
+        assert_eq!(
+            XcomApp::pick_fallback(&ports, "COM3").as_deref(),
+            Some("COM5")
+        );
+        assert_eq!(
+            XcomApp::pick_fallback(&ports[..1], "COM3"),
+            None,
+            "retrying the port that just failed is pointless"
+        );
+        let legacy = [pci("/dev/ttyS0")];
+        assert_eq!(
+            XcomApp::pick_fallback(&legacy, "COM3"),
+            None,
+            "only a USB adapter is worth a retry"
         );
     }
 }
