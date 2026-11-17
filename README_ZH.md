@@ -113,11 +113,11 @@ Linux 还需要图形与 udev 开发库（多数桌面发行版已自带）：
 
 ```bash
 # Debian / Ubuntu
-sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev \
+sudo apt install build-essential pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
                  libx11-dev libgl1-mesa-dev libvulkan-dev libfontconfig1-dev \
                  libudev-dev
 # Fedora
-sudo dnf install gcc pkgconf-pkg-config libxkbcommon-devel wayland-devel \
+sudo dnf install gcc pkgconf-pkg-config libxkbcommon-devel libxkbcommon-x11-devel wayland-devel \
                  libX11-devel mesa-libGL-devel vulkan-loader-devel fontconfig-devel \
                  systemd-devel
 ```
