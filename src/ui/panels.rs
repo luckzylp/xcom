@@ -25,7 +25,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
+    ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, Styled as _,
     TestSupportExt as _, WeakEntity, Window, div, px, relative,
 };
 
@@ -36,13 +36,38 @@ use crate::i18n::tr;
 /// controls, share this one row.
 const HEADER_HEIGHT: f32 = 34.0;
 
+/// Radius of the window's corners on Wayland.
+///
+/// GNOME's compositor does not round a client-decorated window, so the app
+/// draws the corners itself: the component library rounds the frame and the
+/// root surface with the theme's `window.radius`, and the elements that paint
+/// the frame's edges — the header and the status bar — round the corners they
+/// own through [`gpui_kit::component::window_corner_radii`].  The value matches
+/// what GNOME apps draw, so this window sits on the desktop like the rest.
+pub(crate) const WINDOW_CORNER_RADIUS: f32 = 10.0;
+
+/// Whether this session can show transparent window corners.
+///
+/// Only Wayland lets an app leave parts of its surface unpainted and have the
+/// compositor blend what is behind: the frame's rounded corners are exactly
+/// those unpainted pixels.  X11 windows have no alpha to blend with, so they
+/// stay square.
+pub(crate) fn wayland_session() -> bool {
+    cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
 /// Compose the window header.
 ///
 /// The window controls share the menu row rather than sitting on a strip of
 /// their own, and they follow the desktop's `button-layout`: many themes put
 /// them on the left, where they are then the first thing in the row.  The
 /// space between the menus and the trailing controls drags the window.
-fn header_bar(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
+fn header_bar(
+    app: &mut XcomApp,
+    window: &mut Window,
+    radii: gpui_kit::Corners<Pixels>,
+    cx: &mut Context<XcomApp>,
+) -> AnyElement {
     let decorated = draws_own_title_bar(window);
     let (leading, trailing) = if decorated {
         let maximized = window.is_maximized();
@@ -90,6 +115,10 @@ fn header_bar(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
             cx.theme().border
         })
         .bg(cx.theme().title_bar)
+        // The header paints the window's top edge, so its own corners carry the
+        // frame's rounding; the row below it only ever meets a straight edge.
+        .rounded_tl(radii.top_left)
+        .rounded_tr(radii.top_right)
         // The controls sit flush against the window edge the way a headerbar
         // draws them; the menu group keeps its own inset.
         .children(leading)
@@ -418,7 +447,7 @@ pub fn render(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
                 .size(left_width)
                 .size_range(px(1.0)..px(460.0))
                 .fixed()
-                .child(left_panel(app, cx)),
+                .child(left_panel(app, window, cx)),
         )
         .child(resizable_panel().child(center_column))
         .child(
@@ -497,13 +526,25 @@ pub fn render(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>)
         body = body.child(edge_strip("tool-strip", "‹", false, cx, main_split.clone()));
     }
 
+    // The window frame is rounded by the component library on Wayland (the
+    // theme's `window.radius`), which rounds the frame and the surface behind
+    // this view.  The elements painting the frame's edges have to follow: the
+    // root, the header and the status bar each round the corners they cover,
+    // otherwise their square backgrounds fill the corner pixels back in.  On a
+    // server-decorated or tiled window every radius here is zero.
+    let radii = gpui_kit::component::window_corner_radii(window, cx);
+
     v_flex()
         .size_full()
         .bg(theme.background)
         .text_color(theme.foreground)
-        .child(header_bar(app, window, cx))
+        .rounded_tl(radii.top_left)
+        .rounded_tr(radii.top_right)
+        .rounded_bl(radii.bottom_left)
+        .rounded_br(radii.bottom_right)
+        .child(header_bar(app, window, radii, cx))
         .child(body)
-        .child(status_bar(app, cx))
+        .child(status_bar(app, radii, cx))
         .into_any_element()
 }
 pub(crate) fn run_action(
@@ -561,32 +602,32 @@ fn port_item(
     detail: Option<String>,
     weak: WeakEntity<XcomApp>,
 ) -> PopupMenuItem {
-    match detail {
-        // A port with metadata gets a second, muted line.  (gpui menu items
-        // carry no tooltip API; only buttons and checkboxes do.)
-        Some(detail) => PopupMenuItem::element(move |_, cx| {
-            v_flex()
-                .gap_0p5()
-                .child(div().child(SharedString::from(text.clone())))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(detail.clone())),
-                )
-        })
-        .checked(checked)
-        .on_click(move |_, _, cx| {
-            let choice = choice.clone();
-            let _ = weak.update(cx, |this, cx| this.apply_choice(choice, cx));
-        }),
-        None => PopupMenuItem::new(text)
-            .checked(checked)
-            .on_click(move |_, _, cx| {
-                let choice = choice.clone();
-                let _ = weak.update(cx, |this, cx| this.apply_choice(choice, cx));
-            }),
-    }
+    // egui draws each port as a `selectable_label` with `.on_hover_text(...)`:
+    // one line per port, its metadata in a tooltip on hover.  Stacking the
+    // metadata as a second line inside the item (as this did) made the rows
+    // change height from one port to the next; the tooltip also matches what
+    // hovering a port in the egui list shows.
+    let tooltip: SharedString = detail.unwrap_or_else(|| text.clone()).into();
+    let item_text = SharedString::from(text.clone());
+    PopupMenuItem::element(move |_, _cx| {
+        let tooltip = tooltip.clone();
+        div()
+            .id(SharedString::from(format!("port-item-{text}")))
+            .w_full()
+            .h_full()
+            .flex()
+            .items_center()
+            .child(item_text.clone())
+            .tooltip(move |_, cx| {
+                let view = cx.new(|_| gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()));
+                view.into()
+            })
+    })
+    .checked(checked)
+    .on_click(move |_, _, cx| {
+        let choice = choice.clone();
+        let _ = weak.update(cx, |this, cx| this.apply_choice(choice, cx));
+    })
 }
 
 /// A dropdown button for the port list.
@@ -1038,7 +1079,7 @@ fn menu_bar(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
         .into_any_element()
 }
 
-fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
+fn left_panel(app: &mut XcomApp, window: &mut Window, cx: &mut Context<XcomApp>) -> AnyElement {
     let is_open = app.link.is_open();
     let weak = cx.entity().downgrade();
     let current_port = app.settings.serial.port.clone();
@@ -1393,36 +1434,60 @@ fn left_panel(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
                 .child(section_title(tr("统计"), cx)),
         )
         .when(stats_section_open, |this| {
+            // egui lays the numbers out in a `Grid`, which sizes its first
+            // column to the widest label; the value column below is shared
+            // with the inputs so every row starts at the same x.
+            let label_width = stats_label_width(window, cx);
             this.child(
                 v_flex()
                     .id("stats-body")
                     .test_support()
                     .w_full()
                     .gap_2()
-                    .child(info_row(tr("发送字节"), &app.tx_bytes.to_string(), cx))
-                    .child(info_row(tr("接收字节"), &app.rx_bytes.to_string(), cx))
-                    .child(info_row(
+                    .child(stats_row(
+                        "stats-value-tx",
+                        tr("发送字节"),
+                        stat_value(&app.tx_bytes.to_string(), cx),
+                        label_width,
+                        cx,
+                    ))
+                    .child(stats_row(
+                        "stats-value-rx",
+                        tr("接收字节"),
+                        stat_value(&app.rx_bytes.to_string(), cx),
+                        label_width,
+                        cx,
+                    ))
+                    .child(stats_row(
+                        "stats-value-rows",
                         tr("显示行数"),
-                        &app.log.row_count().to_string(),
+                        stat_value(&app.log.row_count().to_string(), cx),
+                        label_width,
                         cx,
                     ))
-                    .child(info_row(
+                    .child(stats_row(
+                        "stats-value-bytes",
                         tr("缓存字节"),
-                        &app.log.retained_bytes().to_string(),
+                        stat_value(&app.log.retained_bytes().to_string(), cx),
+                        label_width,
                         cx,
                     ))
-                    .child(field_row(
+                    .child(stats_row(
+                        "stats-value-max-rows",
                         tr("最大保留行数"),
                         Input::new(&app.inputs.max_rows)
                             .w(px(96.0))
                             .into_any_element(),
+                        label_width,
                         cx,
                     ))
-                    .child(field_row(
+                    .child(stats_row(
+                        "stats-value-max-cache",
                         tr("最大缓存 (MB)"),
                         Input::new(&app.inputs.max_raw_mb)
                             .w(px(64.0))
                             .into_any_element(),
+                        label_width,
                         cx,
                     )),
             )
@@ -2477,7 +2542,11 @@ fn tab_button(
         .into_any_element()
 }
 
-fn status_bar(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
+fn status_bar(
+    app: &mut XcomApp,
+    radii: gpui_kit::Corners<Pixels>,
+    cx: &mut Context<XcomApp>,
+) -> AnyElement {
     let theme = cx.theme().clone();
     h_flex()
         .w_full()
@@ -2488,6 +2557,10 @@ fn status_bar(app: &mut XcomApp, cx: &mut Context<XcomApp>) -> AnyElement {
         .border_t_1()
         .border_color(theme.border)
         .bg(theme.title_bar)
+        // Like the header at the top, the status bar paints the bottom edge and
+        // rounds with it.
+        .rounded_bl(radii.bottom_left)
+        .rounded_br(radii.bottom_right)
         .text_sm()
         .child(div().child(if app.link.is_open() {
             SharedString::from(format!(
@@ -2589,16 +2662,92 @@ fn disclosure(open: bool, cx: &mut Context<XcomApp>) -> AnyElement {
         .into_any_element()
 }
 
-fn info_row(label: &'static str, value: &str, cx: &mut Context<XcomApp>) -> AnyElement {
+/// One row of the statistics grid: the label in the shared label column, then
+/// the value/control in the column every row starts at.
+///
+/// egui draws this section as a two-column `Grid`, so the numbers sit directly
+/// after the widest label instead of being pushed to the panel's right edge —
+/// the way a `justify_between` row would, leaving the numbers disconnected from
+/// the labels and their inputs.
+fn stats_row(
+    id: &'static str,
+    label: &'static str,
+    body: AnyElement,
+    label_width: Pixels,
+    cx: &Context<XcomApp>,
+) -> AnyElement {
     h_flex()
         .w_full()
-        .justify_between()
-        .child(div().text_sm().child(SharedString::from(label)))
+        .items_center()
+        .gap_2()
         .child(
             div()
+                .w(label_width)
+                .flex_shrink_0()
                 .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(SharedString::from(value.to_owned())),
+                .text_color(cx.theme().foreground)
+                .child(SharedString::from(label)),
+        )
+        .child(
+            div()
+                .id(id)
+                .test_support()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(body),
         )
         .into_any_element()
+}
+
+/// A statistics value: muted, like the rest of the read-only numbers.
+fn stat_value(value: &str, cx: &Context<XcomApp>) -> AnyElement {
+    div()
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .child(SharedString::from(value.to_owned()))
+        .into_any_element()
+}
+
+/// The width of the statistics label column at the current font.
+///
+/// egui's `Grid` gives its first column the width of its widest label, so the
+/// value column starts right after the longest one — `最大缓存 (MB)` here.  The
+/// labels are drawn at `text_sm`, which is 0.875 rem of the theme's base size,
+/// so measuring them at that size is what lines every row up.
+fn stats_label_width(window: &Window, cx: &App) -> Pixels {
+    let labels = [
+        tr("发送字节"),
+        tr("接收字节"),
+        tr("显示行数"),
+        tr("缓存字节"),
+        tr("最大保留行数"),
+        tr("最大缓存 (MB)"),
+    ];
+    let theme = cx.theme();
+    let font = gpui_kit::Font {
+        family: theme.font_family.clone(),
+        ..Default::default()
+    };
+    let font_size = theme.font_size * 0.875;
+    labels
+        .iter()
+        .map(|label| {
+            let runs = [gpui_kit::TextRun {
+                len: label.len(),
+                font: font.clone(),
+                color: theme.foreground,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            window
+                .text_system()
+                .layout_line(label, font_size, &runs, None)
+                .width
+        })
+        .max()
+        .unwrap_or(px(0.0))
+        .ceil()
+        // A pixel of slack: rounded glyph advances can measure a hair short.
+        + px(1.0)
 }

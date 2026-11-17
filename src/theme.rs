@@ -207,6 +207,27 @@ pub fn apply(cx: &mut App, mode: ThemeMode) {
         ThemeMode::Light => ComponentTheme::change(gpui_kit::component::ThemeMode::Light, None, cx),
         ThemeMode::System => ComponentTheme::sync_system_appearance(None, cx),
     }
+    sync_window_radius(cx);
+}
+
+/// Match the window frame's corner radius to the session.
+///
+/// A client-decorated frame is rounded by the component library with the
+/// theme's `window.radius`; GNOME's compositor does not do it (see
+/// [`crate::ui::panels::WINDOW_CORNER_RADIUS`]).  Reloading the theme — an OS
+/// appearance change does that — resets the value to the square default, so
+/// this is re-asserted whenever the appearance is applied rather than only
+/// when the mode changes.
+pub fn sync_window_radius(cx: &mut App) {
+    let radius = if crate::ui::panels::wayland_session() {
+        gpui_kit::px(crate::ui::panels::WINDOW_CORNER_RADIUS)
+    } else {
+        gpui_kit::px(0.0)
+    };
+    use gpui_kit::component::ActiveTheme as _;
+    if cx.theme().window_radius != radius {
+        ComponentTheme::update(cx, |theme| theme.window_radius = radius);
+    }
 }
 
 /// Points of interface text per rem. `font_size` is the application zoom anchor.

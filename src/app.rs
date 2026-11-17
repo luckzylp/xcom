@@ -2343,6 +2343,10 @@ impl XcomApp {
             crate::theme::apply(cx, self.settings.theme);
             self.applied_theme = Some(self.settings.theme);
         }
+        // The frame's corner radius follows the session rather than the theme
+        // mode, so it survives the theme reloads the library performs on its
+        // own (an OS appearance change is one of them).
+        crate::theme::sync_window_radius(cx);
         let signature = (
             self.settings.fonts.ui_family.clone(),
             self.settings.fonts.ui_size,
@@ -2828,6 +2832,84 @@ mod ui_tests {
             assert!(
                 window.try_find("stats-body").is_some(),
                 "expanding must bring the counters back"
+            );
+        })
+        .unwrap();
+    }
+
+    /// The statistics read out in a column, the way egui's `Grid` lays them
+    /// out: every value starts where the inputs below it start, directly after
+    /// the widest label — not pinned to the panel's right edge.
+    #[gpui_kit::test]
+    fn the_statistics_values_share_the_input_column(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let body = window.find("stats-body").bounds();
+            let tx = window.find("stats-value-tx").bounds();
+            let rx = window.find("stats-value-rx").bounds();
+            let retained = window.find("stats-value-bytes").bounds();
+            let max_rows = window.find("stats-value-max-rows").bounds();
+            let left = |bounds: gpui_kit::Bounds<gpui_kit::Pixels>| f32::from(bounds.origin.x);
+
+            assert!(
+                (left(tx) - left(rx)).abs() < 0.5
+                    && (left(tx) - left(retained)).abs() < 0.5
+                    && (left(tx) - left(max_rows)).abs() < 0.5,
+                "every value must start at the same x: tx {tx:?}, rx {rx:?}, \
+                 retained {retained:?}, max rows {max_rows:?}"
+            );
+            let panel_right = f32::from(body.origin.x) + f32::from(body.size.width);
+            assert!(
+                left(tx) < panel_right - 40.0,
+                "the values must not be right aligned against the panel edge: \
+                 value starts at {:.1}, panel ends at {panel_right:.1}",
+                left(tx)
+            );
+        })
+        .unwrap();
+    }
+
+    /// A window whose frame the compositor draws keeps square corners: the app
+    /// only rounds a frame it draws itself, and only where the corners can be
+    /// transparent (see `ui::panels::WINDOW_CORNER_RADIUS`).
+    #[gpui_kit::test]
+    fn a_compositor_decorated_window_keeps_square_corners(cx: &mut TestAppContext) {
+        let _guard = ui_test_lock();
+        cx.update(gpui_kit::init);
+        let settings = crate::settings::Settings::default();
+        let (handle, _view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| XcomApp::new(window, cx, settings.clone()))
+            })
+            .expect("open the application window")
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                matches!(window.window_decorations(), gpui_kit::Decorations::Server),
+                "the headless window is server decorated, so it never draws a frame"
+            );
+            let radii = gpui_kit::component::window_corner_radii(window, cx);
+            assert_eq!(
+                (
+                    radii.top_left,
+                    radii.top_right,
+                    radii.bottom_left,
+                    radii.bottom_right
+                ),
+                (px(0.0), px(0.0), px(0.0), px(0.0)),
+                "a server-decorated frame must stay square"
             );
         })
         .unwrap();

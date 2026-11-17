@@ -1,6 +1,6 @@
 [package]
 name = "xcom"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 rust-version = "1.100.0"
 description = "ATK-XCOM 风格串口调试助手 — 跨平台串口工具 (Rust + gpui-kit)"
@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 # One dependency for the window, theme, components and overlays.  GPUI is
 # re-exported as `gpui_kit::*`; the component layer is `gpui_kit::component`.
-gpui-kit = "=0.9.0"
+gpui-kit = "=0.9.1"
 serialport = "4.10"
 regex = "1"
 encoding_rs = "0.8"
@@ -33,7 +33,7 @@ env_logger = "0.11"
 
 [dev-dependencies]
 # UI integration tests render real gpui-kit components in headless windows.
-gpui-kit = { version = "=0.9.0", features = ["test-support"] }
+gpui-kit = { version = "=0.9.1", features = ["test-support"] }
 # Used only by the Unix PTY loopback test, which needs `openpty`.
 libc = "0.2"
 
