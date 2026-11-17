@@ -109,9 +109,21 @@ jobs:
         id: artifact
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME:-$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys,json;print(json.load(sys.stdin)["packages"][0]["version"])')}"
+          # A tag names the release; anything else (a manual dispatch on a
+          # branch) takes the version from the crate itself.
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys,json;print(json.load(sys.stdin)["packages"][0]["version"])')"
+          fi
           # Strip leading 'v' from tag if present
           version="${version#v}"
+          # An artifact name is a directory entry, so it cannot carry a path
+          # separator: a branch name such as `feat/gpui-kit-migration` would
+          # otherwise build `xcom-feat/gpui-kit-migration-...`, which
+          # upload-artifact rejects.
+          version="${version//\//-}"
+          version="${version// /-}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "archive=xcom-${version}-${{ matrix.target }}${{ matrix.suffix }}.tar.gz" >> "$GITHUB_OUTPUT"
 
